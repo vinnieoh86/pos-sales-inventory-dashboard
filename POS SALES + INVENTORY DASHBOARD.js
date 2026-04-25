@@ -970,6 +970,7 @@ async function loadFiles(fileList) {
     updateFilterOptions();
     setDefaultDates();
     await savePersistedState();
+    await syncSharedDataToSupabase({ silent: true });
     render();
     if (skippedDuplicates) {
       els.fileCount.textContent = `${fileSummary()} â€¢ skipped ${skippedDuplicates} duplicate file${skippedDuplicates === 1 ? "" : "s"}`;
@@ -1010,6 +1011,7 @@ async function loadExcelFile(file) {
     bumpDataStamp();
     els.excelStatus.textContent = `${number.format(state.excelItems.size)} Excel items imported for ordering fields.`;
     await savePersistedState();
+    await syncSharedDataToSupabase({ productsOnly: true, silent: true });
     render();
   } catch (error) {
     console.error("Excel import failed", error);
@@ -4823,10 +4825,202 @@ async function restorePersistedState() {
   }
 }
 
+function supabaseRestUrl(tableName) {
+  return `${SUPABASE_URL}/rest/v1/${tableName}`;
+}
+
+async function supabaseSelectRows(tableName, query = {}) {
+  const url = new URL(supabaseRestUrl(tableName));
+  Object.entries(query).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== "") url.searchParams.set(key, value);
+  });
+  const response = await fetch(url.toString(), { headers: supabaseHeaders() });
+  if (!response.ok) throw new Error(`${tableName} read failed (${response.status})`);
+  return response.json();
+}
+
+async function supabaseDeleteAllRows(tableName) {
+  const url = new URL(supabaseRestUrl(tableName));
+  url.searchParams.set("id", "not.is.null");
+  const response = await fetch(url.toString(), {
+    method: "DELETE",
+    headers: supabaseHeaders(),
+  });
+  if (!response.ok) throw new Error(`${tableName} delete failed (${response.status})`);
+}
+
+async function supabaseInsertRows(tableName, rows) {
+  if (!rows.length) return;
+  const chunkSize = 500;
+  for (let i = 0; i < rows.length; i += chunkSize) {
+    const response = await fetch(supabaseRestUrl(tableName), {
+      method: "POST",
+      headers: supabaseHeaders(true),
+      body: JSON.stringify(rows.slice(i, i + chunkSize)),
+    });
+    if (!response.ok) throw new Error(`${tableName} insert failed (${response.status})`);
+  }
+}
+
+function productRowForSupabase(item) {
+  const excel = findExcelFor(item);
+  return {
+    code: item.code || excel.code || "",
+    product: item.product || excel.product || "",
+    plu: item.plu || excel.plu || "",
+    item_number: item.itemNumber || excel.itemNumber || "",
+    vendor: item.vendor || excel.vendor || "",
+    category: item.category || excel.category || "",
+    department: item.department || excel.department || "",
+    color: item.color || excel.color || "",
+    state: excel.state || item.state || "",
+    stock: Number(item.stock || excel.stock || 0),
+    price: Number(item.price || excel.price || 0),
+    unit_cost: Number(item.cost || excel.cost || 0),
+    case_size: Number(excel.caseSize || 1),
+    add_date: excel.addDate || null,
+    updated_at: new Date().toISOString(),
+  };
+}
+
+function salesRowForSupabase(row) {
+  return {
+    sales_date: row.date,
+    code: row.code || "",
+    product: row.product || "",
+    vendor: row.vendor || "",
+    category: row.category || "",
+    department: row.department || "",
+    qty: Number(row.units || 0),
+    sales: Number(row.sales || 0),
+    cost_sold: Number(row.cost || 0),
+    profit: Number(row.profit || 0),
+    source_file: row.date || "",
+  };
+}
+
+function hydrateInventoryFromSupabase(row) {
+  return {
+    date: row.updated_at ? String(row.updated_at).slice(0, 10) : new Date().toISOString().slice(0, 10),
+    code: normalizeCode(row.code),
+    category: cleanCell(row.category),
+    product: cleanCell(row.product),
+    plu: cleanCell(row.plu),
+    itemNumber: cleanCell(row.item_number),
+    price: toNumber(row.price),
+    cost: toNumber(row.unit_cost),
+    stock: toNumber(row.stock),
+    vendor: cleanCell(row.vendor),
+    vendorCode: "",
+    color: cleanCell(row.color),
+    size: "",
+    length: "",
+    manufacture: "",
+    memo: "",
+    department: cleanCell(row.department),
+  };
+}
+
+function hydrateExcelFromSupabase(row) {
+  return normalizeExcelRow({
+    code: row.code,
+    item_name: row.product,
+    vendor_name: row.vendor,
+    PLU: row.plu,
+    item_number: row.item_number,
+    category: row.category,
+    add_date: row.add_date,
+    cost: row.unit_cost,
+    price: row.price,
+    case_size: row.case_size,
+    stock: row.stock,
+    state: row.state,
+  });
+}
+
+function hydrateSalesFromSupabase(row) {
+  return {
+    date: row.sales_date,
+    code: normalizeCode(row.code),
+    product: cleanCell(row.product),
+    department: cleanCell(row.department) || "Unassigned",
+    category: cleanCell(row.category) || "Unassigned",
+    vendor: cleanCell(row.vendor) || "Unassigned",
+    units: toNumber(row.qty),
+    sales: toNumber(row.sales),
+    cost: toNumber(row.cost_sold),
+    profit: toNumber(row.profit),
+  };
+}
+
+async function restoreSharedDataFromSupabase(options = {}) {
+  const { silent = false } = options;
+  try {
+    const [productRows, salesRows] = await Promise.all([
+      supabaseSelectRows("products", { select: "*" }),
+      supabaseSelectRows("daily_sales", { select: "*", order: "sales_date.asc" }),
+    ]);
+    if (!productRows.length && !salesRows.length) return false;
+
+    state.rawSales = salesRows.map(hydrateSalesFromSupabase).filter((row) => row.code || row.product);
+    state.dates = [...new Set(state.rawSales.map((row) => row.date))].sort();
+
+    state.excelItems = new Map();
+    state.excelByPlu = new Map();
+    state.excelByItemNumber = new Map();
+    productRows.map(hydrateExcelFromSupabase).forEach((item) => addExcelIndex(item));
+    rebuildExcelIndexes();
+
+    const inventoryRows = productRows.map(hydrateInventoryFromSupabase).filter((row) => row.code || row.product);
+    state.inventories = new Map();
+    if (inventoryRows.length) {
+      const inventoryDate = inventoryRows.map((row) => row.date).sort().at(-1) || new Date().toISOString().slice(0, 10);
+      state.inventories.set(inventoryDate, inventoryRows);
+    }
+    buildLatestInventory();
+    state._loadedFileSignatures = new Set(["supabase-shared"]);
+    bumpDataStamp();
+    updateFilterOptions();
+    updateInventoryStateFilter();
+    setDefaultDates();
+    if (!silent) showToast(`Loaded shared data — ${number.format(productRows.length)} products, ${number.format(salesRows.length)} sales rows`, 3200, "success");
+    return true;
+  } catch (error) {
+    if (!silent) showToast("Supabase shared data could not be loaded.", 3200, "warning");
+    return false;
+  }
+}
+
+async function syncSharedDataToSupabase(options = {}) {
+  const { productsOnly = false, silent = false } = options;
+  try {
+    const productRows = [...state.latestInventory.values()]
+      .filter((item) => item.code || item.product)
+      .map(productRowForSupabase)
+      .filter((row) => row.code || row.product);
+    await supabaseDeleteAllRows("products");
+    await supabaseInsertRows("products", productRows);
+
+    if (!productsOnly) {
+      const salesRows = state.rawSales
+        .filter((row) => row.code || row.product)
+        .map(salesRowForSupabase);
+      await supabaseDeleteAllRows("daily_sales");
+      await supabaseInsertRows("daily_sales", salesRows);
+    }
+    if (!silent) showToast("Shared Supabase data updated.", 2800, "success");
+    return true;
+  } catch (error) {
+    if (!silent) showToast("Supabase shared data sync failed. Add write policies first.", 4200, "warning");
+    return false;
+  }
+}
+
 async function initApp() {
   mountInventoryQuickTools();
   await refreshUsersFromSupabase({ silent: true });
-  await restorePersistedState();
+  const restoredShared = await restoreSharedDataFromSupabase({ silent: true });
+  if (!restoredShared) await restorePersistedState();
   if (els.searchInput) {
     els.searchInput.value = state.tabSearches[activeTabName()] || "";
   }
@@ -4930,6 +5124,7 @@ function restorePreviousCount(sessionId) {
   renderCountsWorkspace();
   render();
   renderAdjustLog();
+  void syncSharedDataToSupabase({ productsOnly: true, silent: true });
   showToast(`Restored — ${restored} stock values reverted`, 3200, "success");
 }
 
@@ -4983,6 +5178,7 @@ function submitAndApplyCount() {
   render();
   renderAdjustLog();
   generateFinalCountExport(session, candidates, latestByCode, snapshot);
+  void syncSharedDataToSupabase({ productsOnly: true, silent: true });
   showToast(`Submitted — ${updated} stock values updated`, 3200, "success");
 }
 
@@ -5022,6 +5218,7 @@ function applyZeroNegatives() {
   bumpDataStamp();
   render();
   renderAdjustLog();
+  void syncSharedDataToSupabase({ productsOnly: true, silent: true });
   showToast(`${negItems.length} negative stock values set to 0`, 2800, "success");
 }
 
@@ -5118,6 +5315,7 @@ function finalizeStockAdjust(reason) {
   closeStockAdjustModal();
   render();
   renderAdjustLog();
+  void syncSharedDataToSupabase({ productsOnly: true, silent: true });
   showToast(`${state.stockAdjustAction === "add" ? "Added" : state.stockAdjustAction === "remove" ? "Removed" : "Set"} ${number.format(qty)} — ${item.code} now ${number.format(after)}`, 3000, "success");
 }
 
