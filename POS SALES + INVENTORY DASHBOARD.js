@@ -4840,13 +4840,24 @@ function supabaseRestUrl(tableName) {
 }
 
 async function supabaseSelectRows(tableName, query = {}) {
-  const url = new URL(supabaseRestUrl(tableName));
-  Object.entries(query).forEach(([key, value]) => {
-    if (value !== undefined && value !== null && value !== "") url.searchParams.set(key, value);
-  });
-  const response = await fetch(url.toString(), { headers: supabaseHeaders() });
-  if (!response.ok) throw new Error(`${tableName} read failed (${response.status})`);
-  return response.json();
+  const pageSize = 1000;
+  const rows = [];
+  let offset = 0;
+  while (true) {
+    const url = new URL(supabaseRestUrl(tableName));
+    Object.entries(query).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && value !== "") url.searchParams.set(key, value);
+    });
+    url.searchParams.set("limit", String(pageSize));
+    url.searchParams.set("offset", String(offset));
+    const response = await fetch(url.toString(), { headers: supabaseHeaders() });
+    if (!response.ok) throw new Error(`${tableName} read failed (${response.status})`);
+    const page = await response.json();
+    rows.push(...page);
+    if (page.length < pageSize) break;
+    offset += pageSize;
+  }
+  return rows;
 }
 
 async function supabaseDeleteAllRows(tableName) {
