@@ -952,6 +952,13 @@ async function loadFiles(fileList) {
     }
 
     if (!processedFiles) {
+      if (skippedDuplicates && (state.rawSales.length || state.latestInventory.size || state.excelItems.size)) {
+        const synced = await syncSharedDataToSupabase({ silent: true });
+        els.fileCount.textContent = synced
+          ? `Synced existing local data to shared cloud storage.`
+          : `Duplicate files skipped. Shared sync still needs attention.`;
+        return;
+      }
       els.fileCount.textContent = skippedDuplicates
         ? `Skipped ${skippedDuplicates} duplicate file${skippedDuplicates === 1 ? "" : "s"}`
         : "No new CSV files were imported.";
@@ -986,7 +993,10 @@ async function loadExcelFile(file) {
   try {
     const signature = fileSignature(file);
     if (state._loadedFileSignatures.has(signature)) {
-      els.excelStatus.textContent = `Skipped duplicate Excel file: ${file.name}`;
+      const synced = await syncSharedDataToSupabase({ productsOnly: true, silent: true });
+      els.excelStatus.textContent = synced
+        ? `Skipped duplicate Excel file: ${file.name}. Synced existing product data to cloud.`
+        : `Skipped duplicate Excel file: ${file.name}`;
       return;
     }
     els.excelStatus.textContent = `Reading ${file.name}...`;
