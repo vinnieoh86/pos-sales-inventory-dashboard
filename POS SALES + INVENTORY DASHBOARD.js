@@ -4904,6 +4904,26 @@ function productRowForSupabase(item) {
   };
 }
 
+function productRowFromExcelForSupabase(item = {}) {
+  return {
+    code: item.code || "",
+    product: item.product || "",
+    plu: item.plu || "",
+    item_number: item.itemNumber || "",
+    vendor: item.vendor || "",
+    category: item.category || "",
+    department: item.department || "",
+    color: item.color || "",
+    state: item.state || "",
+    stock: Number(item.stock || 0),
+    price: Number(item.price || 0),
+    unit_cost: Number(item.cost || 0),
+    case_size: Number(item.caseSize || 1),
+    add_date: item.addDate || null,
+    updated_at: new Date().toISOString(),
+  };
+}
+
 function salesRowForSupabase(row) {
   return {
     sales_date: row.date,
@@ -5015,12 +5035,26 @@ async function restoreSharedDataFromSupabase(options = {}) {
 async function syncSharedDataToSupabase(options = {}) {
   const { productsOnly = false, silent = false } = options;
   try {
-    const productRows = [...state.latestInventory.values()]
+    const productRowMap = new Map();
+    [...state.excelItems.values()]
+      .filter((item) => item?.code || item?.product || item?.plu || item?.itemNumber)
+      .forEach((item) => {
+        const row = productRowFromExcelForSupabase(item);
+        const key = codeKey(row.code || row.plu || row.item_number || row.product);
+        if (key) productRowMap.set(key, row);
+      });
+    [...state.latestInventory.values()]
       .filter((item) => item.code || item.product)
-      .map(productRowForSupabase)
-      .filter((row) => row.code || row.product);
-    await supabaseDeleteAllRows("products");
-    await supabaseInsertRows("products", productRows);
+      .forEach((item) => {
+        const row = productRowForSupabase(item);
+        const key = codeKey(row.code || row.plu || row.item_number || row.product);
+        if (key) productRowMap.set(key, row);
+      });
+    const productRows = [...productRowMap.values()].filter((row) => row.code || row.product);
+    if (productRows.length) {
+      await supabaseDeleteAllRows("products");
+      await supabaseInsertRows("products", productRows);
+    }
 
     if (!productsOnly) {
       const salesRows = state.rawSales
