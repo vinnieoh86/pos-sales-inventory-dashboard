@@ -1,0 +1,945 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>POS Sales + Inventory Dashboard</title>
+    <link rel="stylesheet" href="POS SALES + INVENTORY DASHBOARD.css" />
+  </head>
+  <body>
+    <div class="metrics-hover-zone" id="metricsHoverZone">
+      <div class="metrics-peek-bar">▼ Sales summary — hover to expand</div>
+      <section class="metrics metrics-dropdown" aria-label="Key metrics">
+        <article><span>Total Sales</span><strong id="totalSales">$0</strong><small id="salesDelta">Load CSVs to begin.</small></article>
+        <article><span>Units Sold</span><strong id="unitsSold">0</strong><small id="avgDailyUnits">0 per day</small></article>
+        <article><span>Gross Profit</span><strong id="grossProfit">$0</strong><small id="marginRate">0% margin</small></article>
+        <article><span>Cost Sold</span><strong id="costSold">$0</strong><small id="costTotal">Inventory cost $0</small></article>
+        <article><span>At Risk</span><strong id="riskCount">0</strong><small>Fast sellers under reorder point</small></article>
+      </section>
+    </div>
+    <header class="command-bar">
+      <div class="brand">
+        <span class="brand-mark">SV</span>
+        <div>
+          <p>POS Buying Desk</p>
+          <strong>Sales, Stock, and Ordering</strong>
+        </div>
+      </div>
+      <nav class="tab-list" aria-label="Dashboard tabs">
+        <button class="tab-button active" type="button" data-tab="dashboard">Dashboard</button>
+        <button class="tab-button" type="button" data-tab="inventory">Products</button>
+        <button class="tab-button" type="button" data-tab="counts">Inventory</button>
+        <button class="tab-button" type="button" data-tab="parents">Parent Styles</button>
+        <button class="tab-button" type="button" data-tab="ordering">Ordering</button>
+        <button class="tab-button tab-button--reports" type="button" data-tab="reports">Reports</button>
+        <button class="tab-button tab-button--vendors" type="button" data-tab="vendors">Vendors</button>
+        <button class="tab-button tab-button--settings" type="button" data-tab="settings">Settings</button>
+      </nav>
+      <section class="drop-inbox compact-uploader" id="dropInbox">
+        <strong>Drag CSV / Excel</strong>
+        <span id="fileCount">No files loaded</span>
+        <small id="dateCoverage">Choose POS sales, inventory snapshots, and the one-time Excel import.</small>
+        <small id="excelStatus">Excel import not loaded.</small>
+        <div class="drop-actions">
+          <button id="chooseSalesButton" type="button">Sales CSVs</button>
+          <button id="chooseFolderButton" type="button">POS Folder</button>
+          <button id="chooseExcelButton" type="button">Excel</button>
+        </div>
+      </section>
+      <div class="load-strip" id="dropZone" aria-hidden="true">
+        <label class="file-button">
+          Sales CSVs
+          <input id="fileInput" type="file" accept=".csv" multiple />
+        </label>
+        <label class="file-button secondary">
+          POS Folder
+          <input id="folderInput" type="file" accept=".csv" webkitdirectory multiple />
+        </label>
+        <label class="file-button excel">
+          One-Time Excel
+          <input id="excelInput" type="file" accept=".xlsx,.xls" />
+        </label>
+      </div>
+    </header>
+
+    <main class="app">
+      <section class="controls sticky-filters" aria-label="Dashboard filters">
+        <label>Search <input id="searchInput" type="search" placeholder="SKU, product, vendor, color..." /></label>
+        <div class="date-nav-row">
+          <button type="button" id="dateNavPrev" class="date-nav-btn" title="Previous period">&#8249;</button>
+          <label>From <input id="startDate" type="date" /></label>
+          <label>To <input id="endDate" type="date" /></label>
+          <button type="button" id="dateNavNext" class="date-nav-btn" title="Next period">&#8250;</button>
+        </div>
+        <label>Department <span class="filter-label-actions"><button class="filter-clear-button" type="button" data-clear-filter="departmentFilter" aria-label="Clear department filter">Clear</button></span><select id="departmentFilter"></select></label>
+        <label>Category <span class="filter-label-actions"><button class="filter-clear-button" type="button" data-clear-filter="categoryFilter" aria-label="Clear category filter">Clear</button></span><select id="categoryFilter"></select></label>
+        <label>Vendor <span class="filter-label-actions"><button class="filter-clear-button" type="button" data-clear-filter="vendorFilter" aria-label="Clear vendor filter">Clear</button></span><select id="vendorFilter"></select></label>
+        <label>Color <select id="colorFilter"></select></label>
+        <label title="Days of stock to hold as safety buffer. Min = SV × Safety">Safety days <input id="safetyDays" type="number" min="0" max="120" value="21" /></label>
+        <label class="lead-days-field" title="Hidden legacy field"><input id="leadDays" type="number" min="0" max="0" value="0" tabindex="-1" /></label>
+        <label title="Extra days of inventory to stock beyond min">Days of inventory <input id="daysOfInventory" type="number" min="0" max="365" value="7" /></label>
+        <button id="clearFiltersButton" class="clear-filters-button" type="button">Clear all</button>
+        <div id="inventoryQuickTools" class="inventory-quick-tools" hidden></div>
+      </section>
+      <div class="date-presets sticky-pills" id="datePresets"></div>
+
+      <section class="tab-view active dashboard-layout" data-tab-view="dashboard">
+
+      <!-- Trend chart with comparison toggle -->
+      <section class="panel trend-panel" id="trend">
+        <div class="panel-heading">
+          <div><p class="eyebrow">Sales history</p><h2>Daily revenue and units</h2></div>
+          <div class="trend-controls">
+            <label class="compare-toggle">
+              <input type="checkbox" id="compareToggle" />
+              Compare to prior period
+            </label>
+            <div class="legend">
+              <span><i class="sales-dot"></i>Sales</span>
+              <span><i class="unit-dot"></i>Units</span>
+              <span class="compare-legend" id="compareLegend" hidden><i class="prior-dot"></i>Prior</span>
+            </div>
+          </div>
+        </div>
+        <canvas id="trendChart" height="150"></canvas>
+        <div id="comparisonSummary" class="comparison-summary" hidden></div>
+      </section>
+
+      <!-- Department / Category / Vendor analysis -->
+      <section class="segment-grid" id="segments">
+        <article class="panel">
+          <div class="panel-heading">
+            <div><p class="eyebrow">Strong / weak</p><h2 id="segmentTitle">Departments</h2></div>
+            <div class="segment-controls">
+              <select id="segmentMetric">
+                <option value="sales">Sales $</option>
+                <option value="units">Units sold</option>
+                <option value="profit">Gross profit</option>
+                <option value="velocity">Velocity</option>
+              </select>
+            </div>
+          </div>
+          <div id="departmentBars" class="bars"></div>
+          <div id="drillDownPanel" class="drill-panel"></div>
+        </article>
+        <article class="panel">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Categories</p>
+              <h2 id="categoryPanelTitle">Top categories by selected group</h2>
+              <small id="categoryPanelHint" class="panel-hint">Click a bar to show top 10 and bottom 10 items.</small>
+            </div>
+            <div class="segment-controls">
+              <select id="segmentGroup">
+                <option value="department">Department</option>
+                <option value="category">Category</option>
+                <option value="vendor">Vendor</option>
+              </select>
+            </div>
+          </div>
+          <div id="categoryBars" class="bars compact"></div>
+        </article>
+      </section>
+
+      <!-- Period comparison cards -->
+      <section class="panel period-compare-panel" id="periodComparePanel">
+        <div class="panel-heading">
+          <div><p class="eyebrow">Period comparison</p><h2>Current vs prior period</h2></div>
+          <div class="compare-period-controls">
+            <select id="comparePeriod">
+              <option value="30">Last 30 days</option>
+              <option value="60">Last 60 days</option>
+              <option value="90">Last 90 days</option>
+              <option value="182">Last 6 months</option>
+              <option value="365">Last 12 months</option>
+              <option value="ytd">Year to date</option>
+              <option value="custom">Current date range</option>
+            </select>
+            <select id="compareGroup">
+              <option value="department">By Department</option>
+              <option value="category">By Category</option>
+              <option value="vendor">By Vendor</option>
+            </select>
+          </div>
+        </div>
+        <div id="compareCards" class="compare-cards"></div>
+      </section>
+
+      </section>
+
+      <section class="tab-view" data-tab-view="inventory">
+        <section class="panel table-panel">
+          <div class="panel-heading">
+            <div><p class="eyebrow">Complete inventory</p><h2>Searchable item master</h2></div>
+            <div class="table-tools inventory-panel-tools" data-inventory-tools>
+              <select id="inventoryStateFilter"><option value="">All states</option></select>
+              <button id="arrangeColumnsButton" type="button">Arrange columns</button>
+              <details class="column-picker">
+                <summary>Columns</summary>
+                <div id="columnPickerPanel"></div>
+              </details>
+              <button id="downloadInventory" type="button">Download inventory CSV</button>
+              <button id="createPoShortcut" type="button">Create PO / Order</button>
+            </div>
+          </div>
+          <div id="inventorySummary" class="summary-strip"></div>
+          <div class="table-wrap tall">
+            <table id="inventory">
+              <thead>
+                <tr>
+                  <!-- checkbox th injected by renderInventoryHeader -->
+                  <th data-col="code" data-sort="code">Code</th><th data-col="product" data-sort="product">Item</th><th data-col="plu" data-sort="plu">PLU</th><th data-col="itemNumber" data-sort="itemNumber">Item #</th><th data-col="subType" data-sort="subType">Sub/Type</th><th data-col="category" data-sort="category">Category</th><th data-col="vendor" data-sort="vendor">Vendor</th><th data-col="state" data-sort="state">State</th><th data-col="addDate" data-sort="addDate">Add Date</th>
+                  <th data-col="stock" data-sort="stock">Stock</th><th data-col="units" data-sort="units">Sold</th><th data-col="velocity" data-sort="velocity">SV/day</th><th data-col="unitCost" data-sort="unitCost">Cost</th><th data-col="price" data-sort="price">Price</th><th data-col="inventoryCost" data-sort="inventoryCost">Cost Total</th><th data-col="caseSize" data-sort="caseSize">Case</th><th data-col="reorderMin" data-sort="reorderMin">Min</th><th data-col="reorderMax" data-sort="reorderMax">Max</th>
+                </tr>
+              </thead>
+              <tbody id="inventoryBody">
+                <tr><td colspan="19" class="empty-cell">Load CSV inventory or the Excel import to view all items.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
+      <section class="tab-view" data-tab-view="parents">
+        <section class="panel table-panel">
+          <div class="panel-heading">
+            <div><p class="eyebrow">Parent style performance</p><h2>Group totals with color breakdowns</h2></div>
+            <div class="table-tools">
+              <input id="parentsSearch" type="search" placeholder="Search parents..." class="tab-search" />
+              <button id="downloadParents" type="button">Download parent CSV</button>
+            </div>
+          </div>
+          <details class="rules-box">
+            <summary>Parent parsing rules</summary>
+            <ol>
+              <li>Use item/name as the primary source.</li>
+              <li>Rightmost <code>::</code> splits parent from Sub/Type.</li>
+              <li>Rightmost <code> - </code> splits parent from Sub/Type for hair/color and known variant text.</li>
+              <li>Known grocery/beverage brands like HERSHEYS, REESES, and FAYGO group by brand.</li>
+              <li>Original code, PLU, and item number are used for matching, not as the first parent parser.</li>
+            </ol>
+          </details>
+          <section class="parent-rule-editor">
+            <div>
+              <p class="eyebrow">Parent alias rules</p>
+              <h3>Create app-only hashtags</h3>
+            </div>
+            <div class="parent-rule-form">
+              <input id="parentRuleName" type="text" placeholder="Parent, ex: HERSHEY" />
+              <input id="parentRuleAliases" type="text" placeholder="Aliases, ex: #hershey, hershey, hersheys" />
+              <button id="addParentRuleButton" type="button">Add rule</button>
+            </div>
+            <details class="compact-rule-list">
+              <summary>Parent alias rules</summary>
+              <div id="parentRuleList" class="parent-rule-list"></div>
+            </details>
+          </section>
+          <section class="parent-rule-editor">
+            <div>
+              <p class="eyebrow">Sub Rules</p>
+              <h3>Pull sub groups like size, length, or pack out of Type text</h3>
+            </div>
+            <div class="parent-rule-form attribute-rule-form">
+              <select id="attributeRuleType">
+                <option value="size">Size</option>
+                <option value="container">Container</option>
+                <option value="other">Other</option>
+              </select>
+              <input id="attributeRuleValue" type="text" placeholder="Value, ex: 24 OZ" />
+              <input id="attributeRuleAliases" type="text" placeholder="Aliases, ex: #24oz, 24 oz, 24oz" />
+              <button id="addAttributeRuleButton" type="button">Add attribute</button>
+            </div>
+            <details class="compact-rule-list">
+              <summary><span id="attributeRuleCount">0</span> attribute rules</summary>
+              <div id="attributeRuleList" class="parent-rule-list"></div>
+            </details>
+          </section>
+          <div id="parentGrid" class="parent-grid"></div>
+        </section>
+      </section>
+
+      <section class="tab-view" data-tab-view="counts">
+        <section class="panel">
+          <div class="panel-heading">
+            <div><p class="eyebrow">Inventory control</p><h2>Physical count workspace</h2></div>
+            <div class="table-tools">
+              <button id="zeroNegativeStockButton" type="button" class="secondary-button">Set Negatives → 0</button>
+              <button id="countReviewButton" type="button" hidden>Print / Review report</button>
+              <button id="closeCountSessionButton" type="button" class="secondary-button" hidden>Close active count</button>
+            </div>
+          </div>
+          <div class="summary-strip" id="countSummaryStrip">
+            <span><b>Phase 1</b> physical counts</span>
+            <span><b>Launch</b> start a dated vendor/category count session first</span>
+            <span><b>Stored</b> each scanned entry stays saved for manager review reports</span>
+          </div>
+          <div id="countWorkspaceEmpty" class="compare-card-grid">
+            <button id="countLaunchCard" class="compare-card count-launch-card" type="button">
+              <strong>New physical count</strong>
+              <p class="muted">Choose date, vendor, and category. Then begin scanning items and entering the physical quantity on hand.</p>
+              <span class="count-launch-state">Open count setup</span>
+            </button>
+            <div class="compare-card">
+              <strong>Employee view</strong>
+              <p class="muted">The count screen hides current system stock so staff only records what is physically on hand.</p>
+            </div>
+            <button id="openSessionHistoryButton" class="compare-card count-launch-card" type="button">
+              <strong>Saved for reports</strong>
+              <p class="muted">Every count entry is stored with its session info so managers can review later.</p>
+              <span class="count-launch-state">View report history</span>
+            </button>
+          </div>
+          <div class="count-page-blank" aria-hidden="true"></div>
+        </section>
+      </section>
+
+      <section class="tab-view" data-tab-view="ordering">
+      <section class="panel" id="ordering">
+        <div class="panel-heading">
+          <div><p class="eyebrow">Inventory ordering</p><h2>Recommended buys</h2></div>
+          <div class="po-actions">
+            <span class="formula-note" id="formulaNote"></span>
+            <details class="column-picker order-column-picker" id="orderColumnPicker">
+              <summary>Columns ▾</summary>
+              <div id="orderColumnPickerPanel" class="column-picker-panel order-cp-panel"></div>
+            </details>
+            <button id="exportPoExcel" type="button" class="po-btn excel-btn">Create PO Excel</button>
+            <button id="exportPoPdf" type="button" class="po-btn pdf-btn">Create PO PDF</button>
+            <button id="downloadOrder" type="button">Download CSV</button>
+          </div>
+        </div>
+        <div class="ordering-vendor-filter-bar">
+            <label class="session-filter-label">Vendor status
+              <select id="orderVendorFilterSelect">
+                <option value="Active" selected>Active only</option>
+                <option value="">All vendors</option>
+                <option value="Disabled">Disabled only</option>
+              </select>
+            </label>
+          </div>
+          <!-- Alert banner for today's vendors -->
+        <div id="orderAlertBanner"></div>
+        <div id="orderCards" class="order-cards"></div>
+      </section>
+
+      <section class="panel table-panel" id="sku-table">
+        <div class="panel-heading">
+          <div><p class="eyebrow">Manager detail</p><h2>SKU performance</h2></div>
+          <div class="table-tools">
+            <select id="sortMode">
+              <option value="sales">Sort by sales</option>
+              <option value="units">Sort by units</option>
+              <option value="profit">Sort by profit</option>
+              <option value="velocity">Sort by velocity</option>
+              <option value="daysSupply">Sort by days supply</option>
+              <option value="recommendedOrder">Sort by order qty</option>
+            </select>
+            <button id="downloadSku" type="button">Download SKU CSV</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th class="checkbox-col"><input type="checkbox" id="selectAllSku" title="Select / deselect all" /></th>
+                <th>Status</th><th>Code</th><th>Product</th><th>PLU</th><th>Item #</th><th>Dept</th><th>Category</th><th>Vendor</th><th>Color</th>
+                <th>SV/day</th><th class="sold-highlight">Units</th><th>Sales</th><th>Cost Sold</th><th>Profit</th><th class="stock-highlight">Stock</th><th>Cost</th><th>Price</th><th>Days</th><th class="order-highlight">Order</th>
+              </tr>
+            </thead>
+            <tbody id="skuBody">
+              <tr><td colspan="20" class="empty-cell">Load your March sample CSV files to build the first dashboard.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+      </section>
+    </main>
+    <!-- Reports tab view -->
+        <section class="tab-view" data-tab-view="reports" style="padding:1.5rem;">
+      <div class="reports-boxes">
+        <button type="button" class="report-box" id="reportBoxAdjust">
+          <p class="eyebrow">Stock</p><h3>Adjustment Log</h3>
+          <p class="muted">Stock changes, reasons, before/after</p>
+        </button>
+        <button type="button" class="report-box" id="reportBoxPO">
+          <p class="eyebrow">Purchasing</p><h3>Order History</h3>
+          <p class="muted">All submitted POs by vendor</p>
+        </button>
+        <button type="button" class="report-box" id="reportBoxCount">
+          <p class="eyebrow">Inventory</p><h3>Count Reports</h3>
+          <p class="muted">Final count exports for POS import</p>
+        </button>
+      </div>
+
+      <div id="reportAdjustModal" class="count-modal" hidden>
+        <div class="count-modal__dialog count-modal__dialog--wide">
+          <div class="panel-heading">
+            <div><p class="eyebrow">Stock records</p><h3>Adjustment log</h3></div>
+            <div class="table-tools">
+              <details class="report-export-details"><summary class="report-export-summary">Export</summary>
+                <div class="report-export-dropdown">
+                  <button id="exportAdjustPdfButton" type="button" class="pdf-report-btn">PDF</button>
+                  <button id="exportAdjustExcelButton" type="button" class="excel-report-btn">Excel</button>
+                </div>
+              </details>
+              <button id="clearAdjustLogButton" type="button" class="secondary-button">Clear</button>
+              <button type="button" class="secondary-button report-modal-close" data-close-modal="reportAdjustModal">&#x2715;</button>
+            </div>
+          </div>
+          <div class="table-wrap"><table class="count-report-table">
+            <thead><tr><th>Date/Time</th><th>Code</th><th>Item</th><th>Vendor</th><th>Category</th><th>Action</th><th>Change</th><th>Before</th><th>After</th><th>Reason</th></tr></thead>
+            <tbody id="adjustLogBody"><tr><td colspan="10" class="empty-cell">No adjustments yet.</td></tr></tbody>
+          </table></div>
+        </div>
+      </div>
+
+      <div id="reportPoModal" class="count-modal" hidden>
+        <div class="count-modal__dialog count-modal__dialog--wide">
+          <div class="panel-heading">
+            <div><p class="eyebrow">Purchase orders</p><h3>Order history</h3></div>
+            <div class="table-tools"><button type="button" class="secondary-button report-modal-close" data-close-modal="reportPoModal">&#x2715;</button></div>
+          </div>
+          <div class="table-wrap"><table class="count-report-table">
+            <thead><tr><th>Date</th><th>Vendor</th><th>Items</th><th>Total</th><th>Status</th></tr></thead>
+            <tbody id="poHistoryBody"><tr><td colspan="5" class="empty-cell">No POs submitted yet.</td></tr></tbody>
+          </table></div>
+        </div>
+      </div>
+
+      <div id="reportCountModal" class="count-modal" hidden>
+        <div class="count-modal__dialog count-modal__dialog--wide">
+          <div class="panel-heading">
+            <div><p class="eyebrow">Inventory counts</p><h3>Count report history</h3></div>
+            <div class="table-tools"><button type="button" class="secondary-button report-modal-close" data-close-modal="reportCountModal">&#x2715;</button></div>
+          </div>
+          <div class="table-wrap"><table class="count-report-table">
+            <thead><tr><th>Date</th><th>Label</th><th>Items</th><th>Submitted</th><th>Export</th></tr></thead>
+            <tbody id="countReportHistoryBody"><tr><td colspan="5" class="empty-cell">No final counts saved yet.</td></tr></tbody>
+          </table></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Vendors<!-- Vendors tab view -->
+    <section class="tab-view" data-tab-view="vendors" style="padding:1.5rem;">
+      <section class="panel table-panel">
+        <div class="panel-heading">
+          <div><p class="eyebrow">Ordering rules</p><h2>Vendor settings</h2></div>
+          <div class="table-tools">
+            <label class="session-filter-label">Status
+              <select id="vendorStatusFilter">
+                <option value="">All</option>
+                <option value="Active" selected>Active</option>
+                <option value="Disabled">Disabled</option>
+              </select>
+            </label>
+            <button id="preloadVendorsButton" type="button" class="secondary-button">Preload from inventory</button>
+            <button id="addVendorRuleButton" type="button">+ Add vendor</button>
+            <button id="exportVendorRulesButton" type="button" class="excel-report-btn">Export Excel</button>
+          </div>
+        </div>
+        <div id="vendorBulkBar" class="vendor-bulk-bar" hidden>
+          <span id="vendorBulkCount">0 selected</span>
+          <button type="button" id="vendorBulkActivate" class="count-submit-btn">Set Active</button>
+          <button type="button" id="vendorBulkDisable" class="secondary-button">Set Disabled</button>
+          <button type="button" id="vendorBulkDelete" class="delete-session-btn">Delete selected</button>
+          <button type="button" id="vendorBulkClear" class="secondary-button">Clear selection</button>
+        </div>
+        <div class="summary-strip" id="vendorRulesSummary"></div>
+        <div class="table-wrap">
+          <table class="count-report-table vendor-rules-table" id="vendorRulesTable">
+            <thead>
+              <tr>
+                <th class="checkbox-col"><input type="checkbox" id="selectAllVendors" title="Select all" /></th>
+                <th>Status</th>
+                <th>Vendor</th>
+                <th>Safety Stock<br><small>days</small></th>
+                <th>Days of<br>Inventory</th>
+                <th>Min Order<br>Amount ($)</th>
+                <th>Order Days</th>
+                <th>Email</th>
+                <th>Notes</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="vendorRulesBody">
+              <tr><td colspan="9" class="empty-cell">No vendor rules set. Click "+ Add vendor" to create one.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+
+    <div id="detailDrawer" class="detail-drawer" hidden></div>
+    <div id="countSetupModal" class="count-modal" hidden>
+      <div class="count-modal__dialog">
+        <div class="panel-heading">
+          <div><p class="eyebrow">Start count</p><h3>New physical count</h3></div>
+        </div>
+        <div class="count-modal__form">
+          <label>Date <input id="countDateInput" type="date" /></label>
+          <label>Vendor <select id="countVendorInput"></select></label>
+          <label>Category <select id="countCategoryInput"></select></label>
+          <label>Item Status <select id="countStatusInput"></select></label>
+        </div>
+        <div class="count-modal__actions">
+          <button id="countStartButton" type="button">Start inventory</button>
+          <button id="countCancelButton" type="button" class="secondary-button">Cancel</button>
+        </div>
+      </div>
+    </div>
+    <div id="countSessionModal" class="count-modal" hidden>
+      <div class="count-modal__dialog count-modal__dialog--workspace">
+        <section id="countWorkspace" class="count-workspace">
+          <div class="count-workspace__header">
+            <div>
+              <p class="eyebrow">In progress</p>
+              <h3 id="activeCountTitle">Physical count</h3>
+            </div>
+            <div class="count-workspace__actions">
+              <button id="countInputReportButton" type="button" class="secondary-button">Input report</button>
+              <button id="countComparisonReportButton" type="button" class="secondary-button">Comparison report</button>
+              <button id="countSaveSessionButton" type="button">Save</button>
+              <button id="countDeleteSessionButton" type="button" class="secondary-button">Delete</button>
+            </div>
+          </div>
+          <div id="activeCountMeta" class="count-meta-pills"></div>
+          <div class="count-workspace__grid">
+            <div class="count-panel">
+              <label class="count-search-label">Scan / search
+                <div class="count-search-wrapper">
+                  <input id="countSearchInput" type="search" placeholder="Scan barcode or type name, code, PLU..." autocomplete="off" />
+                  <div id="countSearchDropdown" class="count-search-dropdown" hidden></div>
+                </div>
+              </label>
+              <div class="count-search-actions">
+                <button id="countSearchButton" type="button">Find item</button>
+                <button id="countClearSearchButton" type="button" class="secondary-button">Delete</button>
+              </div>
+              <div id="countSelectedItem" class="count-selected-item">
+                <p class="muted">Scan or search an item to begin counting.</p>
+              </div>
+            </div>
+            <div class="count-panel count-panel--keypad">
+              <div class="count-display">
+                <span>Entered qty</span>
+                <strong id="countQuantityDisplay">0</strong>
+              </div>
+              <div class="count-keypad">
+                <button type="button" data-count-key="1">1</button>
+                <button type="button" data-count-key="2">2</button>
+                <button type="button" data-count-key="3">3</button>
+                <button type="button" data-count-key="back">Back</button>
+                <button type="button" data-count-key="4">4</button>
+                <button type="button" data-count-key="5">5</button>
+                <button type="button" data-count-key="6">6</button>
+                <button type="button" data-count-key="clear">Clear</button>
+                <button type="button" data-count-key="7">7</button>
+                <button type="button" data-count-key="8">8</button>
+                <button type="button" data-count-key="9">9</button>
+                <button type="button" data-count-key="done" class="count-keypad__done">Done</button>
+                <button type="button" data-count-key="0">0</button>
+                <button type="button" data-count-key="00">00</button>
+                <button type="button" data-count-key=".">.</button>
+              </div>
+            </div>
+          </div>
+          <section class="panel table-panel">
+            <div class="panel-heading">
+              <div><p class="eyebrow">Session entries</p><h3>Scanned items</h3></div>
+            </div>
+            <div class="table-wrap">
+              <table class="count-report-table">
+                <thead>
+                  <tr>
+                    <th>Code</th><th>Item</th><th>Vendor</th><th>Category</th><th>Entry</th><th>Physical count</th><th>Mode</th><th>Variance</th>
+                  </tr>
+                </thead>
+                <tbody id="countEntryBody">
+                  <tr><td colspan="8" class="empty-cell">No items counted yet.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+      </div>
+    </div>
+    <div id="countDuplicateModal" class="count-modal" hidden>
+      <div class="count-modal__dialog">
+        <div class="panel-heading">
+          <div><p class="eyebrow">Duplicate item</p><h3>Choose how to handle this count</h3></div>
+        </div>
+        <p id="countDuplicateMessage" class="muted">This item was already counted in this session.</p>
+        <div class="count-modal__actions">
+          <button id="countDuplicateAddButton" type="button">Add to inventory</button>
+          <button id="countDuplicateResetButton" type="button" class="secondary-button">Reset inventory</button>
+          <button id="countDuplicateCancelButton" type="button" class="secondary-button">Cancel</button>
+        </div>
+      </div>
+    </div>
+    <div id="countReportModal" class="count-modal" hidden>
+      <div class="count-modal__dialog count-modal__dialog--wide">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">Manager review</p>
+            <h3 id="countReportTitle">Physical count report</h3>
+          </div>
+          <div class="table-tools">
+            <button id="countContinueButton" type="button" class="secondary-button">Continue Count</button>
+            <button id="countInputViewButton" type="button" class="secondary-button">Input log</button>
+            <button id="countComparisonViewButton" type="button" class="secondary-button">Comparison</button>
+            <button id="countPdfReportButton" type="button" class="pdf-report-btn">PDF Report</button>
+            <button id="countExcelReportButton" type="button" class="excel-report-btn">Excel Report</button>
+            <button id="countSubmitButton" type="button" class="count-submit-btn">Submit &amp; Apply</button>
+            <button id="countCloseReportButton" type="button" class="secondary-button">Close</button>
+          </div>
+        </div>
+        <div id="countReportMeta" class="summary-strip"></div>
+        <div class="table-wrap">
+          <table class="count-report-table count-report-table--variance">
+            <thead id="countReportHead">
+              <tr>
+                <th>Code</th><th>Item</th><th>Vendor</th><th>Category</th><th>Qty before</th><th>Qty after</th><th>Variance</th><th>Mode</th><th>Date/Time</th>
+              </tr>
+            </thead>
+            <tbody id="countReportBody">
+              <tr><td colspan="9" class="empty-cell">No items counted yet.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+    <!-- Stock Adjustment Modal (Products tab) -->
+    <div id="stockAdjustModal" class="count-modal" hidden>
+      <div class="count-modal__dialog count-modal__dialog--stock">
+        <div class="panel-heading">
+          <div><p class="eyebrow" id="stockAdjustEyebrow">Adjust stock</p><h3 id="stockAdjustTitle">Item name</h3></div>
+        </div>
+        <div id="stockAdjustMeta" class="count-meta-pills"></div>
+        <!-- Stage 1: choose action -->
+        <div id="stockAdjustStage1" class="stock-adjust-stage">
+          <div class="stock-adjust-action-row">
+            <button type="button" id="stockActionAdd" class="stock-action-btn stock-action-add">+ ADD</button>
+            <button type="button" id="stockActionRemove" class="stock-action-btn stock-action-remove">− REMOVE</button>
+            <button type="button" id="stockActionSet" class="stock-action-btn stock-action-set">= SET</button>
+          </div>
+        </div>
+        <!-- Stage 2: keypad qty entry -->
+        <div id="stockAdjustStage2" class="stock-adjust-stage" hidden>
+          <div class="count-display">
+            <span id="stockAdjustActionLabel">Qty to add</span>
+            <strong id="stockAdjustQtyDisplay">0</strong>
+          </div>
+          <div class="count-keypad">
+            <button type="button" data-stock-key="1">1</button>
+            <button type="button" data-stock-key="2">2</button>
+            <button type="button" data-stock-key="3">3</button>
+            <button type="button" data-stock-key="back">Back</button>
+            <button type="button" data-stock-key="4">4</button>
+            <button type="button" data-stock-key="5">5</button>
+            <button type="button" data-stock-key="6">6</button>
+            <button type="button" data-stock-key="clear">Clear</button>
+            <button type="button" data-stock-key="7">7</button>
+            <button type="button" data-stock-key="8">8</button>
+            <button type="button" data-stock-key="9">9</button>
+            <button type="button" data-stock-key="enter" class="count-keypad__done">Enter</button>
+            <button type="button" data-stock-key="0">0</button>
+            <button type="button" data-stock-key="00">00</button>
+            <button type="button" data-stock-key=".">.</button>
+          </div>
+        </div>
+        <!-- Stage 3: reason selection -->
+        <div id="stockAdjustStage3" class="stock-adjust-stage" hidden>
+          <p class="stock-adjust-reason-label">Select reason for adjustment:</p>
+          <div class="stock-adjust-reasons">
+            <button type="button" class="stock-reason-btn" data-reason="DAMAGED">Damaged</button>
+            <button type="button" class="stock-reason-btn" data-reason="STOLEN">Stolen</button>
+            <button type="button" class="stock-reason-btn" data-reason="LOST">Lost</button>
+            <button type="button" class="stock-reason-btn" data-reason="MISCOUNT">Miscount</button>
+            <button type="button" class="stock-reason-btn" data-reason="SAMPLE">Sample</button>
+            <button type="button" class="stock-reason-btn" data-reason="PROMOTION">Promotion</button>
+            <button type="button" class="stock-reason-btn" data-reason="RETURNED TO VENDOR">Returned to Vendor</button>
+          </div>
+        </div>
+        <div class="count-modal__actions">
+          <button type="button" id="stockAdjustCancelButton" class="secondary-button">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Confirm Delete Session Modal -->
+    <div id="confirmDeleteSessionModal" class="count-modal" hidden>
+      <div class="count-modal__dialog count-modal__dialog--confirm">
+        <div class="panel-heading">
+          <div><p class="eyebrow">Confirm delete</p><h3>Delete this saved count?</h3></div>
+        </div>
+        <p class="muted" id="confirmDeleteSessionMessage">This action cannot be undone.</p>
+        <div class="count-modal__actions">
+          <button type="button" id="confirmDeleteSessionYes" class="delete-confirm-btn">Delete</button>
+          <button type="button" id="confirmDeleteSessionNo" class="secondary-button">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Confirm Submit Count Modal -->
+    <div id="confirmSubmitCountModal" class="count-modal" hidden>
+      <div class="count-modal__dialog count-modal__dialog--confirm">
+        <div class="panel-heading">
+          <div><p class="eyebrow">Submit & apply</p><h3>Apply physical counts to inventory?</h3></div>
+        </div>
+        <p class="muted" id="confirmSubmitCountMessage">This will update stock quantities for all scanned items. This cannot be undone.</p>
+        <div class="count-modal__actions">
+          <button type="button" id="confirmSubmitCountYes" class="count-submit-btn">Submit</button>
+          <button type="button" id="confirmSubmitCountNo" class="secondary-button">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Confirm Zero Negatives Modal -->
+    <div id="confirmZeroNegModal" class="count-modal" hidden>
+      <div class="count-modal__dialog count-modal__dialog--confirm">
+        <div class="panel-heading">
+          <div><p class="eyebrow">Zero negative stock</p><h3>Set all negative stock to 0?</h3></div>
+        </div>
+        <p class="muted" id="confirmZeroNegMessage">All items with negative stock will be set to 0 and a report will be saved.</p>
+        <div class="count-modal__actions">
+          <button type="button" id="confirmZeroNegYes" class="count-submit-btn">Apply</button>
+          <button type="button" id="confirmZeroNegNo" class="secondary-button">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Session History Modal -->
+    <div id="sessionHistoryModal" class="count-modal" hidden>
+      <div class="count-modal__dialog count-modal__dialog--wide">
+        <div class="panel-heading">
+          <div><p class="eyebrow">Manager review</p><h3>Report history</h3></div>
+          <div class="table-tools">
+            <label class="session-filter-label">Vendor
+              <select id="sessionHistoryVendorFilter"></select>
+            </label>
+            <label class="session-filter-label">Period
+              <select id="sessionHistoryPeriodFilter">
+                <option value="">All time</option>
+                <option value="day">Today</option>
+                <option value="week">This week</option>
+                <option value="month">This month</option>
+                <option value="quarter">This quarter</option>
+                <option value="year">This year</option>
+              </select>
+            </label>
+            <button type="button" id="sessionHistoryCloseButton" class="secondary-button">Close</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="count-report-table">
+            <thead>
+              <tr><th>Date</th><th>Vendor</th><th>Category</th><th>Status filter</th><th>Started</th><th>Entries</th><th>Last update</th><th>Report</th><th>Final Report</th><th>Restore</th><th>Delete</th></tr>
+            </thead>
+            <tbody id="countSessionBody">
+              <tr><td colspan="11" class="empty-cell">No sessions saved yet.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Final Count Report Modal -->
+    <div id="finalCountReportModal" class="count-modal" hidden>
+      <div class="count-modal__dialog count-modal__dialog--wide">
+        <div class="panel-heading">
+          <div><p class="eyebrow">Final submission report</p><h3 id="finalReportTitle">Final count report</h3></div>
+          <div class="table-tools">
+            <button id="finalReportPdfButton" type="button" class="pdf-report-btn">PDF</button>
+            <button id="finalReportExcelButton" type="button" class="excel-report-btn">Excel</button>
+            <button id="finalReportCloseButton" type="button" class="secondary-button">Close</button>
+          </div>
+        </div>
+        <div id="finalReportMeta" class="summary-strip"></div>
+        <div class="table-wrap">
+          <table class="count-report-table count-report-table--variance">
+            <thead>
+              <tr><th>Code</th><th>Item</th><th>Vendor</th><th>Category</th><th>Qty Start</th><th>Qty End</th><th>Variance</th><th>Cost Variance</th><th>Status</th></tr>
+            </thead>
+            <tbody id="finalReportBody">
+              <tr><td colspan="9" class="empty-cell">No submitted count found.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Vendor Rule Edit Modal -->
+    <div id="vendorRuleModal" class="count-modal" hidden>
+      <div class="count-modal__dialog count-modal__dialog--vendor">
+        <div class="panel-heading">
+          <div><p class="eyebrow" id="vendorModalEyebrow">Add vendor</p><h3 id="vendorModalTitle">New vendor rule</h3></div>
+        </div>
+        <div class="vendor-rule-form">
+          <label>Vendor name <input id="vrVendor" type="text" placeholder="e.g. 7UP" /></label>
+          <label>Status
+            <select id="vrStatus">
+              <option value="Active">Active</option>
+              <option value="Disabled">Disabled</option>
+            </select>
+          </label>
+          <label>Safety stock (days) <input id="vrSafetyDays" type="number" min="0" max="365" value="21" /></label>
+          <label>Days of inventory <input id="vrDaysOfInventory" type="number" min="0" max="365" value="7" /></label>
+          <label>Min order amount ($) <input id="vrMinOrder" type="number" min="0" value="0" /></label>
+          <label>Email <input id="vrEmail" type="email" placeholder="vendor@example.com" /></label>
+          <label>Notes <input id="vrNotes" type="text" placeholder="Optional notes" /></label>
+          <div class="vendor-days-picker">
+            <span>Order days</span>
+            <div class="vendor-day-buttons">
+              <button type="button" class="vday-btn" data-day="monday">Mon</button>
+              <button type="button" class="vday-btn" data-day="tuesday">Tue</button>
+              <button type="button" class="vday-btn" data-day="wednesday">Wed</button>
+              <button type="button" class="vday-btn" data-day="thursday">Thu</button>
+              <button type="button" class="vday-btn" data-day="friday">Fri</button>
+              <button type="button" class="vday-btn" data-day="saturday">Sat</button>
+              <button type="button" class="vday-btn" data-day="sunday">Sun</button>
+            </div>
+          </div>
+        </div>
+        <div class="count-modal__actions">
+          <button type="button" id="vendorRuleSaveButton" class="count-submit-btn">Save</button>
+          <button type="button" id="vendorRuleCancelButton" class="secondary-button">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Vendor Order Analysis Modal -->
+    <div id="vendorOrderModal" class="count-modal" hidden>
+      <div class="count-modal__dialog count-modal__dialog--wide">
+        <div class="panel-heading">
+          <div><p class="eyebrow">Order analysis</p><h3 id="voTitle">Vendor</h3></div>
+          <div class="table-tools">
+            <button type="button" id="voSubmitButton" class="count-submit-btn">Submit PO</button>
+            <button type="button" id="voCloseButton" class="secondary-button">Close</button>
+          </div>
+        </div>
+        <div id="voMeta" class="summary-strip"></div>
+        <div class="table-wrap">
+          <table class="count-report-table">
+            <thead><tr><th>Code</th><th>Item</th><th>Stock</th><th>Min</th><th>Case Order</th><th>Case Size</th><th>Cost</th></tr></thead>
+            <tbody id="voBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Vendor PO Analysis Modal -->
+    <div id="vendorPoModal" class="count-modal" hidden>
+      <div class="count-modal__dialog count-modal__dialog--wide vendor-po-modal">
+        <div class="vendor-po-header">
+          <div class="vendor-po-header-left">
+            <p class="eyebrow">Purchase Order</p>
+            <h2 id="vpmTitle">Vendor name</h2>
+            <div id="vpmMeta" class="summary-strip vpm-meta"></div>
+          </div>
+          <div class="vendor-po-header-right">
+            <button type="button" id="vpmSubmitButton" class="count-submit-btn vpm-submit-btn">✓ Submit PO</button>
+            <button type="button" id="vpmClearPendingButton" class="secondary-button" hidden>Clear Pending</button>
+            <button type="button" id="vpmPdfButton" class="pdf-report-btn">PDF</button>
+            <button type="button" id="vpmCloseButton" class="secondary-button">✕</button>
+          </div>
+        </div>
+        <div class="table-wrap vpm-table-wrap">
+          <table class="order-table vpm-table">
+            <thead>
+              <tr>
+                <th>Code</th><th>Item</th><th>Stock</th><th>SV/day</th>
+                <th>Min</th><th>Max</th><th>Rec. Order</th>
+                <th class="order-highlight">Case Order</th><th>Case Size</th>
+                <th>Unit Cost</th><th>Total Cost</th><th>Pending</th>
+              </tr>
+            </thead>
+            <tbody id="vpmBody"></tbody>
+          </table>
+        </div>
+        <div class="vpm-footer">
+          <span id="vpmGrandTotal" class="vpm-grand-total"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Vendor PO Analysis Modal -->
+    <div id="vendorPoModal" class="count-modal" hidden>
+      <div class="count-modal__dialog count-modal__dialog--wide vendor-po-modal">
+        <div class="vendor-po-header">
+          <div>
+            <p class="eyebrow">Purchase Order</p>
+            <h2 id="vpmTitle">Vendor</h2>
+            <div id="vpmMeta" class="summary-strip vpm-meta"></div>
+          </div>
+          <div class="vendor-po-header-right">
+            <button type="button" id="vpmSubmitButton" class="count-submit-btn">Submit PO</button>
+            <button type="button" id="vpmClearPendingButton" class="secondary-button" hidden>Clear Pending</button>
+            <button type="button" id="vpmPdfButton" class="pdf-report-btn">PDF</button>
+            <button type="button" id="vpmCloseButton" class="secondary-button">&#x2715;</button>
+          </div>
+        </div>
+        <div class="table-wrap vpm-table-wrap">
+          <table class="order-table vpm-table">
+            <thead>
+              <tr><th>Code</th><th>Item</th><th>Stock</th><th>SV/day</th><th>Min</th><th>Max</th><th>Rec</th><th class="order-highlight">Order Qty</th><th>Case</th><th>Unit Cost</th><th>Total</th><th>PO</th></tr>
+            </thead>
+            <tbody id="vpmBody"></tbody>
+          </table>
+        </div>
+        <div class="vpm-footer"><span id="vpmGrandTotal" class="vpm-grand-total"></span></div>
+      </div>
+    </div>
+
+        <!-- Settings tab -->
+    <section class="tab-view" data-tab-view="settings" style="padding:1.5rem;">
+      <section class="panel" style="padding:1.2rem">
+        <div class="panel-heading">
+          <div><p class="eyebrow">Access control</p><h2>Users &amp; PINs</h2></div>
+        </div>
+        <div class="table-wrap">
+          <table class="count-report-table">
+            <thead><tr><th>Name</th><th>Role</th><th>PIN</th><th>Actions</th></tr></thead>
+            <tbody id="settingsPanel"></tbody>
+          </table>
+        </div>
+        <div class="settings-add-user">
+          <h3>Add user</h3>
+          <div class="settings-add-row">
+            <input id="settingsNewName" type="text" placeholder="Name" style="width:140px" />
+            <input id="settingsNewPin" type="password" placeholder="4-digit PIN" maxlength="4" style="width:100px" />
+            <select id="settingsNewRole"><option value="user">User</option><option value="admin">Admin</option></select>
+            <button type="button" onclick="addSettingsUser()">Add user</button>
+          </div>
+        </div>
+      </section>
+    </section>
+
+    <!-- Lock screen overlay -->
+    <div id="lockScreen" class="lock-overlay">
+      <div class="lock-box">
+        <h2 class="lock-title">Sign in</h2>
+        <p class="lock-subtitle">Enter your 4-digit PIN</p>
+        <div id="lockPinDisplay" class="lock-display">&#9679;&#9679;&#9679;&#9679;</div>
+        <div class="lock-keypad">
+          <button type="button" class="lock-key" data-lock-key="1">1</button>
+          <button type="button" class="lock-key" data-lock-key="2">2</button>
+          <button type="button" class="lock-key" data-lock-key="3">3</button>
+          <button type="button" class="lock-key" data-lock-key="4">4</button>
+          <button type="button" class="lock-key" data-lock-key="5">5</button>
+          <button type="button" class="lock-key" data-lock-key="6">6</button>
+          <button type="button" class="lock-key" data-lock-key="7">7</button>
+          <button type="button" class="lock-key" data-lock-key="8">8</button>
+          <button type="button" class="lock-key" data-lock-key="9">9</button>
+          <button type="button" class="lock-key lock-key--clear" data-lock-key="clear">Clear</button>
+          <button type="button" class="lock-key" data-lock-key="0">0</button>
+          <button type="button" class="lock-key lock-key--del" data-lock-key="del">&#9003;</button>
+        </div>
+      </div>
+    </div>
+
+        <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <script src="POS SALES + INVENTORY DASHBOARD.js"></script>
+  </body>
+</html>
+
