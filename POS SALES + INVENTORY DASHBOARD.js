@@ -4825,6 +4825,7 @@ async function restorePersistedState() {
 
 async function initApp() {
   mountInventoryQuickTools();
+  await refreshUsersFromSupabase({ silent: true });
   await restorePersistedState();
   if (els.searchInput) {
     els.searchInput.value = state.tabSearches[activeTabName()] || "";
@@ -6021,15 +6022,122 @@ if (!state.finalCountReports) {
 
 // ── User/PIN auth system ───────────────────────────────────────────────────
 const AUTH_KEY = "posAuthUsers:v1";
+const SUPABASE_URL = "https://mqkrgieotabpptsbosdh.supabase.co";
+const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_i0n6EMZnW-E40Dx8Od_8mg_eD9GChBy";
+if (!state.authUsers) state.authUsers = [];
+if (!state.authUsersLoaded) state.authUsersLoaded = false;
+
+function defaultAuthUsers() {
+  return [{ name: "Admin", pin: "0000", role: "admin", id: "default-admin", active: true }];
+}
+
+function normalizeAuthUser(user) {
+  if (!user) return null;
+  return {
+    id: String(user.id || ""),
+    name: String(user.name || "").trim(),
+    pin: String(user.pin || "").trim(),
+    role: String(user.role || "user").trim().toLowerCase(),
+    active: user.active !== false,
+    created_at: user.created_at || null,
+  };
+}
+
 function loadUsers() {
-  return JSON.parse(localStorage.getItem(AUTH_KEY) || '[{"name":"Admin","pin":"0000","role":"admin","id":"default-admin"}]');
+  if (Array.isArray(state.authUsers) && state.authUsers.length) return state.authUsers;
+  const cached = JSON.parse(localStorage.getItem(AUTH_KEY) || "[]")
+    .map(normalizeAuthUser)
+    .filter((user) => user?.name && user?.pin && user.active !== false);
+  if (cached.length) {
+    state.authUsers = cached;
+    return cached;
+  }
+  const fallback = defaultAuthUsers();
+  state.authUsers = fallback;
+  return fallback;
 }
+
 function saveUsers(users) {
-  localStorage.setItem(AUTH_KEY, JSON.stringify(users));
+  const normalized = (users || []).map(normalizeAuthUser).filter((user) => user?.name && user?.pin);
+  state.authUsers = normalized;
+  localStorage.setItem(AUTH_KEY, JSON.stringify(normalized));
 }
+
+function supabaseHeaders(preferReturn = false) {
+  const headers = {
+    apikey: SUPABASE_PUBLISHABLE_KEY,
+    Authorization: `Bearer ${SUPABASE_PUBLISHABLE_KEY}`,
+    "Content-Type": "application/json",
+  };
+  if (preferReturn) headers.Prefer = "return=representation";
+  return headers;
+}
+
+async function supabaseFetchUsers() {
+  const url = new URL("/rest/v1/app_users", SUPABASE_URL);
+  url.searchParams.set("select", "id,name,pin,role,active,created_at");
+  url.searchParams.set("active", "eq.true");
+  url.searchParams.set("order", "created_at.asc");
+  const response = await fetch(url.toString(), { headers: supabaseHeaders() });
+  if (!response.ok) throw new Error(`Supabase read failed (${response.status})`);
+  const rows = await response.json();
+  return rows.map(normalizeAuthUser).filter((user) => user?.name && user?.pin && user.active !== false);
+}
+
+async function refreshUsersFromSupabase(options = {}) {
+  const { silent = false } = options;
+  try {
+    const users = await supabaseFetchUsers();
+    if (users.length) saveUsers(users);
+    state.authUsersLoaded = true;
+    return loadUsers();
+  } catch (error) {
+    state.authUsersLoaded = true;
+    if (!silent) showToast("Using saved login users — Supabase sync unavailable.", 3200, "warning");
+    return loadUsers();
+  }
+}
+
+async function supabaseInsertUser(user) {
+  const response = await fetch(`${SUPABASE_URL}/rest/v1/app_users`, {
+    method: "POST",
+    headers: supabaseHeaders(true),
+    body: JSON.stringify([{
+      name: user.name,
+      pin: user.pin,
+      role: user.role,
+      active: user.active !== false,
+    }]),
+  });
+  if (!response.ok) throw new Error(`Supabase insert failed (${response.status})`);
+  return response.json();
+}
+
+async function supabaseUpdateUser(userId, patch) {
+  const url = new URL("/rest/v1/app_users", SUPABASE_URL);
+  url.searchParams.set("id", `eq.${userId}`);
+  const response = await fetch(url.toString(), {
+    method: "PATCH",
+    headers: supabaseHeaders(true),
+    body: JSON.stringify(patch),
+  });
+  if (!response.ok) throw new Error(`Supabase update failed (${response.status})`);
+  return response.json();
+}
+
+async function supabaseDeleteUser(userId) {
+  const url = new URL("/rest/v1/app_users", SUPABASE_URL);
+  url.searchParams.set("id", `eq.${userId}`);
+  const response = await fetch(url.toString(), {
+    method: "DELETE",
+    headers: supabaseHeaders(),
+  });
+  if (!response.ok) throw new Error(`Supabase delete failed (${response.status})`);
+}
+
 function verifyPin(pin) {
   const users = loadUsers();
-  return users.find((u) => u.pin === pin) || null;
+  return users.find((u) => u.pin === pin && u.active !== false) || null;
 }
 if (!state.currentUser) state.currentUser = null;
 function isAdmin() {
@@ -6069,36 +6177,50 @@ function renderSettings() {
     });
   });
   panel.querySelectorAll(".settings-change-pin").forEach((btn) => {
-    btn.addEventListener("click", () => {
+    btn.addEventListener("click", async () => {
       const pin = prompt("Enter new 4-digit PIN:");
       if (!pin || !/^\d{4}$/.test(pin)) { showToast("PIN must be exactly 4 digits.", 3000, "warning"); return; }
-      const users = loadUsers();
-      const idx = users.findIndex((u) => u.id === btn.dataset.userId);
-      if (idx >= 0) { users[idx].pin = pin; saveUsers(users); renderSettings(); showToast("PIN updated.", 2000, "success"); }
+      try {
+        await supabaseUpdateUser(btn.dataset.userId, { pin });
+        await refreshUsersFromSupabase({ silent: true });
+        renderSettings();
+        showToast("PIN updated.", 2000, "success");
+      } catch (error) {
+        showToast("Could not update PIN in Supabase.", 3200, "warning");
+      }
     });
   });
   panel.querySelectorAll(".settings-delete-user").forEach((btn) => {
-    btn.addEventListener("click", () => {
+    btn.addEventListener("click", async () => {
       if (!confirm("Delete this user?")) return;
-      const users = loadUsers().filter((u) => u.id !== btn.dataset.userId);
-      saveUsers(users); renderSettings(); showToast("User deleted.", 2000, "warning");
+      try {
+        await supabaseDeleteUser(btn.dataset.userId);
+        await refreshUsersFromSupabase({ silent: true });
+        renderSettings();
+        showToast("User deleted.", 2000, "warning");
+      } catch (error) {
+        showToast("Could not delete user from Supabase.", 3200, "warning");
+      }
     });
   });
 }
 
-function addSettingsUser() {
+async function addSettingsUser() {
   const name = document.querySelector("#settingsNewName")?.value.trim();
   const pin = document.querySelector("#settingsNewPin")?.value.trim();
-  const role = document.querySelector("#settingsNewRole")?.value || "user";
+  const role = (document.querySelector("#settingsNewRole")?.value || "user").toLowerCase();
   if (!name) { showToast("Enter a user name.", 3000, "warning"); return; }
   if (!pin || !/^\d{4}$/.test(pin)) { showToast("PIN must be 4 digits.", 3000, "warning"); return; }
-  const users = loadUsers();
-  users.push({ name, pin, role, id: "u-" + Date.now() });
-  saveUsers(users);
-  if (document.querySelector("#settingsNewName")) document.querySelector("#settingsNewName").value = "";
-  if (document.querySelector("#settingsNewPin")) document.querySelector("#settingsNewPin").value = "";
-  renderSettings();
-  showToast("User added.", 2000, "success");
+  try {
+    await supabaseInsertUser({ name, pin, role, active: true });
+    if (document.querySelector("#settingsNewName")) document.querySelector("#settingsNewName").value = "";
+    if (document.querySelector("#settingsNewPin")) document.querySelector("#settingsNewPin").value = "";
+    await refreshUsersFromSupabase({ silent: true });
+    renderSettings();
+    showToast("User added.", 2000, "success");
+  } catch (error) {
+    showToast("Could not add user to Supabase.", 3200, "warning");
+  }
 }
 
 // ── Lock screen ────────────────────────────────────────────────────────────
