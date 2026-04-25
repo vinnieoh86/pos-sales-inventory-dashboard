@@ -966,10 +966,10 @@ async function loadFiles(fileList) {
     }
 
     if (selectedInventory) {
-      const currentLatest = latestInventoryDate();
-      if (!currentLatest || selectedInventory.date >= currentLatest) {
-        state.inventories = new Map([[selectedInventory.date, selectedInventory.rows]]);
-      }
+      // An explicit current-inventory import should always become the active
+      // inventory snapshot, even if a previously synced shared snapshot has a
+      // newer timestamp such as a test/debug row.
+      state.inventories = new Map([[selectedInventory.date, selectedInventory.rows]]);
     }
     state.dates = [...new Set(state.rawSales.map((row) => row.date))].sort();
     buildLatestInventory();
