@@ -62,6 +62,8 @@ const state = {
   priceCheckStream: null,
   priceCheckRaf: 0,
   priceCheckDetector: null,
+  priceCheckReader: null,
+  priceCheckReaderControls: null,
   priceCheckLastCode: "",
   priceCheckLastScanAt: 0,
 };
@@ -1339,7 +1341,62 @@ function currentInventoryRows() {
 }
 
 function priceCheckRows() {
-  return buildInventoryRows({ ignoreQuery: true, ignoreFilters: true, ignoreStateFilter: true });
+  const baseRows = buildInventoryRows({ ignoreQuery: true, ignoreFilters: true, ignoreStateFilter: true });
+  const rowMap = new Map();
+  baseRows.forEach((item) => {
+    const key = codeKey(item.code || item.plu || item.itemNumber || item.product);
+    if (key) rowMap.set(key, item);
+  });
+  [...state.excelItems.values()].forEach((excel) => {
+    const key = codeKey(excel.code || excel.plu || excel.itemNumber || excel.product);
+    if (!key || rowMap.has(key)) return;
+    rowMap.set(key, {
+      code: excel.code || "",
+      product: excel.product || "",
+      department: excel.department || "",
+      category: excel.category || "",
+      vendor: excel.vendor || "",
+      plu: excel.plu || "",
+      itemNumber: excel.itemNumber || "",
+      color: excel.color || "",
+      state: excel.state || "",
+      itemState: (excel.state || "").toLowerCase(),
+      addDate: excel.addDate || "",
+      snapshotDate: "",
+      stock: Number(excel.stock || 0),
+      units: 0,
+      sales: 0,
+      costSold: 0,
+      profit: 0,
+      velocity: Number(excel.saleVelocity || 0),
+      unitCost: Number(excel.cost || 0),
+      price: Number(excel.price || 0),
+      caseSize: Number(excel.caseSize || 1),
+      reorderMin: Number(excel.reorderMin || 0),
+      reorderMax: Number(excel.reorderMax || 0),
+      recommendedOrder: 0,
+      caseOrder: 0,
+      inventoryCost: Number(excel.stock || 0) * Number(excel.cost || 0),
+    });
+  });
+  return [...rowMap.values()];
+}
+
+function ensureZxingReader() {
+  if (window.ZXingBrowser) return Promise.resolve(window.ZXingBrowser);
+  return new Promise((resolve) => {
+    const existing = document.querySelector("script[data-zxing-fallback]");
+    const script = existing || document.createElement("script");
+    const done = () => resolve(window.ZXingBrowser || null);
+    script.onload = done;
+    script.onerror = () => resolve(null);
+    if (!existing) {
+      script.dataset.zxingFallback = "true";
+      script.src = "https://cdn.jsdelivr.net/npm/@zxing/browser@0.1.5/umd/index.min.js";
+      document.head.append(script);
+    }
+    setTimeout(done, 10000);
+  });
 }
 
 function findPriceCheckItem(query) {
@@ -1443,15 +1500,8 @@ async function startPriceCheckCamera() {
     showToast("Camera scanning is not supported on this device/browser.", 3200, "warning");
     return;
   }
-  if (!("BarcodeDetector" in window)) {
-    showToast("Live camera barcode scan is not supported here yet. Use manual search for now.", 3600, "warning");
-    return;
-  }
   try {
     stopPriceCheckCamera();
-    state.priceCheckDetector = new BarcodeDetector({
-      formats: ["upc_a", "upc_e", "ean_13", "ean_8", "code_128", "code_39", "qr_code"],
-    });
     state.priceCheckStream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: { ideal: "environment" } },
       audio: false,
@@ -1463,7 +1513,32 @@ async function startPriceCheckCamera() {
     if (els.priceCheckStatus) els.priceCheckStatus.textContent = "Camera live. Point at a barcode.";
     if (els.priceCheckStopButton) els.priceCheckStopButton.hidden = false;
     if (els.priceCheckCameraButton) els.priceCheckCameraButton.hidden = true;
-    scanPriceCheckFrame();
+    if ("BarcodeDetector" in window) {
+      state.priceCheckDetector = new BarcodeDetector({
+        formats: ["upc_a", "upc_e", "ean_13", "ean_8", "code_128", "code_39", "qr_code"],
+      });
+      scanPriceCheckFrame();
+      return;
+    }
+    const ZXingBrowser = await ensureZxingReader();
+    if (!ZXingBrowser) {
+      showToast("Live camera barcode scan is not supported here yet. Use manual search for now.", 3600, "warning");
+      stopPriceCheckCamera();
+      return;
+    }
+    state.priceCheckReader = new ZXingBrowser.BrowserMultiFormatReader();
+    state.priceCheckReader.decodeFromVideoDevice(undefined, els.priceCheckVideo, (result, error, controls) => {
+      if (controls) state.priceCheckReaderControls = controls;
+      const code = cleanCell(result?.getText?.() || "");
+      const now = Date.now();
+      if (code && (code !== state.priceCheckLastCode || now - state.priceCheckLastScanAt > 1800)) {
+        state.priceCheckLastCode = code;
+        state.priceCheckLastScanAt = now;
+        if (els.priceCheckSearchInput) els.priceCheckSearchInput.value = code;
+        handlePriceCheckLookup({ refocus: true });
+        stopPriceCheckCamera();
+      }
+    });
   } catch (error) {
     showToast("Camera could not start. Allow camera access and try again.", 3600, "warning");
   }
@@ -1478,6 +1553,15 @@ function stopPriceCheckCamera() {
     state.priceCheckStream.getTracks().forEach((track) => track.stop());
     state.priceCheckStream = null;
   }
+  if (state.priceCheckReaderControls?.stop) {
+    try { state.priceCheckReaderControls.stop(); } catch (error) {}
+  }
+  state.priceCheckReaderControls = null;
+  if (state.priceCheckReader?.reset) {
+    try { state.priceCheckReader.reset(); } catch (error) {}
+  }
+  state.priceCheckReader = null;
+  state.priceCheckDetector = null;
   if (els.priceCheckVideo) {
     els.priceCheckVideo.pause?.();
     els.priceCheckVideo.srcObject = null;
