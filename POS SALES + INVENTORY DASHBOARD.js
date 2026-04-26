@@ -1688,9 +1688,15 @@ function processPriceCheckScan(code) {
   state.priceCheckLastScanAt = now;
   if (els.priceCheckSearchInput) els.priceCheckSearchInput.value = cleanCode;
   const item = handlePriceCheckLookup({ refocus: false, silentNotFound: true });
+  const inScanMode = activeTabName() === "scanmode";
+  if (inScanMode) stopPriceCheckCamera();
   setSharedScanStatus(item
-    ? `Loaded ${item.code || item.product}. Scan next item.`
-    : `No match for ${cleanCode}. Scan next item.`);
+    ? (inScanMode
+      ? `Loaded ${item.code || item.product}. Tap Start Scanner for next item.`
+      : `Loaded ${item.code || item.product}. Scan next item.`)
+    : (inScanMode
+      ? `No match for ${cleanCode}. Tap Start Scanner to try again.`
+      : `No match for ${cleanCode}. Scan next item.`));
   return true;
 }
 
