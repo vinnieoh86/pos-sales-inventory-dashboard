@@ -65,6 +65,7 @@ const state = {
   priceCheckReader: null,
   priceCheckReaderControls: null,
   priceCheckScanner: null,
+  priceCheckFullscreen: false,
   priceCheckLastCode: "",
   priceCheckLastScanAt: 0,
 };
@@ -135,6 +136,10 @@ const els = {
   priceCheckStopButton: document.querySelector("#priceCheckStopButton"),
   priceCheckVideo: document.querySelector("#priceCheckVideo"),
   priceCheckScanner: document.querySelector("#priceCheckScanner"),
+  priceCheckOverlay: document.querySelector("#priceCheckOverlay"),
+  priceCheckOverlayVideo: document.querySelector("#priceCheckOverlayVideo"),
+  priceCheckOverlayScanner: document.querySelector("#priceCheckOverlayScanner"),
+  priceCheckOverlayClose: document.querySelector("#priceCheckOverlayClose"),
   priceCheckStatus: document.querySelector("#priceCheckStatus"),
   priceCheckResult: document.querySelector("#priceCheckResult"),
   startDate: document.querySelector("#startDate"),
@@ -558,14 +563,28 @@ els.countSearchInput?.addEventListener("input", () => {
 });
 els.countSearchInput?.addEventListener("focus", () => els.countSearchInput.select?.());
 els.countSearchInput?.addEventListener("click", () => els.countSearchInput.select?.());
-els.priceCheckSearchButton?.addEventListener("click", () => handlePriceCheckLookup());
+els.priceCheckSearchButton?.addEventListener("click", () => {
+  const query = cleanCell(els.priceCheckSearchInput?.value || "");
+  if (!query && prefersPhoneBarcodeScanner()) {
+    startPriceCheckCamera({ fullscreen: true });
+    return;
+  }
+  handlePriceCheckLookup();
+});
 els.priceCheckClearButton?.addEventListener("click", clearPriceCheckSearch);
-els.priceCheckCameraButton?.addEventListener("click", startPriceCheckCamera);
+els.priceCheckCameraButton?.addEventListener("click", () => startPriceCheckCamera({ fullscreen: prefersPhoneBarcodeScanner() }));
 els.priceCheckStopButton?.addEventListener("click", stopPriceCheckCamera);
+els.priceCheckOverlayClose?.addEventListener("click", stopPriceCheckCamera);
 els.priceCheckSearchInput?.addEventListener("keydown", (event) => {
   if (event.key === "Enter") {
     event.preventDefault();
     handlePriceCheckLookup({ refocus: true });
+  }
+});
+els.priceCheckSearchInput?.addEventListener("pointerdown", (event) => {
+  if (prefersPhoneBarcodeScanner() && !cleanCell(els.priceCheckSearchInput?.value || "")) {
+    event.preventDefault();
+    startPriceCheckCamera({ fullscreen: true });
   }
 });
 els.priceCheckSearchInput?.addEventListener("focus", () => els.priceCheckSearchInput.select?.());
@@ -1434,6 +1453,19 @@ function prefersPhoneBarcodeScanner() {
   return /android|iphone|ipad|ipod|mobile/i.test(ua) || (window.matchMedia?.("(max-width: 900px)")?.matches ?? false);
 }
 
+function priceCheckVideoEl() {
+  return state.priceCheckFullscreen ? els.priceCheckOverlayVideo : els.priceCheckVideo;
+}
+
+function priceCheckScannerEl() {
+  return state.priceCheckFullscreen ? els.priceCheckOverlayScanner : els.priceCheckScanner;
+}
+
+function setPriceCheckFullscreen(open) {
+  state.priceCheckFullscreen = !!open;
+  if (els.priceCheckOverlay) els.priceCheckOverlay.hidden = !open;
+}
+
 function priceCheckMatches(query, limit = 12) {
   const raw = cleanCell(query);
   if (!raw) return [];
@@ -1537,6 +1569,7 @@ function renderPriceCheckResult(item) {
   const itemNumber = cleanCell(item.itemNumber || excel.itemNumber) || "-";
   const category = cleanCell(item.category || excel.category) || "Unassigned";
   const department = cleanCell(item.department || excel.department) || "Unassigned";
+  const showCost = isAdmin();
   els.priceCheckResult.className = "price-check-result";
   els.priceCheckResult.innerHTML = `
     <div class="price-check-result__hero">
@@ -1554,7 +1587,7 @@ function renderPriceCheckResult(item) {
       <article><span>Item #</span><strong>${escapeHtml(itemNumber)}</strong></article>
       <article><span>Category</span><strong>${escapeHtml(category)}</strong></article>
       <article><span>Department</span><strong>${escapeHtml(department)}</strong></article>
-      <article><span>Cost</span><strong>${currency.format(cost)}</strong></article>
+      ${showCost ? `<article><span>Cost</span><strong>${currency.format(cost)}</strong></article>` : ""}
     </div>
   `;
 }
@@ -1593,7 +1626,8 @@ function handlePriceCheckLookup(options = {}) {
   return item;
 }
 
-async function startPriceCheckCamera() {
+async function startPriceCheckCamera(options = {}) {
+  const { fullscreen = false } = options;
   if (!window.isSecureContext) {
     showToast("Camera scanning requires the secure live website. Open the GitHub Pages URL, not a local file.", 4200, "warning");
     return;
@@ -1604,6 +1638,7 @@ async function startPriceCheckCamera() {
   }
   try {
     stopPriceCheckCamera();
+    setPriceCheckFullscreen(fullscreen && prefersPhoneBarcodeScanner());
     els.priceCheckSearchInput?.blur?.();
     if (els.priceCheckStatus) els.priceCheckStatus.textContent = "Starting camera...";
     const tryStream = async (videoOptions) => navigator.mediaDevices.getUserMedia({ video: videoOptions, audio: false });
@@ -1612,37 +1647,40 @@ async function startPriceCheckCamera() {
     } catch (primaryError) {
       state.priceCheckStream = await tryStream({ facingMode: { ideal: "environment" } });
     }
-    if (els.priceCheckVideo) {
-      els.priceCheckVideo.setAttribute("playsinline", "");
-      els.priceCheckVideo.setAttribute("autoplay", "");
-      els.priceCheckVideo.muted = true;
-      els.priceCheckVideo.srcObject = state.priceCheckStream;
+    const videoEl = priceCheckVideoEl();
+    if (videoEl) {
+      videoEl.setAttribute("playsinline", "");
+      videoEl.setAttribute("autoplay", "");
+      videoEl.muted = true;
+      videoEl.srcObject = state.priceCheckStream;
       await new Promise((resolve) => {
-        if (els.priceCheckVideo.readyState >= 1) {
+        if (videoEl.readyState >= 1) {
           resolve();
           return;
         }
-        els.priceCheckVideo.onloadedmetadata = () => resolve();
+        videoEl.onloadedmetadata = () => resolve();
         setTimeout(resolve, 800);
       });
-      await els.priceCheckVideo.play();
+      await videoEl.play();
     }
-    if (els.priceCheckScanner) {
-      els.priceCheckScanner.hidden = true;
-      els.priceCheckScanner.innerHTML = "";
+    const scannerEl = priceCheckScannerEl();
+    if (scannerEl) {
+      scannerEl.hidden = true;
+      scannerEl.innerHTML = "";
     }
     if (els.priceCheckStatus) els.priceCheckStatus.textContent = "Camera live. Point at a barcode.";
     if (els.priceCheckStopButton) els.priceCheckStopButton.hidden = false;
     if (els.priceCheckCameraButton) els.priceCheckCameraButton.hidden = true;
     const Html5Qrcode = await ensureHtml5Qrcode();
-    if (Html5Qrcode && els.priceCheckScanner) {
+    if (Html5Qrcode && scannerEl) {
       try {
         state.priceCheckStream?.getTracks().forEach((track) => track.stop());
         state.priceCheckStream = null;
-        els.priceCheckVideo.srcObject = null;
-        els.priceCheckScanner.hidden = false;
-        els.priceCheckScanner.innerHTML = "";
-        state.priceCheckScanner = new Html5Qrcode("priceCheckScanner");
+        if (videoEl) videoEl.srcObject = null;
+        scannerEl.hidden = false;
+        scannerEl.innerHTML = "";
+        const scannerId = state.priceCheckFullscreen ? "priceCheckOverlayScanner" : "priceCheckScanner";
+        state.priceCheckScanner = new Html5Qrcode(scannerId);
         const supportedFormats = window.Html5QrcodeSupportedFormats
           ? [
               window.Html5QrcodeSupportedFormats.UPC_A,
@@ -1656,8 +1694,8 @@ async function startPriceCheckCamera() {
         await state.priceCheckScanner.start(
           { facingMode: "environment" },
           {
-            fps: 12,
-            qrbox: { width: 320, height: 160 },
+            fps: 18,
+            qrbox: { width: 360, height: 180 },
             rememberLastUsedCamera: true,
             aspectRatio: 1.7778,
             disableFlip: true,
@@ -1680,9 +1718,9 @@ async function startPriceCheckCamera() {
         return;
       } catch (error) {
         state.priceCheckScanner = null;
-        if (els.priceCheckScanner) {
-          els.priceCheckScanner.hidden = true;
-          els.priceCheckScanner.innerHTML = "";
+        if (scannerEl) {
+          scannerEl.hidden = true;
+          scannerEl.innerHTML = "";
         }
       }
     }
@@ -1701,7 +1739,7 @@ async function startPriceCheckCamera() {
     const ZXingBrowser = await ensureZxingReader();
     if (ZXingBrowser) {
       state.priceCheckReader = new ZXingBrowser.BrowserMultiFormatReader();
-      state.priceCheckReader.decodeFromVideoDevice(undefined, els.priceCheckVideo, (result, error, controls) => {
+      state.priceCheckReader.decodeFromVideoDevice(undefined, videoEl, (result, error, controls) => {
         if (controls) state.priceCheckReaderControls = controls;
         const code = cleanCell(result?.getText?.() || "");
         const now = Date.now();
@@ -1747,26 +1785,30 @@ function stopPriceCheckCamera() {
     } catch (error) {}
   }
   state.priceCheckScanner = null;
-  if (els.priceCheckVideo) {
-    els.priceCheckVideo.pause?.();
-    els.priceCheckVideo.srcObject = null;
-  }
-  if (els.priceCheckScanner) {
-    els.priceCheckScanner.hidden = true;
-    els.priceCheckScanner.innerHTML = "";
-  }
+  [els.priceCheckVideo, els.priceCheckOverlayVideo].forEach((videoEl) => {
+    if (!videoEl) return;
+    videoEl.pause?.();
+    videoEl.srcObject = null;
+  });
+  [els.priceCheckScanner, els.priceCheckOverlayScanner].forEach((scannerEl) => {
+    if (!scannerEl) return;
+    scannerEl.hidden = true;
+    scannerEl.innerHTML = "";
+  });
+  setPriceCheckFullscreen(false);
   if (els.priceCheckStopButton) els.priceCheckStopButton.hidden = true;
   if (els.priceCheckCameraButton) els.priceCheckCameraButton.hidden = false;
   if (els.priceCheckStatus && activeTabName() === "pricecheck") els.priceCheckStatus.textContent = "Ready for next scan.";
 }
 
 async function scanPriceCheckFrame() {
-  if (!state.priceCheckDetector || !els.priceCheckVideo || els.priceCheckVideo.readyState < 2) {
+  const videoEl = priceCheckVideoEl();
+  if (!state.priceCheckDetector || !videoEl || videoEl.readyState < 2) {
     state.priceCheckRaf = requestAnimationFrame(scanPriceCheckFrame);
     return;
   }
   try {
-    const codes = await state.priceCheckDetector.detect(els.priceCheckVideo);
+    const codes = await state.priceCheckDetector.detect(videoEl);
     const match = codes.find((entry) => cleanCell(entry.rawValue));
     if (match) {
       const code = cleanCell(match.rawValue);

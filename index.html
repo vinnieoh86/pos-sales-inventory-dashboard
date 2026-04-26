@@ -89,7 +89,7 @@
           <div class="panel-heading">
             <div><p class="eyebrow">Mobile lookup</p><h2>Price check scanner</h2></div>
             <div class="table-tools price-check-actions">
-              <button id="priceCheckCameraButton" type="button">Use Camera</button>
+              <button id="priceCheckCameraButton" type="button">Open Scanner</button>
               <button id="priceCheckStopButton" type="button" class="secondary-button" hidden>Stop Camera</button>
             </div>
           </div>
@@ -124,6 +124,21 @@
           </div>
         </section>
       </section>
+      <div id="priceCheckOverlay" class="price-check-overlay" hidden>
+        <div class="price-check-overlay__top">
+          <div>
+            <p class="eyebrow">Live scanner</p>
+            <h3>Point camera at barcode</h3>
+          </div>
+          <button id="priceCheckOverlayClose" type="button" class="secondary-button">Close</button>
+        </div>
+        <div class="price-check-overlay__stage">
+          <video id="priceCheckOverlayVideo" playsinline muted autoplay></video>
+          <div id="priceCheckOverlayScanner" class="price-check-scanner" hidden></div>
+          <div class="price-check-overlay__guide" aria-hidden="true"></div>
+          <div class="price-check-overlay__hint">Hold the barcode inside the box.</div>
+        </div>
+      </div>
 
       <section class="tab-view active dashboard-layout" data-tab-view="dashboard">
 

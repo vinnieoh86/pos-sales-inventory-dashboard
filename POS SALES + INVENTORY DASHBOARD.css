@@ -3279,6 +3279,66 @@ body[data-active-tab="pricecheck"] .load-strip {
   pointer-events: none;
 }
 
+.price-check-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9500;
+  background: #041316;
+  color: #fff;
+  display: grid;
+  grid-template-rows: auto 1fr;
+}
+
+.price-check-overlay__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem;
+  background: rgba(4, 19, 22, 0.92);
+}
+
+.price-check-overlay__top h3 {
+  margin: 0.15rem 0 0;
+  font-size: 1.2rem;
+  color: #fff;
+}
+
+.price-check-overlay__stage {
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+  background: #000;
+}
+
+#priceCheckOverlayVideo,
+#priceCheckOverlayScanner {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.price-check-overlay__guide {
+  position: absolute;
+  inset: 24% 8%;
+  border: 3px solid rgba(255,255,255,0.92);
+  border-radius: 20px;
+  box-shadow: 0 0 0 9999px rgba(0,0,0,0.34);
+  pointer-events: none;
+}
+
+.price-check-overlay__hint {
+  position: absolute;
+  left: 1rem;
+  right: 1rem;
+  bottom: 1.1rem;
+  text-align: center;
+  color: rgba(255,255,255,0.92);
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+
 .price-check-result {
   margin-top: 1rem;
   border: 1px solid var(--line);
@@ -3375,6 +3435,16 @@ body[data-active-tab="pricecheck"] .load-strip {
   }
   .price-check-camera-shell {
     min-height: 15rem;
+  }
+  .price-check-actions {
+    display: none;
+  }
+  .price-check-search-actions {
+    grid-template-columns: 1fr 1fr;
+  }
+  .price-check-search-actions #priceCheckSearchButton {
+    min-height: 3.1rem;
+    font-size: 1rem;
   }
 }
 
