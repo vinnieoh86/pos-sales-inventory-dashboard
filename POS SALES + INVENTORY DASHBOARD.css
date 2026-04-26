@@ -3217,7 +3217,7 @@ body[data-active-tab="pricecheck"] .load-strip {
 
 .price-check-search-actions {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1.15fr 0.85fr 0.85fr;
   gap: 0.7rem;
   margin-top: 0.8rem;
 }
@@ -3296,6 +3296,12 @@ body[data-active-tab="pricecheck"] .load-strip {
   gap: 1rem;
   padding: 1rem;
   background: rgba(4, 19, 22, 0.92);
+}
+
+.price-check-overlay__tools {
+  display: flex;
+  gap: 0.65rem;
+  align-items: center;
 }
 
 .price-check-overlay__top h3 {
@@ -3431,7 +3437,7 @@ body[data-active-tab="pricecheck"] .load-strip {
   }
   .price-check-search-actions,
   .price-check-actions {
-    grid-template-columns: 1fr;
+    grid-template-columns: 1fr 1fr;
   }
   .price-check-camera-shell {
     min-height: 15rem;
@@ -3439,12 +3445,12 @@ body[data-active-tab="pricecheck"] .load-strip {
   .price-check-actions {
     display: none;
   }
-  .price-check-search-actions {
-    grid-template-columns: 1fr 1fr;
-  }
   .price-check-search-actions #priceCheckSearchButton {
     min-height: 3.1rem;
     font-size: 1rem;
+  }
+  .price-check-search-actions #priceCheckClearButton {
+    grid-column: 1 / -1;
   }
 }
 

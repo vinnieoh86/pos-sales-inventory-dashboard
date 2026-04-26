@@ -91,6 +91,7 @@
             <div class="table-tools price-check-actions">
               <button id="priceCheckCameraButton" type="button">Open Scanner</button>
               <button id="priceCheckStopButton" type="button" class="secondary-button" hidden>Stop Camera</button>
+              <button id="priceCheckTorchButton" type="button" class="secondary-button" hidden>Light</button>
             </div>
           </div>
           <div class="price-check-layout">
@@ -103,7 +104,8 @@
                 </div>
               </label>
               <div class="price-check-search-actions">
-                <button id="priceCheckSearchButton" type="button">Search</button>
+                <button id="priceCheckSearchButton" type="button">Scan</button>
+                <button id="priceCheckManualButton" type="button" class="secondary-button">Manual</button>
                 <button id="priceCheckClearButton" type="button" class="secondary-button">Clear</button>
               </div>
               <div id="priceCheckStatus" class="price-check-status">Ready for next scan.</div>
@@ -124,14 +126,17 @@
           </div>
         </section>
       </section>
-      <div id="priceCheckOverlay" class="price-check-overlay" hidden>
-        <div class="price-check-overlay__top">
-          <div>
-            <p class="eyebrow">Live scanner</p>
-            <h3>Point camera at barcode</h3>
+        <div id="priceCheckOverlay" class="price-check-overlay" hidden>
+          <div class="price-check-overlay__top">
+            <div>
+              <p class="eyebrow">Live scanner</p>
+              <h3>Point camera at barcode</h3>
+            </div>
+            <div class="price-check-overlay__tools">
+              <button id="priceCheckOverlayTorchButton" type="button" class="secondary-button" hidden>Light</button>
+              <button id="priceCheckOverlayClose" type="button" class="secondary-button">Close</button>
+            </div>
           </div>
-          <button id="priceCheckOverlayClose" type="button" class="secondary-button">Close</button>
-        </div>
         <div class="price-check-overlay__stage">
           <video id="priceCheckOverlayVideo" playsinline muted autoplay></video>
           <div id="priceCheckOverlayScanner" class="price-check-scanner" hidden></div>

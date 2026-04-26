@@ -66,6 +66,8 @@ const state = {
   priceCheckReaderControls: null,
   priceCheckScanner: null,
   priceCheckFullscreen: false,
+  priceCheckTorchOn: false,
+  priceCheckScanTimer: 0,
   priceCheckLastCode: "",
   priceCheckLastScanAt: 0,
 };
@@ -131,15 +133,18 @@ const els = {
   priceCheckSearchInput: document.querySelector("#priceCheckSearchInput"),
   priceCheckDropdown: document.querySelector("#priceCheckDropdown"),
   priceCheckSearchButton: document.querySelector("#priceCheckSearchButton"),
+  priceCheckManualButton: document.querySelector("#priceCheckManualButton"),
   priceCheckClearButton: document.querySelector("#priceCheckClearButton"),
   priceCheckCameraButton: document.querySelector("#priceCheckCameraButton"),
   priceCheckStopButton: document.querySelector("#priceCheckStopButton"),
+  priceCheckTorchButton: document.querySelector("#priceCheckTorchButton"),
   priceCheckVideo: document.querySelector("#priceCheckVideo"),
   priceCheckScanner: document.querySelector("#priceCheckScanner"),
   priceCheckOverlay: document.querySelector("#priceCheckOverlay"),
   priceCheckOverlayVideo: document.querySelector("#priceCheckOverlayVideo"),
   priceCheckOverlayScanner: document.querySelector("#priceCheckOverlayScanner"),
   priceCheckOverlayClose: document.querySelector("#priceCheckOverlayClose"),
+  priceCheckOverlayTorchButton: document.querySelector("#priceCheckOverlayTorchButton"),
   priceCheckStatus: document.querySelector("#priceCheckStatus"),
   priceCheckResult: document.querySelector("#priceCheckResult"),
   startDate: document.querySelector("#startDate"),
@@ -571,10 +576,16 @@ els.priceCheckSearchButton?.addEventListener("click", () => {
   }
   handlePriceCheckLookup();
 });
+els.priceCheckManualButton?.addEventListener("click", () => {
+  stopPriceCheckCamera();
+  focusPriceCheckSearch();
+});
 els.priceCheckClearButton?.addEventListener("click", clearPriceCheckSearch);
 els.priceCheckCameraButton?.addEventListener("click", () => startPriceCheckCamera({ fullscreen: prefersPhoneBarcodeScanner() }));
 els.priceCheckStopButton?.addEventListener("click", stopPriceCheckCamera);
+els.priceCheckTorchButton?.addEventListener("click", togglePriceCheckTorch);
 els.priceCheckOverlayClose?.addEventListener("click", stopPriceCheckCamera);
+els.priceCheckOverlayTorchButton?.addEventListener("click", togglePriceCheckTorch);
 els.priceCheckSearchInput?.addEventListener("keydown", (event) => {
   if (event.key === "Enter") {
     event.preventDefault();
@@ -1466,6 +1477,29 @@ function setPriceCheckFullscreen(open) {
   if (els.priceCheckOverlay) els.priceCheckOverlay.hidden = !open;
 }
 
+function setPriceCheckTorchButtons(supported) {
+  [els.priceCheckTorchButton, els.priceCheckOverlayTorchButton].forEach((button) => {
+    if (!button) return;
+    button.hidden = !supported;
+    button.textContent = state.priceCheckTorchOn ? "Light Off" : "Light";
+  });
+}
+
+async function togglePriceCheckTorch() {
+  const track = state.priceCheckStream?.getVideoTracks?.()?.[0];
+  const caps = track?.getCapabilities?.();
+  if (!track || !caps?.torch) return;
+  try {
+    state.priceCheckTorchOn = !state.priceCheckTorchOn;
+    await track.applyConstraints({ advanced: [{ torch: state.priceCheckTorchOn }] });
+    setPriceCheckTorchButtons(true);
+  } catch (error) {
+    state.priceCheckTorchOn = false;
+    setPriceCheckTorchButtons(false);
+    showToast("This camera does not allow flash control here.", 2600, "warning");
+  }
+}
+
 function priceCheckMatches(query, limit = 12) {
   const raw = cleanCell(query);
   if (!raw) return [];
@@ -1642,11 +1676,18 @@ async function startPriceCheckCamera(options = {}) {
     els.priceCheckSearchInput?.blur?.();
     if (els.priceCheckStatus) els.priceCheckStatus.textContent = "Starting camera...";
     const tryStream = async (videoOptions) => navigator.mediaDevices.getUserMedia({ video: videoOptions, audio: false });
+    const optimizedVideo = {
+      facingMode: { ideal: "environment" },
+      width: { ideal: 1280, max: 1280 },
+      height: { ideal: 720, max: 720 },
+      frameRate: { ideal: 30, max: 30 },
+    };
     try {
-      state.priceCheckStream = await tryStream({ facingMode: { exact: "environment" } });
+      state.priceCheckStream = await tryStream({ ...optimizedVideo, facingMode: { exact: "environment" } });
     } catch (primaryError) {
-      state.priceCheckStream = await tryStream({ facingMode: { ideal: "environment" } });
+      state.priceCheckStream = await tryStream(optimizedVideo);
     }
+    state.priceCheckTorchOn = false;
     const videoEl = priceCheckVideoEl();
     if (videoEl) {
       videoEl.setAttribute("playsinline", "");
@@ -1663,6 +1704,9 @@ async function startPriceCheckCamera(options = {}) {
       });
       await videoEl.play();
     }
+    const activeTrack = state.priceCheckStream?.getVideoTracks?.()?.[0];
+    const caps = activeTrack?.getCapabilities?.();
+    setPriceCheckTorchButtons(!!caps?.torch);
     const scannerEl = priceCheckScannerEl();
     if (scannerEl) {
       scannerEl.hidden = true;
@@ -1671,11 +1715,24 @@ async function startPriceCheckCamera(options = {}) {
     if (els.priceCheckStatus) els.priceCheckStatus.textContent = "Camera live. Point at a barcode.";
     if (els.priceCheckStopButton) els.priceCheckStopButton.hidden = false;
     if (els.priceCheckCameraButton) els.priceCheckCameraButton.hidden = true;
+    if ("BarcodeDetector" in window) {
+      state.priceCheckDetector = new BarcodeDetector({
+        formats: ["upc_a", "upc_e", "ean_13", "ean_8", "code_128"],
+      });
+      if (els.priceCheckStatus) {
+        els.priceCheckStatus.textContent = prefersPhoneBarcodeScanner()
+          ? "Camera live. Hold the barcode inside the box and move slightly closer."
+          : "Camera live. Point at a barcode.";
+      }
+      scanPriceCheckFrame();
+      return;
+    }
     const Html5Qrcode = await ensureHtml5Qrcode();
     if (Html5Qrcode && scannerEl) {
       try {
         state.priceCheckStream?.getTracks().forEach((track) => track.stop());
         state.priceCheckStream = null;
+        setPriceCheckTorchButtons(false);
         if (videoEl) videoEl.srcObject = null;
         scannerEl.hidden = false;
         scannerEl.innerHTML = "";
@@ -1688,18 +1745,18 @@ async function startPriceCheckCamera(options = {}) {
               window.Html5QrcodeSupportedFormats.EAN_13,
               window.Html5QrcodeSupportedFormats.EAN_8,
               window.Html5QrcodeSupportedFormats.CODE_128,
-              window.Html5QrcodeSupportedFormats.CODE_39,
             ].filter(Boolean)
           : undefined;
         await state.priceCheckScanner.start(
           { facingMode: "environment" },
           {
-            fps: 18,
-            qrbox: { width: 360, height: 180 },
+            fps: 24,
+            qrbox: { width: 220, height: 110 },
             rememberLastUsedCamera: true,
             aspectRatio: 1.7778,
             disableFlip: true,
             formatsToSupport: supportedFormats,
+            videoConstraints: optimizedVideo,
             experimentalFeatures: { useBarCodeDetectorIfSupported: true },
           },
           (decodedText) => {
@@ -1723,18 +1780,6 @@ async function startPriceCheckCamera(options = {}) {
           scannerEl.innerHTML = "";
         }
       }
-    }
-    if ("BarcodeDetector" in window) {
-      state.priceCheckDetector = new BarcodeDetector({
-        formats: ["upc_a", "upc_e", "ean_13", "ean_8", "code_128", "code_39", "codabar", "itf", "qr_code"],
-      });
-      if (els.priceCheckStatus) {
-        els.priceCheckStatus.textContent = prefersPhoneBarcodeScanner()
-          ? "Camera live. Hold the barcode inside the box and move slightly closer."
-          : "Camera live. Point at a barcode.";
-      }
-      scanPriceCheckFrame();
-      return;
     }
     const ZXingBrowser = await ensureZxingReader();
     if (ZXingBrowser) {
@@ -1763,6 +1808,10 @@ function stopPriceCheckCamera() {
   if (state.priceCheckRaf) {
     cancelAnimationFrame(state.priceCheckRaf);
     state.priceCheckRaf = 0;
+  }
+  if (state.priceCheckScanTimer) {
+    clearTimeout(state.priceCheckScanTimer);
+    state.priceCheckScanTimer = 0;
   }
   if (state.priceCheckStream) {
     state.priceCheckStream.getTracks().forEach((track) => track.stop());
@@ -1795,6 +1844,8 @@ function stopPriceCheckCamera() {
     scannerEl.hidden = true;
     scannerEl.innerHTML = "";
   });
+  state.priceCheckTorchOn = false;
+  setPriceCheckTorchButtons(false);
   setPriceCheckFullscreen(false);
   if (els.priceCheckStopButton) els.priceCheckStopButton.hidden = true;
   if (els.priceCheckCameraButton) els.priceCheckCameraButton.hidden = false;
@@ -1804,7 +1855,7 @@ function stopPriceCheckCamera() {
 async function scanPriceCheckFrame() {
   const videoEl = priceCheckVideoEl();
   if (!state.priceCheckDetector || !videoEl || videoEl.readyState < 2) {
-    state.priceCheckRaf = requestAnimationFrame(scanPriceCheckFrame);
+    state.priceCheckScanTimer = setTimeout(scanPriceCheckFrame, 35);
     return;
   }
   try {
@@ -1825,7 +1876,7 @@ async function scanPriceCheckFrame() {
   } catch (error) {
     // keep looping silently; browsers may throw transient detect errors
   }
-  state.priceCheckRaf = requestAnimationFrame(scanPriceCheckFrame);
+  state.priceCheckScanTimer = setTimeout(scanPriceCheckFrame, 35);
 }
 
 function latestExcelAddDate() {
