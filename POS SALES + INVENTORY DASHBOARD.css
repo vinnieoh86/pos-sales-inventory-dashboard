@@ -3255,6 +3255,10 @@ body[data-active-tab="pricecheck"] .load-strip {
   z-index: 1;
 }
 
+.price-check-scanner[hidden] {
+  display: none !important;
+}
+
 .price-check-scanner video,
 .price-check-scanner canvas {
   width: 100% !important;
@@ -3287,6 +3291,10 @@ body[data-active-tab="pricecheck"] .load-strip {
   color: #fff;
   display: grid;
   grid-template-rows: auto 1fr;
+}
+
+.price-check-overlay[hidden] {
+  display: none !important;
 }
 
 .price-check-overlay__top {
