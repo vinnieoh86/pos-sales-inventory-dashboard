@@ -1635,7 +1635,7 @@ function clearPriceCheckSearch() {
 }
 
 function handlePriceCheckLookup(options = {}) {
-  const { refocus = false } = options;
+  const { refocus = false, silentNotFound = false } = options;
   const query = els.priceCheckSearchInput?.value || "";
   const matches = priceCheckMatches(query, 10);
   const item = matches[0] || null;
@@ -1644,7 +1644,7 @@ function handlePriceCheckLookup(options = {}) {
   if (!item) {
     renderPriceCheckResult(null);
     if (els.priceCheckStatus) els.priceCheckStatus.textContent = "Item not found. Try barcode, PLU, item #, or name.";
-    showToast("Price check item not found.", 2600, "warning");
+    if (!silentNotFound) showToast("Price check item not found.", 2600, "warning");
     if (refocus) focusPriceCheckSearch();
     return null;
   }
@@ -1652,6 +1652,23 @@ function handlePriceCheckLookup(options = {}) {
   if (els.priceCheckStatus) els.priceCheckStatus.textContent = `Loaded ${item.code || item.product}. Ready for next scan.`;
   if (refocus) focusPriceCheckSearch();
   return item;
+}
+
+function processPriceCheckScan(code) {
+  const cleanCode = cleanCell(code || "");
+  const now = Date.now();
+  if (!cleanCode) return false;
+  if (cleanCode === state.priceCheckLastCode && now - state.priceCheckLastScanAt <= 1200) return false;
+  state.priceCheckLastCode = cleanCode;
+  state.priceCheckLastScanAt = now;
+  if (els.priceCheckSearchInput) els.priceCheckSearchInput.value = cleanCode;
+  const item = handlePriceCheckLookup({ refocus: false, silentNotFound: true });
+  if (els.priceCheckStatus) {
+    els.priceCheckStatus.textContent = item
+      ? `Loaded ${item.code || item.product}. Scan next item.`
+      : `No match for ${cleanCode}. Scan next item.`;
+  }
+  return true;
 }
 
 async function startPriceCheckCamera(options = {}) {
@@ -1756,15 +1773,7 @@ async function startPriceCheckCamera(options = {}) {
             experimentalFeatures: { useBarCodeDetectorIfSupported: true },
           },
           (decodedText) => {
-            const code = cleanCell(decodedText || "");
-            const now = Date.now();
-            if (code && (code !== state.priceCheckLastCode || now - state.priceCheckLastScanAt > 1800)) {
-              state.priceCheckLastCode = code;
-              state.priceCheckLastScanAt = now;
-              if (els.priceCheckSearchInput) els.priceCheckSearchInput.value = code;
-              handlePriceCheckLookup({ refocus: true });
-              stopPriceCheckCamera();
-            }
+            processPriceCheckScan(decodedText);
           }
         );
         if (els.priceCheckStatus) els.priceCheckStatus.textContent = "Camera live. Hold the barcode inside the box and move slightly closer.";
@@ -1782,15 +1791,7 @@ async function startPriceCheckCamera(options = {}) {
       state.priceCheckReader = new ZXingBrowser.BrowserMultiFormatReader();
       state.priceCheckReader.decodeFromVideoDevice(undefined, videoEl, (result, error, controls) => {
         if (controls) state.priceCheckReaderControls = controls;
-        const code = cleanCell(result?.getText?.() || "");
-        const now = Date.now();
-        if (code && (code !== state.priceCheckLastCode || now - state.priceCheckLastScanAt > 1800)) {
-          state.priceCheckLastCode = code;
-          state.priceCheckLastScanAt = now;
-          if (els.priceCheckSearchInput) els.priceCheckSearchInput.value = code;
-          handlePriceCheckLookup({ refocus: true });
-          stopPriceCheckCamera();
-        }
+        processPriceCheckScan(result?.getText?.() || "");
       });
       return;
     }
@@ -1860,16 +1861,7 @@ async function scanPriceCheckFrame() {
     const codes = await state.priceCheckDetector.detect(videoEl);
     const match = codes.find((entry) => cleanCell(entry.rawValue));
     if (match) {
-      const code = cleanCell(match.rawValue);
-      const now = Date.now();
-      if (code && (code !== state.priceCheckLastCode || now - state.priceCheckLastScanAt > 1800)) {
-        state.priceCheckLastCode = code;
-        state.priceCheckLastScanAt = now;
-        if (els.priceCheckSearchInput) els.priceCheckSearchInput.value = code;
-        handlePriceCheckLookup({ refocus: true });
-        stopPriceCheckCamera();
-        return;
-      }
+      processPriceCheckScan(match.rawValue);
     }
   } catch (error) {
     // keep looping silently; browsers may throw transient detect errors
