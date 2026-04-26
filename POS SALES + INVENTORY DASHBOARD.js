@@ -1429,6 +1429,11 @@ function ensureHtml5Qrcode() {
   });
 }
 
+function prefersPhoneBarcodeScanner() {
+  const ua = navigator.userAgent || "";
+  return /android|iphone|ipad|ipod|mobile/i.test(ua) || (window.matchMedia?.("(max-width: 900px)")?.matches ?? false);
+}
+
 function priceCheckMatches(query, limit = 12) {
   const raw = cleanCell(query);
   if (!raw) return [];
@@ -1629,37 +1634,68 @@ async function startPriceCheckCamera() {
     if (els.priceCheckStatus) els.priceCheckStatus.textContent = "Camera live. Point at a barcode.";
     if (els.priceCheckStopButton) els.priceCheckStopButton.hidden = false;
     if (els.priceCheckCameraButton) els.priceCheckCameraButton.hidden = true;
-    if ("BarcodeDetector" in window) {
-      state.priceCheckDetector = new BarcodeDetector({
-        formats: ["upc_a", "upc_e", "ean_13", "ean_8", "code_128", "code_39", "qr_code"],
-      });
-      scanPriceCheckFrame();
-      return;
-    }
     const Html5Qrcode = await ensureHtml5Qrcode();
     if (Html5Qrcode && els.priceCheckScanner) {
-      state.priceCheckStream?.getTracks().forEach((track) => track.stop());
-      state.priceCheckStream = null;
-      els.priceCheckVideo.srcObject = null;
-      els.priceCheckScanner.hidden = false;
-      els.priceCheckScanner.innerHTML = "";
-      state.priceCheckScanner = new Html5Qrcode("priceCheckScanner");
-      await state.priceCheckScanner.start(
-        { facingMode: "environment" },
-        { fps: 10, qrbox: { width: 260, height: 120 }, rememberLastUsedCamera: true, aspectRatio: 1.7778 },
-        (decodedText) => {
-          const code = cleanCell(decodedText || "");
-          const now = Date.now();
-          if (code && (code !== state.priceCheckLastCode || now - state.priceCheckLastScanAt > 1800)) {
-            state.priceCheckLastCode = code;
-            state.priceCheckLastScanAt = now;
-            if (els.priceCheckSearchInput) els.priceCheckSearchInput.value = code;
-            handlePriceCheckLookup({ refocus: true });
-            stopPriceCheckCamera();
+      try {
+        state.priceCheckStream?.getTracks().forEach((track) => track.stop());
+        state.priceCheckStream = null;
+        els.priceCheckVideo.srcObject = null;
+        els.priceCheckScanner.hidden = false;
+        els.priceCheckScanner.innerHTML = "";
+        state.priceCheckScanner = new Html5Qrcode("priceCheckScanner");
+        const supportedFormats = window.Html5QrcodeSupportedFormats
+          ? [
+              window.Html5QrcodeSupportedFormats.UPC_A,
+              window.Html5QrcodeSupportedFormats.UPC_E,
+              window.Html5QrcodeSupportedFormats.EAN_13,
+              window.Html5QrcodeSupportedFormats.EAN_8,
+              window.Html5QrcodeSupportedFormats.CODE_128,
+              window.Html5QrcodeSupportedFormats.CODE_39,
+            ].filter(Boolean)
+          : undefined;
+        await state.priceCheckScanner.start(
+          { facingMode: "environment" },
+          {
+            fps: 12,
+            qrbox: { width: 320, height: 160 },
+            rememberLastUsedCamera: true,
+            aspectRatio: 1.7778,
+            disableFlip: true,
+            formatsToSupport: supportedFormats,
+            experimentalFeatures: { useBarCodeDetectorIfSupported: true },
+          },
+          (decodedText) => {
+            const code = cleanCell(decodedText || "");
+            const now = Date.now();
+            if (code && (code !== state.priceCheckLastCode || now - state.priceCheckLastScanAt > 1800)) {
+              state.priceCheckLastCode = code;
+              state.priceCheckLastScanAt = now;
+              if (els.priceCheckSearchInput) els.priceCheckSearchInput.value = code;
+              handlePriceCheckLookup({ refocus: true });
+              stopPriceCheckCamera();
+            }
           }
+        );
+        if (els.priceCheckStatus) els.priceCheckStatus.textContent = "Camera live. Hold the barcode inside the box and move slightly closer.";
+        return;
+      } catch (error) {
+        state.priceCheckScanner = null;
+        if (els.priceCheckScanner) {
+          els.priceCheckScanner.hidden = true;
+          els.priceCheckScanner.innerHTML = "";
         }
-      );
-      if (els.priceCheckStatus) els.priceCheckStatus.textContent = "Camera live. Point at a barcode.";
+      }
+    }
+    if ("BarcodeDetector" in window) {
+      state.priceCheckDetector = new BarcodeDetector({
+        formats: ["upc_a", "upc_e", "ean_13", "ean_8", "code_128", "code_39", "codabar", "itf", "qr_code"],
+      });
+      if (els.priceCheckStatus) {
+        els.priceCheckStatus.textContent = prefersPhoneBarcodeScanner()
+          ? "Camera live. Hold the barcode inside the box and move slightly closer."
+          : "Camera live. Point at a barcode.";
+      }
+      scanPriceCheckFrame();
       return;
     }
     const ZXingBrowser = await ensureZxingReader();
