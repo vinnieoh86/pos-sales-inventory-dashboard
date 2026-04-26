@@ -592,12 +592,6 @@ els.priceCheckSearchInput?.addEventListener("keydown", (event) => {
     handlePriceCheckLookup({ refocus: true });
   }
 });
-els.priceCheckSearchInput?.addEventListener("pointerdown", (event) => {
-  if (prefersPhoneBarcodeScanner() && !cleanCell(els.priceCheckSearchInput?.value || "")) {
-    event.preventDefault();
-    startPriceCheckCamera({ fullscreen: true });
-  }
-});
 els.priceCheckSearchInput?.addEventListener("focus", () => els.priceCheckSearchInput.select?.());
 els.priceCheckSearchInput?.addEventListener("click", () => els.priceCheckSearchInput.select?.());
 els.priceCheckSearchInput?.addEventListener("input", () => {
@@ -1663,10 +1657,12 @@ function handlePriceCheckLookup(options = {}) {
 async function startPriceCheckCamera(options = {}) {
   const { fullscreen = false } = options;
   if (!window.isSecureContext) {
+    stopPriceCheckCamera();
     showToast("Camera scanning requires the secure live website. Open the GitHub Pages URL, not a local file.", 4200, "warning");
     return;
   }
   if (!navigator.mediaDevices?.getUserMedia) {
+    stopPriceCheckCamera();
     showToast("Camera scanning is not supported on this device/browser.", 3200, "warning");
     return;
   }
@@ -1798,8 +1794,10 @@ async function startPriceCheckCamera(options = {}) {
       });
       return;
     }
+    stopPriceCheckCamera();
     showToast("Camera preview opened, but this browser could not start barcode decoding. Manual search is still available.", 4200, "warning");
   } catch (error) {
+    stopPriceCheckCamera();
     showToast("Camera could not start. Allow camera access and try again.", 3600, "warning");
   }
 }
