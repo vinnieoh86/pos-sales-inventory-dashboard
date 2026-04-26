@@ -28,6 +28,7 @@
       <nav class="tab-list" aria-label="Dashboard tabs">
         <button class="tab-button active" type="button" data-tab="dashboard">Dashboard</button>
         <button class="tab-button tab-button--pricecheck" type="button" data-tab="pricecheck">PRICE CHECK</button>
+        <button class="tab-button tab-button--pricecheck" type="button" data-tab="scanmode">SCAN MODE</button>
         <button class="tab-button" type="button" data-tab="inventory">Products</button>
         <button class="tab-button" type="button" data-tab="counts">Inventory</button>
         <button class="tab-button" type="button" data-tab="parents">Parent Styles</button>
@@ -126,7 +127,24 @@
           </div>
         </section>
       </section>
-        <div id="priceCheckOverlay" class="price-check-overlay" hidden>
+      <section class="tab-view" data-tab-view="scanmode">
+        <section class="panel price-check-panel scan-mode-panel">
+          <div class="panel-heading">
+            <div><p class="eyebrow">Fast lane</p><h2>Scan mode</h2></div>
+          </div>
+          <div class="scan-mode-actions">
+            <button id="scanModeStartButton" type="button">Start Scanner</button>
+            <button id="scanModeManualButton" type="button" class="secondary-button">Manual Lookup</button>
+          </div>
+          <div id="scanModeStatus" class="price-check-status">Open scanner, scan item, keep moving.</div>
+          <div id="scanModeResult" class="price-check-result empty">
+            <div class="price-check-result__empty">
+              Scan an item to show price, stock, vendor, PLU, and item details.
+            </div>
+          </div>
+        </section>
+      </section>
+      <div id="priceCheckOverlay" class="price-check-overlay" hidden>
           <div class="price-check-overlay__top">
             <div>
               <p class="eyebrow">Live scanner</p>

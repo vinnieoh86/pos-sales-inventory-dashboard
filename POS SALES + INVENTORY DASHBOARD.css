@@ -3124,16 +3124,35 @@ th[data-sort][data-sort-dir="desc"]::after {
 }
 
 body[data-active-tab="pricecheck"] .metrics,
+body[data-active-tab="scanmode"] .metrics,
 body[data-active-tab="pricecheck"] .sticky-filters,
+body[data-active-tab="scanmode"] .sticky-filters,
 body[data-active-tab="pricecheck"] .sticky-pills,
+body[data-active-tab="scanmode"] .sticky-pills,
 body[data-active-tab="pricecheck"] .compact-uploader,
+body[data-active-tab="scanmode"] .compact-uploader,
 body[data-active-tab="pricecheck"] .load-strip {
+  display: none !important;
+}
+
+body[data-active-tab="scanmode"] .load-strip {
   display: none !important;
 }
 
 .price-check-panel {
   max-width: 880px;
   margin: 0 auto;
+}
+
+.scan-mode-panel {
+  max-width: 720px;
+}
+
+.scan-mode-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.8rem;
+  margin-top: 0.5rem;
 }
 
 .price-check-layout {
@@ -3452,6 +3471,9 @@ body[data-active-tab="pricecheck"] .load-strip {
   }
   .price-check-actions {
     display: none;
+  }
+  .scan-mode-actions {
+    grid-template-columns: 1fr;
   }
   .price-check-search-actions #priceCheckSearchButton {
     min-height: 3.1rem;
@@ -3893,18 +3915,4 @@ body[data-active-tab="pricecheck"] .load-strip {
   border-color: var(--green,#16835b) !important;
   color: #fff !important;
   transform: scale(0.93) !important;
-}
-
-/* ── Scanner success flash ───────────────────────────────────────────────── */
-.price-check-camera-guide {
-  transition: box-shadow 0.1s, border-color 0.1s;
-}
-.scan-success-flash {
-  box-shadow: 0 0 0 4px #16835b, inset 0 0 0 4px #16835b !important;
-  border-color: #16835b !important;
-  background: rgba(22, 131, 91, 0.08) !important;
-}
-.scan-status-ok {
-  color: #16835b !important;
-  font-weight: 800 !important;
 }
