@@ -3894,3 +3894,17 @@ body[data-active-tab="pricecheck"] .load-strip {
   color: #fff !important;
   transform: scale(0.93) !important;
 }
+
+/* ── Scanner success flash ───────────────────────────────────────────────── */
+.price-check-camera-guide {
+  transition: box-shadow 0.1s, border-color 0.1s;
+}
+.scan-success-flash {
+  box-shadow: 0 0 0 4px #16835b, inset 0 0 0 4px #16835b !important;
+  border-color: #16835b !important;
+  background: rgba(22, 131, 91, 0.08) !important;
+}
+.scan-status-ok {
+  color: #16835b !important;
+  font-weight: 800 !important;
+}

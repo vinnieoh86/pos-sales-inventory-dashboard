@@ -1489,6 +1489,8 @@ async function togglePriceCheckTorch() {
     setPriceCheckTorchButtons(true);
   } catch (error) {
     state.priceCheckTorchOn = false;
+  state.priceCheckPaused = false;
+  _scanRunning = false;
     setPriceCheckTorchButtons(false);
     showToast("This camera does not allow flash control here.", 2600, "warning");
   }
@@ -1654,21 +1656,22 @@ function handlePriceCheckLookup(options = {}) {
   return item;
 }
 
-function processPriceCheckScan(code) {
-  const cleanCode = cleanCell(code || "");
+function processPriceCheckScan(rawCode) {
+  const code = cleanCell(rawCode || "");
+  if (!code) return;
   const now = Date.now();
-  if (!cleanCode) return false;
-  if (cleanCode === state.priceCheckLastCode && now - state.priceCheckLastScanAt <= 1200) return false;
-  state.priceCheckLastCode = cleanCode;
+  // Deduplicate: same code within 1.5s = ignore (prevents double-scan)
+  if (code === state.priceCheckLastCode && now - state.priceCheckLastScanAt < 1500) return;
+  state.priceCheckLastCode = code;
   state.priceCheckLastScanAt = now;
-  if (els.priceCheckSearchInput) els.priceCheckSearchInput.value = cleanCode;
-  const item = handlePriceCheckLookup({ refocus: false, silentNotFound: true });
-  if (els.priceCheckStatus) {
-    els.priceCheckStatus.textContent = item
-      ? `Loaded ${item.code || item.product}. Scan next item.`
-      : `No match for ${cleanCode}. Scan next item.`;
-  }
-  return true;
+  if (els.priceCheckSearchInput) els.priceCheckSearchInput.value = code;
+  handlePriceCheckLookup({ refocus: false });
+  // ── KEY CHANGE: Do NOT stop camera — flash the viewfinder green and keep scanning
+  // This means next item can be scanned immediately, no restart delay
+  flashScanSuccess();
+  // Pause decode for 1.5s to prevent re-reading same barcode
+  state.priceCheckPaused = true;
+  setTimeout(() => { state.priceCheckPaused = false; }, 1500);
 }
 
 async function startPriceCheckCamera(options = {}) {
@@ -1774,6 +1777,7 @@ async function startPriceCheckCamera(options = {}) {
           },
           (decodedText) => {
             processPriceCheckScan(decodedText);
+            // Camera stays live — no stopPriceCheckCamera here
           }
         );
         if (els.priceCheckStatus) els.priceCheckStatus.textContent = "Camera live. Hold the barcode inside the box and move slightly closer.";
@@ -1800,6 +1804,22 @@ async function startPriceCheckCamera(options = {}) {
   } catch (error) {
     stopPriceCheckCamera();
     showToast("Camera could not start. Allow camera access and try again.", 3600, "warning");
+  }
+}
+
+function flashScanSuccess() {
+  // Flash the scan guide box green to signal success, no camera restart needed
+  const guide = document.querySelector(".price-check-camera-guide");
+  const status = document.querySelector("#priceCheckStatus");
+  if (guide) {
+    guide.classList.add("scan-success-flash");
+    setTimeout(() => guide.classList.remove("scan-success-flash"), 600);
+  }
+  if (status) {
+    const prev = status.textContent;
+    status.textContent = "✓ Got it! Scan next item.";
+    status.classList.add("scan-status-ok");
+    setTimeout(() => { status.textContent = "Ready for next scan."; status.classList.remove("scan-status-ok"); }, 1400);
   }
 }
 
@@ -1851,22 +1871,45 @@ function stopPriceCheckCamera() {
   if (els.priceCheckStatus && activeTabName() === "pricecheck") els.priceCheckStatus.textContent = "Ready for next scan.";
 }
 
+// Offscreen canvas reused across frames (no GC pressure)
+let _scanCanvas = null;
+let _scanCtx = null;
+
+function getScanCanvas(w, h) {
+  if (!_scanCanvas) { _scanCanvas = document.createElement("canvas"); _scanCtx = _scanCanvas.getContext("2d", { willReadFrequently: true }); }
+  if (_scanCanvas.width !== w || _scanCanvas.height !== h) { _scanCanvas.width = w; _scanCanvas.height = h; }
+  return { canvas: _scanCanvas, ctx: _scanCtx };
+}
+
+let _scanRunning = false; // prevent overlapping async calls
+
 async function scanPriceCheckFrame() {
-  const videoEl = priceCheckVideoEl();
-  if (!state.priceCheckDetector || !videoEl || videoEl.readyState < 2) {
-    state.priceCheckScanTimer = setTimeout(scanPriceCheckFrame, 35);
+  if (_scanRunning) {
+    state.priceCheckScanTimer = setTimeout(scanPriceCheckFrame, 16);
     return;
   }
-  try {
-    const codes = await state.priceCheckDetector.detect(videoEl);
-    const match = codes.find((entry) => cleanCell(entry.rawValue));
-    if (match) {
-      processPriceCheckScan(match.rawValue);
-    }
-  } catch (error) {
-    // keep looping silently; browsers may throw transient detect errors
+  const videoEl = priceCheckVideoEl();
+  if (!state.priceCheckDetector || !videoEl || videoEl.readyState < 2 || state.priceCheckPaused) {
+    state.priceCheckScanTimer = setTimeout(scanPriceCheckFrame, 30);
+    return;
   }
-  state.priceCheckScanTimer = setTimeout(scanPriceCheckFrame, 35);
+  _scanRunning = true;
+  try {
+    // Crop to center 70% width × 40% height — far fewer pixels, much faster
+    const vw = videoEl.videoWidth  || 640;
+    const vh = videoEl.videoHeight || 480;
+    const cropW = Math.floor(vw * 0.70);
+    const cropH = Math.floor(vh * 0.40);
+    const cropX = Math.floor((vw - cropW) / 2);
+    const cropY = Math.floor((vh - cropH) / 2);
+    const { canvas, ctx } = getScanCanvas(cropW, cropH);
+    ctx.drawImage(videoEl, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+    const codes = await state.priceCheckDetector.detect(canvas);
+    const match = codes.find((e) => cleanCell(e.rawValue));
+    if (match) processPriceCheckScan(match.rawValue);
+  } catch (_) {}
+  _scanRunning = false;
+  state.priceCheckScanTimer = setTimeout(scanPriceCheckFrame, 30); // ~33fps
 }
 
 function latestExcelAddDate() {
