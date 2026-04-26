@@ -27,6 +27,7 @@
       </div>
       <nav class="tab-list" aria-label="Dashboard tabs">
         <button class="tab-button active" type="button" data-tab="dashboard">Dashboard</button>
+        <button class="tab-button tab-button--pricecheck" type="button" data-tab="pricecheck">PRICE CHECK</button>
         <button class="tab-button" type="button" data-tab="inventory">Products</button>
         <button class="tab-button" type="button" data-tab="counts">Inventory</button>
         <button class="tab-button" type="button" data-tab="parents">Parent Styles</button>
@@ -82,6 +83,43 @@
         <div id="inventoryQuickTools" class="inventory-quick-tools" hidden></div>
       </section>
       <div class="date-presets sticky-pills" id="datePresets"></div>
+
+      <section class="tab-view" data-tab-view="pricecheck">
+        <section class="panel price-check-panel">
+          <div class="panel-heading">
+            <div><p class="eyebrow">Mobile lookup</p><h2>Price check scanner</h2></div>
+            <div class="table-tools price-check-actions">
+              <button id="priceCheckCameraButton" type="button">Use Camera</button>
+              <button id="priceCheckStopButton" type="button" class="secondary-button" hidden>Stop Camera</button>
+            </div>
+          </div>
+          <div class="price-check-layout">
+            <div class="price-check-search-card">
+              <p class="muted">Scan a barcode with the phone camera or type UPC, PLU, item #, or product name.</p>
+              <label class="price-check-search-label">Search / UPC
+                <input id="priceCheckSearchInput" type="search" placeholder="Scan barcode or type code, PLU, product..." autocomplete="off" />
+              </label>
+              <div class="price-check-search-actions">
+                <button id="priceCheckSearchButton" type="button">Search</button>
+                <button id="priceCheckClearButton" type="button" class="secondary-button">Clear</button>
+              </div>
+              <div id="priceCheckStatus" class="price-check-status">Ready for next scan.</div>
+            </div>
+            <div class="price-check-camera-card">
+              <div class="price-check-camera-shell">
+                <video id="priceCheckVideo" playsinline muted></video>
+                <div class="price-check-camera-guide" aria-hidden="true"></div>
+                <div class="price-check-camera-empty">Camera preview appears here when scanning starts.</div>
+              </div>
+            </div>
+          </div>
+          <div id="priceCheckResult" class="price-check-result empty">
+            <div class="price-check-result__empty">
+              Search an item to show price, stock, vendor, PLU, and item details.
+            </div>
+          </div>
+        </section>
+      </section>
 
       <section class="tab-view active dashboard-layout" data-tab-view="dashboard">
 
@@ -942,4 +980,3 @@
     <script src="POS SALES + INVENTORY DASHBOARD.js"></script>
   </body>
 </html>
-

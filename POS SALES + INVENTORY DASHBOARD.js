@@ -59,6 +59,11 @@ const state = {
   stockAdjustQtyBuffer: "0",
   pendingDeleteSessionId: null,
   pendingSubmitSessionId: null,
+  priceCheckStream: null,
+  priceCheckRaf: 0,
+  priceCheckDetector: null,
+  priceCheckLastCode: "",
+  priceCheckLastScanAt: 0,
 };
 
 const ENABLE_CUSTOM_PARENT_RULES = true;
@@ -119,6 +124,14 @@ const els = {
   dateCoverage: document.querySelector("#dateCoverage"),
   excelStatus: document.querySelector("#excelStatus"),
   searchInput: document.querySelector("#searchInput"),
+  priceCheckSearchInput: document.querySelector("#priceCheckSearchInput"),
+  priceCheckSearchButton: document.querySelector("#priceCheckSearchButton"),
+  priceCheckClearButton: document.querySelector("#priceCheckClearButton"),
+  priceCheckCameraButton: document.querySelector("#priceCheckCameraButton"),
+  priceCheckStopButton: document.querySelector("#priceCheckStopButton"),
+  priceCheckVideo: document.querySelector("#priceCheckVideo"),
+  priceCheckStatus: document.querySelector("#priceCheckStatus"),
+  priceCheckResult: document.querySelector("#priceCheckResult"),
   startDate: document.querySelector("#startDate"),
   endDate: document.querySelector("#endDate"),
   departmentFilter: document.querySelector("#departmentFilter"),
@@ -540,6 +553,21 @@ els.countSearchInput?.addEventListener("input", () => {
 });
 els.countSearchInput?.addEventListener("focus", () => els.countSearchInput.select?.());
 els.countSearchInput?.addEventListener("click", () => els.countSearchInput.select?.());
+els.priceCheckSearchButton?.addEventListener("click", () => handlePriceCheckLookup());
+els.priceCheckClearButton?.addEventListener("click", clearPriceCheckSearch);
+els.priceCheckCameraButton?.addEventListener("click", startPriceCheckCamera);
+els.priceCheckStopButton?.addEventListener("click", stopPriceCheckCamera);
+els.priceCheckSearchInput?.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    handlePriceCheckLookup({ refocus: true });
+  }
+});
+els.priceCheckSearchInput?.addEventListener("focus", () => els.priceCheckSearchInput.select?.());
+els.priceCheckSearchInput?.addEventListener("click", () => els.priceCheckSearchInput.select?.());
+els.priceCheckSearchInput?.addEventListener("input", () => {
+  if (els.priceCheckStatus) els.priceCheckStatus.textContent = "Ready for next scan.";
+});
 els.countKeyButtons?.forEach((button) => button.addEventListener("click", () => handleCountKey(button.dataset.countKey)));
 els.countDuplicateModal?.addEventListener("click", (event) => {
   if (event.target === els.countDuplicateModal) closeDuplicateCountModal();
@@ -772,7 +800,8 @@ document.addEventListener("click", (event) => {
     state._activeDetailCode = "";
   }
   if (!interactiveTarget && event.target.closest(".app, .panel, .metrics, .controls, .tab-view, .sticky-pills")) {
-    els.searchInput?.focus();
+    if (activeTabName() === "pricecheck") focusPriceCheckSearch(false);
+    else els.searchInput?.focus();
   }
   document.querySelectorAll(".column-picker[open]").forEach((detail) => {
     if (!detail.contains(event.target)) detail.removeAttribute("open");
@@ -1307,6 +1336,181 @@ function currentInventoryRows() {
   state.inventoryRows = rows;
   state._inventoryRowIndex = new Map(rows.map((item) => [codeKey(item.code), item]));
   return rows;
+}
+
+function priceCheckRows() {
+  return buildInventoryRows({ ignoreQuery: true, ignoreFilters: true, ignoreStateFilter: true });
+}
+
+function findPriceCheckItem(query) {
+  const raw = cleanCell(query);
+  if (!raw) return null;
+  const keyed = codeKey(raw);
+  const rows = priceCheckRows();
+  const exact = rows.find((item) => {
+    const keys = [item.code, item.plu, item.itemNumber].map(codeKey).filter(Boolean);
+    return keyed && keys.includes(keyed);
+  });
+  if (exact) return exact;
+  const search = raw.toLowerCase();
+  return rows.find((item) => {
+    const haystack = [
+      item.code,
+      item.product,
+      item.plu,
+      item.itemNumber,
+      item.vendor,
+      item.category,
+      item.department,
+    ]
+      .map((value) => cleanCell(value).toLowerCase())
+      .join(" ");
+    return haystack.includes(search);
+  }) || null;
+}
+
+function renderPriceCheckResult(item) {
+  if (!els.priceCheckResult) return;
+  if (!item) {
+    els.priceCheckResult.className = "price-check-result empty";
+    els.priceCheckResult.innerHTML = `<div class="price-check-result__empty">Search an item to show price, stock, vendor, PLU, and item details.</div>`;
+    return;
+  }
+  const inventory = state.latestInventory.get(codeKey(item.code)) || item;
+  const excel = findExcelFor(item);
+  const price = Number(item.price || excel.price || 0);
+  const stock = Number(inventory.stock || excel.stock || 0);
+  const cost = Number(item.unitCost || excel.cost || 0);
+  const vendor = cleanCell(item.vendor || excel.vendor) || "Unassigned";
+  const plu = cleanCell(item.plu || excel.plu) || "-";
+  const itemNumber = cleanCell(item.itemNumber || excel.itemNumber) || "-";
+  const category = cleanCell(item.category || excel.category) || "Unassigned";
+  const department = cleanCell(item.department || excel.department) || "Unassigned";
+  els.priceCheckResult.className = "price-check-result";
+  els.priceCheckResult.innerHTML = `
+    <div class="price-check-result__hero">
+      <div>
+        <p class="eyebrow">Item found</p>
+        <h3>${escapeHtml(item.product || excel.product || item.code || "Unknown item")}</h3>
+      </div>
+      <div class="price-check-result__price">${currency.format(price)}</div>
+    </div>
+    <div class="price-check-result__grid">
+      <article><span>In stock</span><strong>${number.format(stock)}</strong></article>
+      <article><span>Code</span><strong>${escapeHtml(item.code || "-")}</strong></article>
+      <article><span>Vendor</span><strong>${escapeHtml(vendor)}</strong></article>
+      <article><span>PLU</span><strong>${escapeHtml(plu)}</strong></article>
+      <article><span>Item #</span><strong>${escapeHtml(itemNumber)}</strong></article>
+      <article><span>Category</span><strong>${escapeHtml(category)}</strong></article>
+      <article><span>Department</span><strong>${escapeHtml(department)}</strong></article>
+      <article><span>Cost</span><strong>${currency.format(cost)}</strong></article>
+    </div>
+  `;
+}
+
+function focusPriceCheckSearch(select = true) {
+  if (!els.priceCheckSearchInput) return;
+  els.priceCheckSearchInput.focus();
+  if (select) setTimeout(() => els.priceCheckSearchInput?.select?.(), 0);
+}
+
+function clearPriceCheckSearch() {
+  if (els.priceCheckSearchInput) els.priceCheckSearchInput.value = "";
+  renderPriceCheckResult(null);
+  if (els.priceCheckStatus) els.priceCheckStatus.textContent = "Ready for next scan.";
+  focusPriceCheckSearch();
+}
+
+function handlePriceCheckLookup(options = {}) {
+  const { refocus = false } = options;
+  const query = els.priceCheckSearchInput?.value || "";
+  const item = findPriceCheckItem(query);
+  if (!item) {
+    renderPriceCheckResult(null);
+    if (els.priceCheckStatus) els.priceCheckStatus.textContent = "Item not found. Try barcode, PLU, item #, or name.";
+    showToast("Price check item not found.", 2600, "warning");
+    if (refocus) focusPriceCheckSearch();
+    return null;
+  }
+  renderPriceCheckResult(item);
+  if (els.priceCheckStatus) els.priceCheckStatus.textContent = `Loaded ${item.code || item.product}. Ready for next scan.`;
+  if (refocus) focusPriceCheckSearch();
+  return item;
+}
+
+async function startPriceCheckCamera() {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    showToast("Camera scanning is not supported on this device/browser.", 3200, "warning");
+    return;
+  }
+  if (!("BarcodeDetector" in window)) {
+    showToast("Live camera barcode scan is not supported here yet. Use manual search for now.", 3600, "warning");
+    return;
+  }
+  try {
+    stopPriceCheckCamera();
+    state.priceCheckDetector = new BarcodeDetector({
+      formats: ["upc_a", "upc_e", "ean_13", "ean_8", "code_128", "code_39", "qr_code"],
+    });
+    state.priceCheckStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: "environment" } },
+      audio: false,
+    });
+    if (els.priceCheckVideo) {
+      els.priceCheckVideo.srcObject = state.priceCheckStream;
+      await els.priceCheckVideo.play();
+    }
+    if (els.priceCheckStatus) els.priceCheckStatus.textContent = "Camera live. Point at a barcode.";
+    if (els.priceCheckStopButton) els.priceCheckStopButton.hidden = false;
+    if (els.priceCheckCameraButton) els.priceCheckCameraButton.hidden = true;
+    scanPriceCheckFrame();
+  } catch (error) {
+    showToast("Camera could not start. Allow camera access and try again.", 3600, "warning");
+  }
+}
+
+function stopPriceCheckCamera() {
+  if (state.priceCheckRaf) {
+    cancelAnimationFrame(state.priceCheckRaf);
+    state.priceCheckRaf = 0;
+  }
+  if (state.priceCheckStream) {
+    state.priceCheckStream.getTracks().forEach((track) => track.stop());
+    state.priceCheckStream = null;
+  }
+  if (els.priceCheckVideo) {
+    els.priceCheckVideo.pause?.();
+    els.priceCheckVideo.srcObject = null;
+  }
+  if (els.priceCheckStopButton) els.priceCheckStopButton.hidden = true;
+  if (els.priceCheckCameraButton) els.priceCheckCameraButton.hidden = false;
+  if (els.priceCheckStatus && activeTabName() === "pricecheck") els.priceCheckStatus.textContent = "Ready for next scan.";
+}
+
+async function scanPriceCheckFrame() {
+  if (!state.priceCheckDetector || !els.priceCheckVideo || els.priceCheckVideo.readyState < 2) {
+    state.priceCheckRaf = requestAnimationFrame(scanPriceCheckFrame);
+    return;
+  }
+  try {
+    const codes = await state.priceCheckDetector.detect(els.priceCheckVideo);
+    const match = codes.find((entry) => cleanCell(entry.rawValue));
+    if (match) {
+      const code = cleanCell(match.rawValue);
+      const now = Date.now();
+      if (code && (code !== state.priceCheckLastCode || now - state.priceCheckLastScanAt > 1800)) {
+        state.priceCheckLastCode = code;
+        state.priceCheckLastScanAt = now;
+        if (els.priceCheckSearchInput) els.priceCheckSearchInput.value = code;
+        handlePriceCheckLookup({ refocus: true });
+        stopPriceCheckCamera();
+        return;
+      }
+    }
+  } catch (error) {
+    // keep looping silently; browsers may throw transient detect errors
+  }
+  state.priceCheckRaf = requestAnimationFrame(scanPriceCheckFrame);
 }
 
 function latestExcelAddDate() {
@@ -3782,8 +3986,14 @@ function switchTab(tab) {
   if (["dashboard", "inventory", "ordering"].includes(tab) && els.searchInput) {
     els.searchInput.value = state.tabSearches[tab] || "";
   }
+  if (tab !== "pricecheck") stopPriceCheckCamera();
   document.querySelectorAll("[data-tab]").forEach((button) => button.classList.toggle("active", button.dataset.tab === tab));
   document.querySelectorAll("[data-tab-view]").forEach((view) => view.classList.toggle("active", view.dataset.tabView === tab));
+  document.body.dataset.activeTab = tab;
+  if (tab === "pricecheck") {
+    if (!els.priceCheckResult?.innerHTML) renderPriceCheckResult(null);
+    focusPriceCheckSearch();
+  }
   queueActiveTabRender();
 }
 
@@ -5085,6 +5295,8 @@ async function initApp() {
     applyDatePreset(90);
   }
   render();
+  document.body.dataset.activeTab = activeTabName();
+  renderPriceCheckResult(null);
 }
 
 // ── Confirm delete saved session ──────────────────────────────────────────

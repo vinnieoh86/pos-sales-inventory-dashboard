@@ -3111,6 +3111,214 @@ th[data-sort][data-sort-dir="desc"]::after {
   color: #fff;
 }
 
+.tab-button--pricecheck {
+  background: #0f766e;
+  border-color: #0f766e;
+  color: #fff;
+}
+.tab-button--pricecheck.active,
+.tab-button--pricecheck:hover {
+  background: #115e59;
+  border-color: #115e59;
+  color: #fff;
+}
+
+body[data-active-tab="pricecheck"] .metrics,
+body[data-active-tab="pricecheck"] .sticky-filters,
+body[data-active-tab="pricecheck"] .sticky-pills,
+body[data-active-tab="pricecheck"] .compact-uploader,
+body[data-active-tab="pricecheck"] .load-strip {
+  display: none !important;
+}
+
+.price-check-panel {
+  max-width: 880px;
+  margin: 0 auto;
+}
+
+.price-check-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(18rem, 0.9fr);
+  gap: 1rem;
+  align-items: stretch;
+}
+
+.price-check-search-card,
+.price-check-camera-card {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: linear-gradient(180deg, #ffffff 0%, #f6fbf8 100%);
+  padding: 1rem;
+}
+
+.price-check-search-label {
+  display: grid;
+  gap: 0.45rem;
+  font-size: 0.82rem;
+  font-weight: 800;
+  color: var(--muted);
+}
+
+#priceCheckSearchInput {
+  min-height: 3.6rem;
+  border-radius: 14px;
+  font-size: 1.08rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  border: 1px solid rgba(15, 118, 110, 0.18);
+  background: #fff;
+}
+
+.price-check-search-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.7rem;
+  margin-top: 0.8rem;
+}
+
+.price-check-status {
+  margin-top: 0.85rem;
+  padding: 0.85rem 1rem;
+  border-radius: 12px;
+  background: #eef8f5;
+  color: #125b52;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.price-check-camera-shell {
+  position: relative;
+  min-height: 18rem;
+  border-radius: 16px;
+  overflow: hidden;
+  background: linear-gradient(180deg, #102a2f 0%, #0a1719 100%);
+  display: grid;
+  place-items: center;
+}
+
+#priceCheckVideo {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.price-check-camera-empty {
+  position: absolute;
+  inset: auto 1rem 1rem 1rem;
+  text-align: center;
+  color: rgba(255,255,255,0.82);
+  font-size: 0.88rem;
+}
+
+.price-check-camera-guide {
+  position: absolute;
+  inset: 16% 12%;
+  border: 3px solid rgba(255,255,255,0.78);
+  border-radius: 18px;
+  box-shadow: 0 0 0 9999px rgba(0,0,0,0.18);
+  pointer-events: none;
+}
+
+.price-check-result {
+  margin-top: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: #fff;
+  padding: 1rem;
+}
+
+.price-check-result.empty {
+  display: grid;
+  place-items: center;
+  min-height: 9rem;
+  color: var(--muted);
+  background: linear-gradient(180deg, #fbfdf9 0%, #f4faf6 100%);
+}
+
+.price-check-result__hero {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.price-check-result__hero h3 {
+  margin: 0.2rem 0 0;
+  font-size: 1.3rem;
+  line-height: 1.15;
+}
+
+.price-check-result__price {
+  font-size: clamp(1.8rem, 5vw, 2.5rem);
+  font-weight: 900;
+  color: #0f766e;
+  white-space: nowrap;
+}
+
+.price-check-result__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.8rem;
+}
+
+.price-check-result__grid article {
+  padding: 0.85rem 0.9rem;
+  border-radius: 14px;
+  background: #f6faf7;
+  border: 1px solid #e1efe8;
+}
+
+.price-check-result__grid span {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 0.35rem;
+}
+
+.price-check-result__grid strong {
+  display: block;
+  font-size: 1rem;
+  line-height: 1.2;
+  word-break: break-word;
+}
+
+@media (max-width: 900px) {
+  .price-check-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .price-check-panel {
+    margin: 0;
+  }
+  .price-check-search-card,
+  .price-check-camera-card,
+  .price-check-result {
+    border-radius: 14px;
+    padding: 0.85rem;
+  }
+  #priceCheckSearchInput {
+    min-height: 3.2rem;
+    font-size: 1rem;
+  }
+  .price-check-result__grid {
+    grid-template-columns: 1fr;
+  }
+  .price-check-search-actions,
+  .price-check-actions {
+    grid-template-columns: 1fr;
+  }
+  .price-check-camera-shell {
+    min-height: 15rem;
+  }
+}
+
 /* ── Lock screen ─────────────────────────────────────────────────────────── */
 .lock-overlay {
   position: fixed;
