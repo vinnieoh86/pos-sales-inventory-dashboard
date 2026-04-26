@@ -3159,6 +3159,10 @@ body[data-active-tab="pricecheck"] .load-strip {
   color: var(--muted);
 }
 
+.price-check-search-wrapper {
+  position: relative;
+}
+
 #priceCheckSearchInput {
   min-height: 3.6rem;
   border-radius: 14px;
@@ -3167,6 +3171,48 @@ body[data-active-tab="pricecheck"] .load-strip {
   letter-spacing: 0.01em;
   border: 1px solid rgba(15, 118, 110, 0.18);
   background: #fff;
+}
+
+.price-check-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 560;
+  max-height: min(22rem, 55vh);
+  overflow-y: auto;
+  background: #fff;
+  border: 1px solid rgba(15, 118, 110, 0.24);
+  border-radius: 14px;
+  box-shadow: 0 14px 34px rgba(17, 24, 39, 0.16);
+}
+
+.price-check-dd-item {
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.8rem 0.95rem;
+  border-bottom: 1px solid #edf3ef;
+  cursor: pointer;
+}
+
+.price-check-dd-item:last-child {
+  border-bottom: none;
+}
+
+.price-check-dd-item:hover,
+.price-check-dd-item--active {
+  background: #ecf8f3;
+}
+
+.price-check-dd-name {
+  font-weight: 800;
+  color: var(--ink);
+  line-height: 1.2;
+}
+
+.price-check-dd-meta {
+  font-size: 0.8rem;
+  color: var(--muted);
 }
 
 .price-check-search-actions {
@@ -3201,6 +3247,19 @@ body[data-active-tab="pricecheck"] .load-strip {
   height: 100%;
   object-fit: cover;
   display: block;
+}
+
+.price-check-scanner {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+}
+
+.price-check-scanner video,
+.price-check-scanner canvas {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: cover;
 }
 
 .price-check-camera-empty {

@@ -97,7 +97,10 @@
             <div class="price-check-search-card">
               <p class="muted">Scan a barcode with the phone camera or type UPC, PLU, item #, or product name.</p>
               <label class="price-check-search-label">Search / UPC
-                <input id="priceCheckSearchInput" type="search" placeholder="Scan barcode or type code, PLU, product..." autocomplete="off" />
+                <div class="price-check-search-wrapper">
+                  <input id="priceCheckSearchInput" type="search" placeholder="Scan barcode or type code, PLU, product..." autocomplete="off" />
+                  <div id="priceCheckDropdown" class="price-check-dropdown" hidden></div>
+                </div>
               </label>
               <div class="price-check-search-actions">
                 <button id="priceCheckSearchButton" type="button">Search</button>
@@ -107,7 +110,8 @@
             </div>
             <div class="price-check-camera-card">
               <div class="price-check-camera-shell">
-                <video id="priceCheckVideo" playsinline muted></video>
+                <video id="priceCheckVideo" playsinline muted autoplay></video>
+                <div id="priceCheckScanner" class="price-check-scanner" hidden></div>
                 <div class="price-check-camera-guide" aria-hidden="true"></div>
                 <div class="price-check-camera-empty">Camera preview appears here when scanning starts.</div>
               </div>

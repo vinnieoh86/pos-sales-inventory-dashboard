@@ -64,6 +64,7 @@ const state = {
   priceCheckDetector: null,
   priceCheckReader: null,
   priceCheckReaderControls: null,
+  priceCheckScanner: null,
   priceCheckLastCode: "",
   priceCheckLastScanAt: 0,
 };
@@ -127,11 +128,13 @@ const els = {
   excelStatus: document.querySelector("#excelStatus"),
   searchInput: document.querySelector("#searchInput"),
   priceCheckSearchInput: document.querySelector("#priceCheckSearchInput"),
+  priceCheckDropdown: document.querySelector("#priceCheckDropdown"),
   priceCheckSearchButton: document.querySelector("#priceCheckSearchButton"),
   priceCheckClearButton: document.querySelector("#priceCheckClearButton"),
   priceCheckCameraButton: document.querySelector("#priceCheckCameraButton"),
   priceCheckStopButton: document.querySelector("#priceCheckStopButton"),
   priceCheckVideo: document.querySelector("#priceCheckVideo"),
+  priceCheckScanner: document.querySelector("#priceCheckScanner"),
   priceCheckStatus: document.querySelector("#priceCheckStatus"),
   priceCheckResult: document.querySelector("#priceCheckResult"),
   startDate: document.querySelector("#startDate"),
@@ -569,7 +572,10 @@ els.priceCheckSearchInput?.addEventListener("focus", () => els.priceCheckSearchI
 els.priceCheckSearchInput?.addEventListener("click", () => els.priceCheckSearchInput.select?.());
 els.priceCheckSearchInput?.addEventListener("input", () => {
   if (els.priceCheckStatus) els.priceCheckStatus.textContent = "Ready for next scan.";
+  renderPriceCheckDropdown(els.priceCheckSearchInput?.value || "");
 });
+els.priceCheckSearchInput?.addEventListener("focus", () => renderPriceCheckDropdown(els.priceCheckSearchInput?.value || ""));
+els.priceCheckSearchInput?.addEventListener("blur", () => setTimeout(hidePriceCheckDropdown, 120));
 els.countKeyButtons?.forEach((button) => button.addEventListener("click", () => handleCountKey(button.dataset.countKey)));
 els.countDuplicateModal?.addEventListener("click", (event) => {
   if (event.target === els.countDuplicateModal) closeDuplicateCountModal();
@@ -800,6 +806,13 @@ document.addEventListener("click", (event) => {
   ) {
     els.detailDrawer.hidden = true;
     state._activeDetailCode = "";
+  }
+  if (
+    activeTabName() === "pricecheck" &&
+    (state.priceCheckStream || state.priceCheckScanner) &&
+    event.target.closest(".price-check-camera-shell, #priceCheckVideo, #priceCheckScanner")
+  ) {
+    return;
   }
   if (!interactiveTarget && event.target.closest(".app, .panel, .metrics, .controls, .tab-view, .sticky-pills")) {
     if (activeTabName() === "pricecheck") focusPriceCheckSearch(false);
@@ -1399,31 +1412,107 @@ function ensureZxingReader() {
   });
 }
 
-function findPriceCheckItem(query) {
+function ensureHtml5Qrcode() {
+  if (window.Html5Qrcode) return Promise.resolve(window.Html5Qrcode);
+  return new Promise((resolve) => {
+    const existing = document.querySelector("script[data-html5-qrcode]");
+    const script = existing || document.createElement("script");
+    const done = () => resolve(window.Html5Qrcode || null);
+    script.onload = done;
+    script.onerror = () => resolve(null);
+    if (!existing) {
+      script.dataset.html5Qrcode = "true";
+      script.src = "https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js";
+      document.head.append(script);
+    }
+    setTimeout(done, 10000);
+  });
+}
+
+function priceCheckMatches(query, limit = 12) {
   const raw = cleanCell(query);
-  if (!raw) return null;
+  if (!raw) return [];
   const keyed = codeKey(raw);
   const rows = priceCheckRows();
-  const exact = rows.find((item) => {
-    const keys = [item.code, item.plu, item.itemNumber].map(codeKey).filter(Boolean);
-    return keyed && keys.includes(keyed);
-  });
-  if (exact) return exact;
   const search = raw.toLowerCase();
-  return rows.find((item) => {
-    const haystack = [
-      item.code,
-      item.product,
-      item.plu,
-      item.itemNumber,
-      item.vendor,
-      item.category,
-      item.department,
-    ]
-      .map((value) => cleanCell(value).toLowerCase())
-      .join(" ");
-    return haystack.includes(search);
-  }) || null;
+  const scored = [];
+  for (const item of rows) {
+    const code = cleanCell(item.code);
+    const plu = cleanCell(item.plu);
+    const itemNumber = cleanCell(item.itemNumber);
+    const product = cleanCell(item.product);
+    const vendor = cleanCell(item.vendor);
+    const category = cleanCell(item.category);
+    const department = cleanCell(item.department);
+    const keys = [code, plu, itemNumber].map(codeKey).filter(Boolean);
+    let score = -1;
+    if (keyed && keys.includes(keyed)) score = 0;
+    else if ([code, plu, itemNumber].some((value) => value && value.toLowerCase().startsWith(search))) score = 1;
+    else if (product && product.toLowerCase().startsWith(search)) score = 2;
+    else if ([code, product, plu, itemNumber, vendor, category, department].some((value) => value && value.toLowerCase().includes(search))) score = 3;
+    if (score >= 0) scored.push({ item, score, product });
+  }
+  return scored
+    .sort((a, b) => a.score - b.score || a.product.localeCompare(b.product))
+    .slice(0, limit)
+    .map((entry) => entry.item);
+}
+
+function findPriceCheckItem(query) {
+  return priceCheckMatches(query, 1)[0] || null;
+}
+
+function hidePriceCheckDropdown() {
+  if (els.priceCheckDropdown) els.priceCheckDropdown.hidden = true;
+}
+
+function selectPriceCheckDropdownItem(key) {
+  const item = priceCheckRows().find((entry) => {
+    const itemKey = codeKey(entry.code || entry.plu || entry.itemNumber || entry.product);
+    return itemKey === codeKey(key);
+  });
+  if (!item) return;
+  if (els.priceCheckSearchInput) {
+    els.priceCheckSearchInput.value = cleanCell(item.code || item.plu || item.itemNumber || item.product);
+  }
+  hidePriceCheckDropdown();
+  renderPriceCheckResult(item);
+  if (els.priceCheckStatus) els.priceCheckStatus.textContent = `Loaded ${item.code || item.product}. Ready for next scan.`;
+  focusPriceCheckSearch();
+}
+
+function renderPriceCheckDropdown(query) {
+  const dd = els.priceCheckDropdown;
+  if (!dd) return;
+  const raw = cleanCell(query).trim();
+  if (!raw) {
+    dd.hidden = true;
+    return;
+  }
+  const matches = priceCheckMatches(raw, 10);
+  if (!matches.length) {
+    dd.hidden = true;
+    return;
+  }
+  dd.innerHTML = matches.map((item, index) => {
+    const itemKey = cleanCell(item.code || item.plu || item.itemNumber || item.product);
+    const meta = [
+      cleanCell(item.code),
+      cleanCell(item.plu) ? `PLU ${cleanCell(item.plu)}` : "",
+      cleanCell(item.vendor),
+    ].filter(Boolean).join(" · ");
+    return `<div class="price-check-dd-item${index === 0 ? " price-check-dd-item--active" : ""}" data-key="${escapeHtml(itemKey)}">
+      <span class="price-check-dd-name">${escapeHtml(item.product || item.code || "Unknown item")}</span>
+      <span class="price-check-dd-meta">${escapeHtml(meta)}</span>
+    </div>`;
+  }).join("");
+  dd.hidden = false;
+  dd.querySelectorAll(".price-check-dd-item").forEach((node) => {
+    node.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      selectPriceCheckDropdownItem(node.dataset.key);
+    });
+  });
 }
 
 function renderPriceCheckResult(item) {
@@ -1473,6 +1562,7 @@ function focusPriceCheckSearch(select = true) {
 
 function clearPriceCheckSearch() {
   if (els.priceCheckSearchInput) els.priceCheckSearchInput.value = "";
+  hidePriceCheckDropdown();
   renderPriceCheckResult(null);
   if (els.priceCheckStatus) els.priceCheckStatus.textContent = "Ready for next scan.";
   focusPriceCheckSearch();
@@ -1481,7 +1571,10 @@ function clearPriceCheckSearch() {
 function handlePriceCheckLookup(options = {}) {
   const { refocus = false } = options;
   const query = els.priceCheckSearchInput?.value || "";
-  const item = findPriceCheckItem(query);
+  const matches = priceCheckMatches(query, 10);
+  const item = matches[0] || null;
+  if (matches.length > 1) renderPriceCheckDropdown(query);
+  else hidePriceCheckDropdown();
   if (!item) {
     renderPriceCheckResult(null);
     if (els.priceCheckStatus) els.priceCheckStatus.textContent = "Item not found. Try barcode, PLU, item #, or name.";
@@ -1496,19 +1589,42 @@ function handlePriceCheckLookup(options = {}) {
 }
 
 async function startPriceCheckCamera() {
+  if (!window.isSecureContext) {
+    showToast("Camera scanning requires the secure live website. Open the GitHub Pages URL, not a local file.", 4200, "warning");
+    return;
+  }
   if (!navigator.mediaDevices?.getUserMedia) {
     showToast("Camera scanning is not supported on this device/browser.", 3200, "warning");
     return;
   }
   try {
     stopPriceCheckCamera();
-    state.priceCheckStream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: "environment" } },
-      audio: false,
-    });
+    els.priceCheckSearchInput?.blur?.();
+    if (els.priceCheckStatus) els.priceCheckStatus.textContent = "Starting camera...";
+    const tryStream = async (videoOptions) => navigator.mediaDevices.getUserMedia({ video: videoOptions, audio: false });
+    try {
+      state.priceCheckStream = await tryStream({ facingMode: { exact: "environment" } });
+    } catch (primaryError) {
+      state.priceCheckStream = await tryStream({ facingMode: { ideal: "environment" } });
+    }
     if (els.priceCheckVideo) {
+      els.priceCheckVideo.setAttribute("playsinline", "");
+      els.priceCheckVideo.setAttribute("autoplay", "");
+      els.priceCheckVideo.muted = true;
       els.priceCheckVideo.srcObject = state.priceCheckStream;
+      await new Promise((resolve) => {
+        if (els.priceCheckVideo.readyState >= 1) {
+          resolve();
+          return;
+        }
+        els.priceCheckVideo.onloadedmetadata = () => resolve();
+        setTimeout(resolve, 800);
+      });
       await els.priceCheckVideo.play();
+    }
+    if (els.priceCheckScanner) {
+      els.priceCheckScanner.hidden = true;
+      els.priceCheckScanner.innerHTML = "";
     }
     if (els.priceCheckStatus) els.priceCheckStatus.textContent = "Camera live. Point at a barcode.";
     if (els.priceCheckStopButton) els.priceCheckStopButton.hidden = false;
@@ -1520,25 +1636,50 @@ async function startPriceCheckCamera() {
       scanPriceCheckFrame();
       return;
     }
-    const ZXingBrowser = await ensureZxingReader();
-    if (!ZXingBrowser) {
-      showToast("Live camera barcode scan is not supported here yet. Use manual search for now.", 3600, "warning");
-      stopPriceCheckCamera();
+    const Html5Qrcode = await ensureHtml5Qrcode();
+    if (Html5Qrcode && els.priceCheckScanner) {
+      state.priceCheckStream?.getTracks().forEach((track) => track.stop());
+      state.priceCheckStream = null;
+      els.priceCheckVideo.srcObject = null;
+      els.priceCheckScanner.hidden = false;
+      els.priceCheckScanner.innerHTML = "";
+      state.priceCheckScanner = new Html5Qrcode("priceCheckScanner");
+      await state.priceCheckScanner.start(
+        { facingMode: "environment" },
+        { fps: 10, qrbox: { width: 260, height: 120 }, rememberLastUsedCamera: true, aspectRatio: 1.7778 },
+        (decodedText) => {
+          const code = cleanCell(decodedText || "");
+          const now = Date.now();
+          if (code && (code !== state.priceCheckLastCode || now - state.priceCheckLastScanAt > 1800)) {
+            state.priceCheckLastCode = code;
+            state.priceCheckLastScanAt = now;
+            if (els.priceCheckSearchInput) els.priceCheckSearchInput.value = code;
+            handlePriceCheckLookup({ refocus: true });
+            stopPriceCheckCamera();
+          }
+        }
+      );
+      if (els.priceCheckStatus) els.priceCheckStatus.textContent = "Camera live. Point at a barcode.";
       return;
     }
-    state.priceCheckReader = new ZXingBrowser.BrowserMultiFormatReader();
-    state.priceCheckReader.decodeFromVideoDevice(undefined, els.priceCheckVideo, (result, error, controls) => {
-      if (controls) state.priceCheckReaderControls = controls;
-      const code = cleanCell(result?.getText?.() || "");
-      const now = Date.now();
-      if (code && (code !== state.priceCheckLastCode || now - state.priceCheckLastScanAt > 1800)) {
-        state.priceCheckLastCode = code;
-        state.priceCheckLastScanAt = now;
-        if (els.priceCheckSearchInput) els.priceCheckSearchInput.value = code;
-        handlePriceCheckLookup({ refocus: true });
-        stopPriceCheckCamera();
-      }
-    });
+    const ZXingBrowser = await ensureZxingReader();
+    if (ZXingBrowser) {
+      state.priceCheckReader = new ZXingBrowser.BrowserMultiFormatReader();
+      state.priceCheckReader.decodeFromVideoDevice(undefined, els.priceCheckVideo, (result, error, controls) => {
+        if (controls) state.priceCheckReaderControls = controls;
+        const code = cleanCell(result?.getText?.() || "");
+        const now = Date.now();
+        if (code && (code !== state.priceCheckLastCode || now - state.priceCheckLastScanAt > 1800)) {
+          state.priceCheckLastCode = code;
+          state.priceCheckLastScanAt = now;
+          if (els.priceCheckSearchInput) els.priceCheckSearchInput.value = code;
+          handlePriceCheckLookup({ refocus: true });
+          stopPriceCheckCamera();
+        }
+      });
+      return;
+    }
+    showToast("Camera preview opened, but this browser could not start barcode decoding. Manual search is still available.", 4200, "warning");
   } catch (error) {
     showToast("Camera could not start. Allow camera access and try again.", 3600, "warning");
   }
@@ -1562,9 +1703,21 @@ function stopPriceCheckCamera() {
   }
   state.priceCheckReader = null;
   state.priceCheckDetector = null;
+  if (state.priceCheckScanner) {
+    try {
+      const stop = typeof state.priceCheckScanner.stop === "function" ? state.priceCheckScanner.stop() : null;
+      if (stop?.catch) stop.catch(() => {});
+      if (typeof state.priceCheckScanner.clear === "function") state.priceCheckScanner.clear();
+    } catch (error) {}
+  }
+  state.priceCheckScanner = null;
   if (els.priceCheckVideo) {
     els.priceCheckVideo.pause?.();
     els.priceCheckVideo.srcObject = null;
+  }
+  if (els.priceCheckScanner) {
+    els.priceCheckScanner.hidden = true;
+    els.priceCheckScanner.innerHTML = "";
   }
   if (els.priceCheckStopButton) els.priceCheckStopButton.hidden = true;
   if (els.priceCheckCameraButton) els.priceCheckCameraButton.hidden = false;
