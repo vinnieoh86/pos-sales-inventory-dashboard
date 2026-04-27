@@ -66,7 +66,7 @@
     <main class="app">
       <section class="controls sticky-filters" aria-label="Dashboard filters">
         <label>Search <input id="searchInput" type="search" placeholder="SKU, product, vendor, color..." /></label>
-        <div class="date-nav-row">
+        <div class="date-nav-row" style="display:none">
           <button type="button" id="dateNavPrev" class="date-nav-btn" title="Previous period">&#8249;</button>
           <label>From <input id="startDate" type="date" /></label>
           <label>To <input id="endDate" type="date" /></label>
@@ -131,11 +131,17 @@
           <div class="panel-heading">
             <div><p class="eyebrow">Fast lane</p><h2>Scan mode</h2></div>
           </div>
+          <p class="muted">Use a Bluetooth scanner or type a code manually. After each scan, the field is reselected and ready for the next item.</p>
+          <label class="price-check-search-label">Scan / Search
+            <div class="price-check-search-wrapper">
+              <input id="scanModeInput" type="search" placeholder="Bluetooth scanner, UPC, PLU, item #..." autocomplete="off" />
+            </div>
+          </label>
           <div class="scan-mode-actions">
-            <button id="scanModeStartButton" type="button">Start Scanner</button>
-            <button id="scanModeManualButton" type="button" class="secondary-button">Manual Lookup</button>
+            <button id="scanModeLookupButton" type="button">Lookup</button>
+            <button id="scanModeClearButton" type="button" class="secondary-button">Clear</button>
           </div>
-          <div id="scanModeStatus" class="price-check-status">Open scanner, scan item, keep moving.</div>
+          <div id="scanModeStatus" class="price-check-status">Scan an item to load price and stock.</div>
           <div id="scanModeResult" class="price-check-result empty">
             <div class="price-check-result__empty">
               Scan an item to show price, stock, vendor, PLU, and item details.

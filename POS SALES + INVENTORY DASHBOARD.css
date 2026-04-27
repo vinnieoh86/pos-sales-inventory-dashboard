@@ -3916,3 +3916,71 @@ body[data-active-tab="scanmode"] .load-strip {
   color: #fff !important;
   transform: scale(0.93) !important;
 }
+
+/* ── Date preset bar: arrows + date label ─────────────────────────────── */
+#datePresets {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 0.3rem;
+  padding: 0.2rem 1rem 0.5rem;
+}
+.date-arrow-btn {
+  flex-shrink: 0;
+  background: #f0f4f2;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--ink);
+  font-size: 1.35rem;
+  font-weight: 700;
+  padding: 0.05rem 0.5rem;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.date-arrow-btn:hover {
+  background: var(--green);
+  border-color: var(--green);
+  color: #fff;
+  transform: none;
+}
+.date-range-label {
+  margin-left: 0.4rem;
+  padding: 0.2rem 0.7rem;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--ink);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* ── Scan mode: bold always-ready input ───────────────────────────────── */
+#scanModeInput {
+  font-size: 1.05rem;
+  font-weight: 700;
+  border: 2px solid var(--green) !important;
+  border-radius: 10px;
+}
+#scanModeInput:focus {
+  outline: 3px solid rgba(22,131,91,0.25);
+  outline-offset: 1px;
+}
+
+/* ── USER role: hide cost columns and metrics ─────────────────────────── */
+body.user-role-active #inventory th[data-col="unitCost"],
+body.user-role-active #inventoryBody td[data-col="unitCost"],
+body.user-role-active #inventory th[data-col="inventoryCost"],
+body.user-role-active #inventoryBody td[data-col="inventoryCost"],
+body.user-role-active #skuTable th:nth-child(14),
+body.user-role-active #skuBody td:nth-child(14),
+body.user-role-active #skuTable th:nth-child(15),
+body.user-role-active #skuBody td:nth-child(15) {
+  display: none !important;
+}
+body.user-role-active #metricsHoverZone article:has(#grossProfit),
+body.user-role-active #metricsHoverZone article:has(#costSold) {
+  display: none !important;
+}

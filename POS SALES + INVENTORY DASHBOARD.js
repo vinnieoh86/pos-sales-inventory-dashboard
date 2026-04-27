@@ -586,6 +586,55 @@ els.priceCheckManualButton?.addEventListener("click", () => {
 });
 els.scanModeStartButton?.addEventListener("click", () => startPriceCheckCamera({ fullscreen: prefersPhoneBarcodeScanner() }));
 els.scanModeManualButton?.addEventListener("click", () => switchTab("pricecheck"));
+
+// Scan mode: wire Lookup button and Enter key for BT scanner
+document.querySelector("#scanModeLookupButton")?.addEventListener("click", () => {
+  const inp = document.querySelector("#scanModeInput");
+  if (!inp) return;
+  const query = inp.value.trim();
+  if (!query) return;
+  const matches = priceCheckMatches(query, 10);
+  const item = matches[0] || null;
+  renderPriceCheckResult(item);
+  if (els.scanModeStatus) {
+    els.scanModeStatus.textContent = item
+      ? `\u2713 ${item.product || item.code} \u2014 ready for next scan.`
+      : `No match for "${query}". Try again.`;
+  }
+  if (!item) showToast("Item not found.", 2000, "warning");
+  setTimeout(() => { inp.focus(); inp.select(); }, 80);
+});
+
+document.querySelector("#scanModeClearButton")?.addEventListener("click", () => {
+  const inp = document.querySelector("#scanModeInput");
+  if (inp) { inp.value = ""; inp.focus(); }
+  renderPriceCheckResult(null);
+  if (els.scanModeStatus) els.scanModeStatus.textContent = "Ready \u2014 scan an item.";
+});
+
+document.querySelector("#scanModeInput")?.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    event.stopPropagation();
+    const inp = event.target;
+    const query = inp.value.trim();
+    if (!query) return;
+    const matches = priceCheckMatches(query, 10);
+    const item = matches[0] || null;
+    renderPriceCheckResult(item);
+    if (els.scanModeStatus) {
+      els.scanModeStatus.textContent = item
+        ? `\u2713 ${item.product || item.code} \u2014 ready for next scan.`
+        : `No match for "${query}". Try again.`;
+    }
+    if (!item) showToast("Item not found.", 2000, "warning");
+    setTimeout(() => { inp.focus(); inp.select(); }, 80);
+  }
+});
+
+document.querySelector("#scanModeInput")?.addEventListener("focus", (e) => {
+  setTimeout(() => e.target.select?.(), 0);
+});
 els.priceCheckClearButton?.addEventListener("click", clearPriceCheckSearch);
 els.priceCheckCameraButton?.addEventListener("click", () => startPriceCheckCamera({ fullscreen: prefersPhoneBarcodeScanner() }));
 els.priceCheckStopButton?.addEventListener("click", stopPriceCheckCamera);
@@ -744,7 +793,7 @@ document.addEventListener("keydown", (event) => {
     if (event.key === "Enter") { event.preventDefault(); saveVendorRule(); return; }
   }
   if (document.querySelector("#sessionHistoryModal") && !document.querySelector("#sessionHistoryModal").hidden) {
-    if (event.key === "Escape") { return; }
+    if (event.key === "Escape") { document.querySelector("#sessionHistoryModal").hidden = true; return; }
   }
   if (document.querySelector("#finalCountReportModal") && !document.querySelector("#finalCountReportModal").hidden) {
     if (event.key === "Escape") { document.querySelector("#finalCountReportModal").hidden = true; return; }
@@ -2723,7 +2772,7 @@ function renderCountSessionRows() {
         <td>${escapeHtml(new Date(session.startedAt).toLocaleString())}</td>
         <td class="num">${number.format((session.entries || []).length)}</td>
         <td>${escapeHtml(new Date(session.updatedAt || session.startedAt).toLocaleString())}</td>
-        <td><button type="button" class="secondary-button count-inline-report-button" data-count-report="${escapeHtml(session.id)}">Input/Compare</button></td>
+        <td><button type="button" class="secondary-button count-inline-report-button" data-count-report="${escapeHtml(session.id)}">Continue</button></td>
         <td>${session.submittedAt ? `<button type="button" class="secondary-button final-report-btn" data-final-report="${escapeHtml(session.id)}">Final Report</button>` : `<span class="muted">Not submitted</span>`}</td>
         <td>${session.preCountSnapshot ? (session.restoredAt ? `<span class="muted">Restored</span>` : `<button type="button" class="restore-count-btn" data-restore-session="${escapeHtml(session.id)}">Restore</button>`) : ""}</td>
         <td><button type="button" class="delete-session-btn" data-delete-session="${escapeHtml(session.id)}">Delete</button></td>
@@ -2864,6 +2913,7 @@ function renderActiveTab() {
 
 function applyRoleRestrictions() {
   const userMode = isUserRole();
+  document.body.classList.toggle("user-role-active", !!userMode); // CSS cost-column hiding
   // Hide admin-only elements for basic users
   const adminOnly = [
     "#downloadInventoryCsvBtn", ".download-inventory-csv", "[data-admin-only]",
@@ -4378,6 +4428,7 @@ function switchTab(tab) {
   if (["pricecheck", "scanmode"].includes(tab)) {
     if (!els.priceCheckResult?.innerHTML) renderPriceCheckResult(null);
     if (tab === "pricecheck") focusPriceCheckSearch();
+    if (tab === "scanmode") setTimeout(() => { const inp = document.querySelector("#scanModeInput"); inp?.focus(); }, 80);
   }
   queueActiveTabRender();
 }
@@ -5119,9 +5170,12 @@ function renderDatePresets() {
     { label: "ALL", days: "all" },
   ];
   if (!state._datePresetsReady) {
-    container.innerHTML = presets.map((p) =>
-      `<button type="button" class="preset-chip" data-preset-days="${p.days}">${p.label}</button>`
-    ).join("");
+    // Wrap pills in a flex row with arrows and live date display
+    container.innerHTML = `
+      <button type="button" class="date-arrow-btn" id="datePresetPrev" title="Previous period">&#8249;</button>
+      ${presets.map((p) => `<button type="button" class="preset-chip" data-preset-days="${p.days}">${p.label}</button>`).join("")}
+      <button type="button" class="date-arrow-btn" id="datePresetNext" title="Next period">&#8250;</button>
+      <span class="date-range-label" id="dateRangeLabel"></span>`;
     container.querySelectorAll("[data-preset-days]").forEach((btn) => {
       btn.addEventListener("click", () => {
         const presetValue = btn.dataset.presetDays === "all"
@@ -5139,6 +5193,8 @@ function renderDatePresets() {
         }
       });
     });
+    document.getElementById("datePresetPrev")?.addEventListener("click", () => shiftDateRange(-1));
+    document.getElementById("datePresetNext")?.addEventListener("click", () => shiftDateRange(1));
     state._datePresetsReady = true;
   }
   container.querySelectorAll(".preset-chip").forEach((chip) => {
@@ -5149,6 +5205,14 @@ function renderDatePresets() {
         : Number(chip.dataset.presetDays);
     chip.classList.toggle("active", value === state.activePresetDays);
   });
+  // Update live date display
+  const label = document.getElementById("dateRangeLabel");
+  if (label) {
+    const s = els.startDate.value;
+    const e = els.endDate.value;
+    const fmt = (iso) => { if (!iso) return "—"; const [y,m,d] = iso.split("-"); return `${m}/${d}/${y}`; };
+    label.textContent = (s && e && s !== e) ? `${fmt(s)} – ${fmt(e)}` : fmt(s || e);
+  }
 }
 
 function ytdDays() {
