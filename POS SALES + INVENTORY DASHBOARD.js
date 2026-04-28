@@ -91,7 +91,6 @@ function bumpDataStamp() {
   state._skuCache = null;
   state._inventoryCache = null;
   state._salesIndex = null;
-  state._pcRowsCache = null; // invalidate scan mode cache
   state._salesIndexStamp = 0;
   state._salesWindowsCache = new Map();
   state._dailyTotals = new Map();
@@ -342,7 +341,7 @@ const orderColumns = [
   { key: "reorderMin",       label: "Min",         defaultOn: true  },
   { key: "reorderMax",       label: "Max",         defaultOn: true  },
   { key: "recommendedOrder", label: "Rec. Order",  defaultOn: true  },
-  { key: "caseOrder",        label: "Case Order",  defaultOn: true  },
+  { key: "caseOrder",        label: "Cases to Order",  defaultOn: true  },
   { key: "caseSize",         label: "Case Size",   defaultOn: true  },
   { key: "unitCost",         label: "Unit Cost",   defaultOn: false },
   { key: "totalCost",        label: "Total Cost",  defaultOn: true  },
@@ -430,7 +429,7 @@ document.addEventListener("dragleave", (event) => {
   }
 });
 
-const renderDebounced = debounce(render, 180);
+const renderDebounced = debounce(render, 120);
 
 // Date navigation arrows + period mode
 document.querySelector("#dateNavPrev")?.addEventListener("click", () => shiftDateRange(-1));
@@ -508,8 +507,6 @@ els.chooseSalesButton.addEventListener("click", () => els.fileInput.click());
 els.chooseFolderButton.addEventListener("click", () => els.folderInput.click());
 els.chooseExcelButton.addEventListener("click", () => els.excelInput.click());
 els.createPoShortcut?.addEventListener("click", () => {
-  // Copy current search/filter context to ordering tab
-  state.tabSearches["ordering"] = els.searchInput?.value || "";
   switchTab("ordering");
 });
 els.countLaunchCard?.addEventListener("click", openCountSetupModal);
@@ -588,7 +585,7 @@ els.priceCheckManualButton?.addEventListener("click", () => {
 els.scanModeStartButton?.addEventListener("click", () => startPriceCheckCamera({ fullscreen: prefersPhoneBarcodeScanner() }));
 els.scanModeManualButton?.addEventListener("click", () => switchTab("pricecheck"));
 
-// Scan mode: wire Lookup button and Enter key for BT scanner
+// Scan mode — Bluetooth scanner: Enter fires lookup, auto-refocus for next scan
 document.querySelector("#scanModeLookupButton")?.addEventListener("click", () => {
   const inp = document.querySelector("#scanModeInput");
   if (!inp) return;
@@ -597,42 +594,33 @@ document.querySelector("#scanModeLookupButton")?.addEventListener("click", () =>
   const matches = priceCheckMatches(query, 10);
   const item = matches[0] || null;
   renderPriceCheckResult(item);
-  if (els.scanModeStatus) {
-    els.scanModeStatus.textContent = item
-      ? `\u2713 ${item.product || item.code} \u2014 ready for next scan.`
-      : `No match for "${query}". Try again.`;
-  }
+  if (els.scanModeStatus) els.scanModeStatus.textContent = item
+    ? `\u2713 ${item.product || item.code} \u2014 ready for next scan.`
+    : `No match for "${query}". Try again.`;
   if (!item) showToast("Item not found.", 2000, "warning");
-  setTimeout(() => { inp.focus(); inp.select(); }, 80);
+  setTimeout(() => { inp.focus(); inp.select(); }, 60);
 });
-
 document.querySelector("#scanModeClearButton")?.addEventListener("click", () => {
   const inp = document.querySelector("#scanModeInput");
   if (inp) { inp.value = ""; inp.focus(); }
   renderPriceCheckResult(null);
   if (els.scanModeStatus) els.scanModeStatus.textContent = "Ready \u2014 scan an item.";
 });
-
-document.querySelector("#scanModeInput")?.addEventListener("keydown", (event) => {
-  if (event.key === "Enter") {
-    event.preventDefault();
-    event.stopPropagation();
-    const inp = event.target;
-    const query = inp.value.trim();
-    if (!query) return;
-    const matches = priceCheckMatches(query, 10);
-    const item = matches[0] || null;
-    renderPriceCheckResult(item);
-    if (els.scanModeStatus) {
-      els.scanModeStatus.textContent = item
-        ? `\u2713 ${item.product || item.code} \u2014 ready for next scan.`
-        : `No match for "${query}". Try again.`;
-    }
-    if (!item) showToast("Item not found.", 2000, "warning");
-    setTimeout(() => { inp.focus(); inp.select(); }, 80);
-  }
+document.querySelector("#scanModeInput")?.addEventListener("keydown", (e) => {
+  if (e.key !== "Enter") return;
+  e.preventDefault(); e.stopPropagation();
+  const inp = e.target;
+  const query = inp.value.trim();
+  if (!query) return;
+  const matches = priceCheckMatches(query, 10);
+  const item = matches[0] || null;
+  renderPriceCheckResult(item);
+  if (els.scanModeStatus) els.scanModeStatus.textContent = item
+    ? `\u2713 ${item.product || item.code} \u2014 ready for next scan.`
+    : `No match for "${query}". Try again.`;
+  if (!item) showToast("Item not found.", 2000, "warning");
+  setTimeout(() => { inp.focus(); inp.select(); }, 60);
 });
-
 document.querySelector("#scanModeInput")?.addEventListener("focus", (e) => {
   setTimeout(() => e.target.select?.(), 0);
 });
@@ -793,13 +781,13 @@ document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") { document.querySelector("#vendorRuleModal").hidden = true; return; }
     if (event.key === "Enter") { event.preventDefault(); saveVendorRule(); return; }
   }
-  // countReportModal is inner — close it before sessionHistoryModal
-  if (!els.countReportModal.hidden && event.key === "Escape") {
-    closeCountReport();
-    return;
-  }
   if (document.querySelector("#sessionHistoryModal") && !document.querySelector("#sessionHistoryModal").hidden) {
-    if (event.key === "Escape") { document.querySelector("#sessionHistoryModal").hidden = true; return; }
+    if (event.key === "Escape") {
+      // If count report is open inside, close that first
+      if (!els.countReportModal.hidden) { closeCountReport(); return; }
+      document.querySelector("#sessionHistoryModal").hidden = true;
+      return;
+    }
   }
   if (document.querySelector("#finalCountReportModal") && !document.querySelector("#finalCountReportModal").hidden) {
     if (event.key === "Escape") { document.querySelector("#finalCountReportModal").hidden = true; return; }
@@ -1215,35 +1203,41 @@ function findExcelFor(item = {}) {
 }
 
 function normalizeExcelRow(row) {
+  const field = (...names) => {
+    for (const name of names) {
+      if (Object.prototype.hasOwnProperty.call(row, name) && cleanCell(row[name]) !== "") return row[name];
+    }
+    return "";
+  };
   const code = normalizeCode(row.code ?? row.CODE);
   return {
     code,
-    product: cleanCell(row.item_name),
-    vendor: cleanCell(row.vendor_name),
-    processingTime: toNumber(row.processing_time),
-    leadTime: toNumber(row.lead_time),
-    safetyStock: toNumber(row.safety_stock),
-    daysOfInventory: toNumber(row.days_of_inventory),
-    saleWindowSum: toNumber(row.sale_window_sum),
-    saleVelocity: toNumber(row.sale_velocity),
-    stock: toNumber(row.stock),
-    reorderMin: toNumber(row.reorder_qty_min),
-    reorderMax: toNumber(row.reorder_qty_max),
-    daysBeforeRestock: toNumber(row.days_before_restock),
-    state: cleanCell(row.state),
-    plu: cleanCell(row.PLU ?? row.plu),
-    itemNumber: cleanCell(row.item_number),
-    category: cleanCell(row.category),
-    addDate: cleanCell(row.add_date ?? row["ADD DATE"] ?? row["Add Date"] ?? row.addDate),
-    cost: toNumber(row.cost),
-    price: toNumber(row.price),
-    caseSize: toNumber(row.case_size) || 1,
-    maxOrderQty: toNumber(row.max_order_qty),
-    qtyNeeded: toNumber(row.qty_needed),
-    orderPendingId: cleanCell(row.order_pending_id),
-    orderPendingStale: cleanCell(row.order_pending_stale),
-    poPendingClearedTimes: toNumber(row.PO_pending_cleared_times),
-    overrideValues: cleanCell(row.override_values),
+    product: cleanCell(field("item_name", "ITEM NAME", "Item Name", "NAME", "Product", "PRODUCT")),
+    vendor: cleanCell(field("vendor_name", "VENDOR NAME", "Vendor Name", "vendor", "VENDOR")),
+    processingTime: toNumber(field("processing_time", "PROCESSING TIME", "Processing Time")),
+    leadTime: toNumber(field("lead_time", "LEAD TIME", "Lead Time")),
+    safetyStock: toNumber(field("safety_stock", "SAFETY STOCK", "Safety Stock")),
+    daysOfInventory: toNumber(field("days_of_inventory", "DAYS OF INVENTORY", "Days of Inventory")),
+    saleWindowSum: toNumber(field("sale_window_sum", "SALE WINDOW SUM", "Sale Window Sum")),
+    saleVelocity: toNumber(field("sale_velocity", "SALE VELOCITY", "Sale Velocity")),
+    stock: toNumber(field("stock", "STOCK")),
+    reorderMin: toNumber(field("reorder_qty_min", "REORDER QTY MIN", "Reorder Qty Min", "MIN", "Min")),
+    reorderMax: toNumber(field("reorder_qty_max", "REORDER QTY MAX", "Reorder Qty Max", "MAX", "Max")),
+    daysBeforeRestock: toNumber(field("days_before_restock", "DAYS BEFORE RESTOCK", "Days Before Restock")),
+    state: cleanCell(field("state", "STATE", "Status")),
+    plu: cleanCell(field("PLU", "plu")),
+    itemNumber: cleanCell(field("item_number", "ITEM NUMBER", "Item Number", "itemnum", "ITEMNUM")),
+    category: cleanCell(field("category", "CATEGORY")),
+    addDate: cleanCell(field("add_date", "ADD DATE", "Add Date", "addDate")),
+    cost: toNumber(field("cost", "COST", "unit_cost", "UNIT COST", "Unit Cost")),
+    price: toNumber(field("price", "PRICE")),
+    caseSize: toNumber(field("case_size", "CASE SIZE", "Case Size", "case size", "CASE")) || 1,
+    maxOrderQty: toNumber(field("max_order_qty", "MAX ORDER QTY", "Max Order Qty")),
+    qtyNeeded: toNumber(field("qty_needed", "QTY NEEDED", "Qty Needed")),
+    orderPendingId: cleanCell(field("order_pending_id", "ORDER PENDING ID", "Order Pending Id")),
+    orderPendingStale: cleanCell(field("order_pending_stale", "ORDER PENDING STALE", "Order Pending Stale")),
+    poPendingClearedTimes: toNumber(field("PO_pending_cleared_times", "PO PENDING CLEARED TIMES", "PO Pending Cleared Times")),
+    overrideValues: cleanCell(field("override_values", "OVERRIDE VALUES", "Override Values")),
   };
 }
 
@@ -1403,11 +1397,9 @@ function syncStickyHeights() {
   const commandBar = document.querySelector(".command-bar");
   const metrics = document.querySelector(".metrics");
   const filters = document.querySelector(".sticky-filters");
-  const pills = document.querySelector(".sticky-pills");
   if (commandBar) root.style.setProperty("--command-bar-height", `${commandBar.offsetHeight}px`);
   if (metrics) root.style.setProperty("--metrics-height", `${metrics.offsetHeight}px`);
   if (filters) root.style.setProperty("--filters-height", `${filters.offsetHeight}px`);
-  if (pills) root.style.setProperty("--pills-height", `${pills.offsetHeight}px`);
 }
 
 function mountInventoryQuickTools() {
@@ -1566,13 +1558,8 @@ function priceCheckMatches(query, limit = 12) {
   const raw = cleanCell(query);
   if (!raw) return [];
   const keyed = codeKey(raw);
+  const rows = priceCheckRows();
   const search = raw.toLowerCase();
-  // Use cached rows — only rebuild when data changes
-  if (!state._pcRowsCache || state._pcRowsStamp !== state._dataCacheStamp) {
-    state._pcRowsCache = priceCheckRows();
-    state._pcRowsStamp = state._dataCacheStamp;
-  }
-  const rows = state._pcRowsCache;
   const scored = [];
   for (const item of rows) {
     const code = cleanCell(item.code);
@@ -1968,10 +1955,10 @@ function latestExcelAddDate() {
     .at(-1) || "";
 }
 
-function currentOrderRows() {
-  const today = new Date().toLocaleDateString("en-US", { weekday: "long" }).toLowerCase();
+function currentOrderRows(options = {}) {
   const vendorFilter = getOrderVendorFilter ? getOrderVendorFilter() : "Active";
-  return currentInventoryRows()
+  return buildInventoryRows(options)
+    .map(applyOrderOverride)
     .filter((item) => {
       if (item.isOrderable === false) return false;
       if (item.recommendedOrder <= 0 && !item.qtyNeeded) return false;
@@ -2145,6 +2132,7 @@ function saveCountSession() {
   renderCountsWorkspace();
   // Defer the expensive full render until after modal closes
   setTimeout(() => render(), 50);
+  void syncSharedDataToSupabase({ productsOnly: true, silent: true });
   showToast(`Count saved · ${updatedCount} item stock quantities updated`, 3200, "success");
 }
 
@@ -2926,7 +2914,6 @@ function renderActiveTab() {
 
 function applyRoleRestrictions() {
   const userMode = isUserRole();
-  document.body.classList.toggle("user-role-active", !!userMode); // CSS cost-column hiding
   // Hide admin-only elements for basic users
   const adminOnly = [
     "#downloadInventoryCsvBtn", ".download-inventory-csv", "[data-admin-only]",
@@ -2976,8 +2963,6 @@ function queueActiveTabRender() {
 
 function render() {
   if (els.countSessionModal && !els.countSessionModal.hidden) return;
-  // Skip full render if page is hidden (tab in background) — just queue for when it returns
-  if (document.hidden) { document.addEventListener("visibilitychange", renderDebounced, { once: true }); return; }
   const skuRows = buildSkuRows();
   state.filteredSkus = sortSkuRows(skuRows);
   state._filteredSkuIndex = new Map(state.filteredSkus.map((item) => [codeKey(item.code), item]));
@@ -3037,17 +3022,17 @@ function buildSkuRows(options = {}) {
 
   // Fast filter pass on already-aggregated rows
   return [...allRows.values()].filter((sku) => {
-    if (department && (sku.department || "").trim().toLowerCase() !== department.trim().toLowerCase()) return false;
-    if (category && (sku.category || "").trim().toLowerCase() !== category.trim().toLowerCase()) return false;
-    if (vendor && (sku.vendor || "").trim().toLowerCase() !== vendor.trim().toLowerCase()) return false;
-    if (color && (sku.color || "").trim().toLowerCase() !== color.trim().toLowerCase()) return false;
+    if (department && sku.department !== department) return false;
+    if (category && sku.category !== category) return false;
+    if (vendor && sku.vendor !== vendor) return false;
+    if (color && sku.color !== color) return false;
     if (stateFilter) {
       const s = (sku.state || "").toLowerCase().trim();
       if (stateFilter === "Active") {
         if (s !== "active" && s !== "force order") return false;
       } else if ((sku.state || "") !== stateFilter) return false;
     }
-    if (query) { const q = query.toLowerCase(); if (!q.split(/\s+/).every((w) => sku._haystack.includes(w))) return false; }
+    if (query && !matchesSearchQuery(sku, query)) return false;
     return true;
   });
 }
@@ -3088,11 +3073,11 @@ function _buildRawSkuMap(start, end, leadDays, safetyDays, daysOfInventory) {
       profit: row.profit,
     };
     Object.assign(merged, parentPartsFor(merged));
-    merged._haystack = [merged.code, merged.product, merged.department, merged.category, merged.vendor,
+    merged._haystack = buildSearchHaystack([
+      merged.code, merged.product, merged.department, merged.category, merged.vendor,
       merged.color, merged.size, merged.parent, merged.subType,
-      merged.plu, String(merged.plu||""), merged.itemNumber, String(merged.itemNumber||""),
-      merged.state, merged.addDate, merged.caseSize]
-      .filter(v => v != null && v !== "").join(" ").toLowerCase().trim();
+      merged.plu, merged.itemNumber, merged.state, merged.addDate, merged.caseSize,
+    ]);
 
     const groupKey = codeKey(merged.code);
     const existing = grouped.get(groupKey) || { ...merged, sales: 0, units: 0, costSold: 0, profit: 0 };
@@ -3122,7 +3107,7 @@ function _buildRawSkuMap(start, end, leadDays, safetyDays, daysOfInventory) {
       max: manualMax,
       caseSize: sku.caseSize,
     });
-    const caseOrder = roundOrderToNearestCase(recommendedOrder, sku.caseSize);
+    const caseOrder = calcCaseOrder(recommendedOrder, sku.caseSize);
     const daysSupply = velocity > 0 ? sku.stock / velocity : Infinity;
     const margin = sku.sales > 0 ? sku.profit / sku.sales : 0;
     const inventoryCost = sku.stock * sku.unitCost;
@@ -3575,7 +3560,7 @@ function renderOrders() {
       alertHtml += `<div class="order-day-alert">
         📅 <b>Order today:</b>
         ${todayVendors.map((r) => {
-          const minAlerts2 = (() => { if (!r.minOrder) return false; const vo = currentOrderRows().filter((item) => (item.vendor||"").toUpperCase()===r.vendor?.toUpperCase()); const total = vo.reduce((s,i)=>s+(i.caseOrder||0)*(i.unitCost||0),0); return total < r.minOrder; })();
+          const minAlerts2 = (() => { if (!r.minOrder) return false; const vo = currentOrderRows({ ignoreQuery: true, ignoreFilters: true }).filter((item) => (item.vendor||"").toUpperCase()===r.vendor?.toUpperCase()); const total = vo.reduce((s,i)=>s + orderLineCost(i),0); return total < r.minOrder; })();
           const isPending = state.pendingOrders?.some((po) => po.vendor === r.vendor && !po.cleared);
           return `<button type="button" class="order-vendor-chip-btn${minAlerts2?" order-min-warn":""}${isPending?" order-pending-chip":""}" data-vendor-order="${escapeHtml(r.vendor)}">${escapeHtml(r.vendor)}${minAlerts2?` ⚠ min`:""}${isPending?" 🕐":""}</button>`;
         }).join("")}
@@ -3645,7 +3630,7 @@ function renderOrders() {
               caseOrder:        `<td class="num order-highlight"><b>${number.format(sku.caseOrder || 0)}</b></td>`,
               caseSize:         `<td class="num">${number.format(sku.caseSize || 1)}</td>`,
               unitCost:         `<td class="num">${currency.format(sku.unitCost || 0)}</td>`,
-              totalCost:        `<td class="num">${currency.format((sku.caseOrder || 0) * (sku.unitCost || 0))}</td>`,
+              totalCost:        `<td class="num">${currency.format(orderLineCost(sku))}</td>`,
             };
             return `<tr data-detail-code="${escapeHtml(sku.code)}">
               <td class="checkbox-col"><input type="checkbox" class="row-checkbox order-checkbox" data-code="${escapeHtml(sku.code)}" ${state.selectedSkuCodes.has(sku.code) ? "checked" : ""}></td>
@@ -3685,13 +3670,14 @@ function renderOrders() {
   // Wire editable Rec Order inputs — stopPropagation prevents opening detail drawer
   els.orderCards.querySelectorAll(".order-rec-input").forEach((input) => {
     input.addEventListener("click", (e) => e.stopPropagation());
-    input.addEventListener("change", () => {
+    input.addEventListener("input", () => {
       const code = input.dataset.code;
       const val = Math.max(0, toNumber(input.value) || 0);
       // Override in local state
       if (!state._orderRecOverrides) state._orderRecOverrides = new Map();
       state._orderRecOverrides.set(codeKey(code), val);
       input.value = val;
+      renderOrders();
     });
   });
   // Wire per-item clear-pending buttons
@@ -4055,9 +4041,13 @@ function buildInventoryRows(options = {}) {
         max: item.reorderMax,
         caseSize: item.caseSize,
       }) : 0;
-      item.caseOrder = item.recommendedOrder > 0 ? roundOrderToNearestCase(item.recommendedOrder, item.caseSize) : 0;
+      item.caseOrder = calcCaseOrder(item.recommendedOrder, item.caseSize);
       item.daysSupply = velocity > 0 ? stock / velocity : Infinity;
-      item._haystack = [item.code, item.product, item.vendor, item.category, item.color, item.plu, item.itemNumber, item.state, item.parent, item.subType, item.sizeAttr, item.containerAttr, item.otherAttrs, item.subGroup, item.typeGroup, String(item.plu||''), String(item.itemNumber||''), item.department].filter(Boolean).join(" ").toLowerCase().trim();
+      item._haystack = buildSearchHaystack([
+        item.code, item.product, item.vendor, item.category, item.color, item.plu, item.itemNumber,
+        item.state, item.parent, item.subType, item.sizeAttr, item.containerAttr, item.otherAttrs,
+        item.subGroup, item.typeGroup, item.department,
+      ]);
       return item;
     });
     state._inventoryCacheStamp = state._dataCacheStamp;
@@ -4074,16 +4064,12 @@ function buildInventoryRows(options = {}) {
         return false;
       }
     }
-    if (query) { const q = query.toLowerCase(); if (!q.split(/\s+/).every((w) => item._haystack.includes(w))) return false; }
+    if (query && !matchesSearchQuery(item, query)) return false;
     if (!options.ignoreFilters) {
-      const _dept = els.departmentFilter.value.trim().toLowerCase();
-      const _cat  = els.categoryFilter.value.trim().toLowerCase();
-      const _vend = els.vendorFilter.value.trim().toLowerCase();
-      const _col  = els.colorFilter.value.trim().toLowerCase();
-      if (_dept && (item.department || "").trim().toLowerCase() !== _dept) return false;
-      if (_cat  && (item.category  || "").trim().toLowerCase() !== _cat)  return false;
-      if (_vend && (item.vendor    || "").trim().toLowerCase() !== _vend) return false;
-      if (_col  && (item.color     || "").trim().toLowerCase() !== _col && (item.subType || "").trim().toLowerCase() !== _col) return false;
+      if (els.departmentFilter.value && item.department && item.department !== els.departmentFilter.value) return false;
+      if (els.categoryFilter.value && item.category !== els.categoryFilter.value) return false;
+      if (els.vendorFilter.value && item.vendor !== els.vendorFilter.value) return false;
+      if (els.colorFilter.value && item.color !== els.colorFilter.value && item.subType !== els.colorFilter.value) return false;
     }
     return true;
   }).sort(compareInventoryRows);
@@ -4188,10 +4174,11 @@ function buildSizeGroups(children) {
 function updateFilterOptions() {
   const salesWithInventory = state.rawSales.map((row) => ({ ...row, inventory: state.latestInventory.get(codeKey(row.code)) || {} }));
   const inventoryRows = [...state.latestInventory.values()];
-  fillSelect(els.departmentFilter, unique(salesWithInventory.map((row) => row.department)));
-  fillSelect(els.categoryFilter, unique(salesWithInventory.map((row) => row.category || row.inventory.category).concat(inventoryRows.map((row) => row.category))));
-  fillSelect(els.vendorFilter, unique(salesWithInventory.map((row) => (row.vendor !== "Unassigned" ? row.vendor : row.inventory.vendor)).concat(inventoryRows.map((row) => row.vendor))));
-  fillSelect(els.colorFilter, unique(salesWithInventory.map((row) => row.inventory.color).concat(inventoryRows.map((row) => row.color))));
+  const excelRows = [...state.excelItems.values()];
+  fillSelect(els.departmentFilter, unique(salesWithInventory.map((row) => row.department).concat(excelRows.map((row) => row.department))));
+  fillSelect(els.categoryFilter, unique(salesWithInventory.map((row) => row.category || row.inventory.category).concat(inventoryRows.map((row) => row.category), excelRows.map((row) => row.category))));
+  fillSelect(els.vendorFilter, unique(salesWithInventory.map((row) => (row.vendor !== "Unassigned" ? row.vendor : row.inventory.vendor)).concat(inventoryRows.map((row) => row.vendor), excelRows.map((row) => row.vendor))));
+  fillSelect(els.colorFilter, unique(salesWithInventory.map((row) => row.inventory.color).concat(inventoryRows.map((row) => row.color), excelRows.map((row) => row.color))));
   updateInventoryStateFilter();
 }
 
@@ -4271,7 +4258,7 @@ function buildPoRows() {
       orderQty:         item.recommendedOrder || item.qtyNeeded || 0,
       caseOrderQty:     item.caseOrder || 0,
       unitCost:         item.unitCost || 0,
-      totalCost:        (item.caseOrder || 0) * (item.unitCost || 0),
+      totalCost:        orderLineCost(item),
       currentStock:     item.stock || 0,
       svPerDay:         Number(item.velocity || 0).toFixed(2),
       daysSupply:       Number.isFinite(item.daysSupply) ? Math.round(item.daysSupply) : "∞",
@@ -4447,7 +4434,7 @@ function switchTab(tab) {
   if (["pricecheck", "scanmode"].includes(tab)) {
     if (!els.priceCheckResult?.innerHTML) renderPriceCheckResult(null);
     if (tab === "pricecheck") focusPriceCheckSearch();
-    if (tab === "scanmode") setTimeout(() => { const inp = document.querySelector("#scanModeInput"); inp?.focus(); }, 80);
+    if (tab === "scanmode") setTimeout(() => { document.querySelector("#scanModeInput")?.focus(); }, 80);
   }
   queueActiveTabRender();
 }
@@ -5189,19 +5176,17 @@ function renderDatePresets() {
     { label: "ALL", days: "all" },
   ];
   if (!state._datePresetsReady) {
-    // Wrap pills in a flex row with arrows and live date display
-    container.innerHTML = `
-      <button type="button" class="date-arrow-btn" id="datePresetPrev" title="Previous period">&#8249;</button>
-      ${presets.map((p) => `<button type="button" class="preset-chip" data-preset-days="${p.days}">${p.label}</button>`).join("")}
-      <button type="button" class="date-arrow-btn" id="datePresetNext" title="Next period">&#8250;</button>
-      <span class="date-range-label" id="dateRangeLabel"></span>`;
+    container.innerHTML =
+      `<button type="button" class="date-arrow-btn" id="datePresetPrev" title="Previous period">&#8249;</button>` +
+      presets.map((p) => `<button type="button" class="preset-chip" data-preset-days="${p.days}">${p.label}</button>`).join("") +
+      `<button type="button" class="date-arrow-btn" id="datePresetNext" title="Next period">&#8250;</button>` +
+      `<span class="date-range-label" id="dateRangeLabel" title="Click to pick custom dates"></span>`;
+
     container.querySelectorAll("[data-preset-days]").forEach((btn) => {
       btn.addEventListener("click", () => {
-        const presetValue = btn.dataset.presetDays === "all"
-          ? "all"
-          : btn.dataset.presetDays === "ytd"
-            ? "ytd"
-            : Number(btn.dataset.presetDays);
+        const presetValue = btn.dataset.presetDays === "all" ? "all"
+          : btn.dataset.presetDays === "ytd" ? "ytd"
+          : Number(btn.dataset.presetDays);
         state.activePresetDays = presetValue;
         if (btn.dataset.presetDays === "all") {
           els.startDate.value = state.dates[0] || "";
@@ -5212,9 +5197,11 @@ function renderDatePresets() {
         }
       });
     });
+
     document.getElementById("datePresetPrev")?.addEventListener("click", () => shiftDateRange(-1));
     document.getElementById("datePresetNext")?.addEventListener("click", () => shiftDateRange(1));
-    // Clicking the date label opens a calendar popup with two date pickers
+
+    // Click date label → open calendar popup
     document.getElementById("dateRangeLabel")?.addEventListener("click", (e) => {
       e.stopPropagation();
       let popup = document.getElementById("datePickerPopup");
@@ -5222,15 +5209,14 @@ function renderDatePresets() {
       popup = document.createElement("div");
       popup.id = "datePickerPopup";
       popup.className = "date-picker-popup";
-      popup.innerHTML = `
-        <div class="date-picker-popup__row">
-          <label>From<input type="date" id="popStartDate" value="${els.startDate.value}" /></label>
-          <label>To<input type="date" id="popEndDate" value="${els.endDate.value}" /></label>
-          <button type="button" id="popApply" class="date-picker-apply">Apply</button>
-          <button type="button" id="popClose" class="date-picker-close">&times;</button>
-        </div>`;
-      const label = document.getElementById("dateRangeLabel");
-      label.parentNode.insertBefore(popup, label.nextSibling);
+      popup.innerHTML = `<div class="date-picker-popup__row">
+        <label>From <input type="date" id="popStartDate" value="${els.startDate.value}" /></label>
+        <label>To&nbsp;&nbsp;<input type="date" id="popEndDate" value="${els.endDate.value}" /></label>
+        <button type="button" id="popApply" class="date-picker-apply">Apply</button>
+        <button type="button" id="popClose" class="date-picker-close">&times;</button>
+      </div>`;
+      const lbl = document.getElementById("dateRangeLabel");
+      lbl.parentNode.insertBefore(popup, lbl.nextSibling);
       popup.querySelector("#popApply").addEventListener("click", () => {
         const s = popup.querySelector("#popStartDate").value;
         const e2 = popup.querySelector("#popEndDate").value;
@@ -5241,27 +5227,29 @@ function renderDatePresets() {
         render();
       });
       popup.querySelector("#popClose").addEventListener("click", () => popup.remove());
-      setTimeout(() => document.addEventListener("click", function handler(ev) {
-        if (!popup.contains(ev.target)) { popup.remove(); document.removeEventListener("click", handler); }
+      setTimeout(() => document.addEventListener("click", function h(ev) {
+        if (!popup.contains(ev.target)) { popup.remove(); document.removeEventListener("click", h); }
       }), 0);
     });
+
     state._datePresetsReady = true;
   }
+
+  // Update active pill highlight
   container.querySelectorAll(".preset-chip").forEach((chip) => {
-    const value = chip.dataset.presetDays === "all"
-      ? "all"
-      : chip.dataset.presetDays === "ytd"
-        ? "ytd"
-        : Number(chip.dataset.presetDays);
+    const value = chip.dataset.presetDays === "all" ? "all"
+      : chip.dataset.presetDays === "ytd" ? "ytd"
+      : Number(chip.dataset.presetDays);
     chip.classList.toggle("active", value === state.activePresetDays);
   });
-  // Update live date display
-  const label = document.getElementById("dateRangeLabel");
-  if (label) {
+
+  // Update date range label
+  const lbl = document.getElementById("dateRangeLabel");
+  if (lbl) {
     const s = els.startDate.value;
     const e = els.endDate.value;
     const fmt = (iso) => { if (!iso) return "—"; const [y,m,d] = iso.split("-"); return `${m}/${d}/${y}`; };
-    label.textContent = (s && e && s !== e) ? `${fmt(s)} – ${fmt(e)}` : fmt(s || e);
+    lbl.textContent = (s && e && s !== e) ? `${fmt(s)} – ${fmt(e)}` : fmt(s || e);
   }
 }
 
@@ -5397,6 +5385,16 @@ function cleanCell(value) {
   return String(value ?? "").replace(/^="/, "").replace(/"$/, "").trim();
 }
 
+function normalizeSearchText(value) {
+  return cleanCell(value).toUpperCase().replace(/[^A-Z0-9]+/g, " ").trim();
+}
+
+function buildSearchHaystack(values) {
+  const raw = values.filter(Boolean).map((value) => cleanCell(value)).join(" ");
+  const normalized = values.filter(Boolean).map((value) => normalizeSearchText(value)).join(" ");
+  return `${raw} ${normalized}`.toLowerCase().trim();
+}
+
 function normalizeCode(value) {
   return cleanCell(value).replace(/^=/, "").replace(/^"|"$/g, "");
 }
@@ -5406,6 +5404,28 @@ function codeKey(value) {
   if (!code) return "";
   if (/^\d+$/.test(code)) return code.replace(/^0+/, "") || "0";
   return code.toUpperCase();
+}
+
+function matchesSearchQuery(item, query) {
+  const rawQuery = cleanCell(query);
+  const normalizedQuery = normalizeSearchText(rawQuery);
+  if (!rawQuery && !normalizedQuery) return true;
+  const exactFields = [item.code, item.plu, item.itemNumber];
+  const exactMatch = exactFields.some((value) => {
+    const raw = cleanCell(value);
+    return raw && (
+      raw.toLowerCase() === rawQuery.toLowerCase() ||
+      codeKey(raw) === codeKey(rawQuery) ||
+      normalizeSearchText(raw) === normalizedQuery
+    );
+  });
+  if (exactMatch) return true;
+  const haystack = String(item._haystack || "").toLowerCase();
+  const rawWords = rawQuery.toLowerCase().split(/\s+/).filter(Boolean);
+  const normalizedWords = normalizedQuery.toLowerCase().split(/\s+/).filter(Boolean);
+  const words = [...new Set([...rawWords, ...normalizedWords])];
+  if (!words.length) return true;
+  return words.every((word) => haystack.includes(word));
 }
 
 function bestLabel(current, next) {
@@ -5599,11 +5619,7 @@ async function supabaseUpsertRows(tableName, rows, onConflict = "code") {
     const url = new URL(supabaseRestUrl(tableName));
     url.searchParams.set("on_conflict", onConflict);
     const headers = { ...supabaseHeaders(true), Prefer: "resolution=merge-duplicates,return=minimal" };
-    const response = await fetch(url.toString(), {
-      method: "POST",
-      headers,
-      body: JSON.stringify(rows.slice(i, i + chunkSize)),
-    });
+    const response = await fetch(url.toString(), { method: "POST", headers, body: JSON.stringify(rows.slice(i, i + chunkSize)) });
     if (!response.ok) throw new Error(`${tableName} upsert failed (${response.status})`);
   }
 }
@@ -5777,7 +5793,6 @@ async function syncSharedDataToSupabase(options = {}) {
       });
     const productRows = [...productRowMap.values()].filter((row) => row.code || row.product);
     if (productRows.length) {
-      // UPSERT: much faster than delete-all + insert, safe for multi-device
       await supabaseUpsertRows("products", productRows, "code");
     }
 
@@ -6704,7 +6719,7 @@ function isPendingOrder(code) {
 }
 
 function submitVendorPo(vendorName) {
-  const items = currentOrderRows().filter((item) => (item.vendor||"").toUpperCase() === vendorName.toUpperCase());
+  const items = currentOrderRows({ ignoreQuery: true, ignoreFilters: true }).filter((item) => (item.vendor||"").toUpperCase() === vendorName.toUpperCase());
   if (!items.length) { showToast(`No items to order for ${vendorName}.`, 2800, "warning"); return; }
   const clearAt = Date.now() + 10 * 24 * 60 * 60 * 1000; // 10 days
   const po = {
@@ -6727,7 +6742,7 @@ function submitVendorPo(vendorName) {
     qtyChange: 0,
     qtyBefore: 0,
     qtyAfter: 0,
-    reason: currency.format(items.reduce((s, i) => s + (i.caseOrder||0)*(i.unitCost||0), 0)) + " total",
+    reason: currency.format(items.reduce((s, i) => s + orderLineCost(i), 0)) + " total",
   });
   localStorage.setItem("posDashboardAdjustLog:v1", JSON.stringify(state.adjustmentLog));
   showToast("PO submitted for " + vendorName + " - " + items.length + " items pending", 3200, "success");
@@ -6766,7 +6781,8 @@ function exportVendorPoPdf(vendorName, items) {
     const qtyInput = tr.querySelector(".vpm-qty-input");
     const qty = Math.max(0, toNumber(qtyInput?.value||0));
     const uc = parseFloat(qtyInput?.dataset.unitCost||0);
-    const lineCost = qty * uc;
+    const caseSize = Math.max(1, toNumber(tr.querySelector(".vpm-line-cost")?.dataset.caseSize || 1));
+    const lineCost = qty * caseSize * uc;
     grandTotal += lineCost;
     const cells = [...tr.cells];
     return `<tr>
@@ -6821,9 +6837,9 @@ document.querySelector("#vpmCloseButton")?.addEventListener("click", () => {
 function openVendorAnalysisPanel(vendorName) {
   const modal = document.querySelector("#vendorPoModal");
   if (!modal) return;
-  const items = currentOrderRows().filter((item) => (item.vendor||"").toUpperCase() === vendorName.toUpperCase());
+  const items = currentOrderRows({ ignoreQuery: true, ignoreFilters: true }).filter((item) => (item.vendor||"").toUpperCase() === vendorName.toUpperCase());
   const rule = state.vendorRules.find((r) => r.vendor && r.vendor.toUpperCase() === vendorName.toUpperCase());
-  const totalCost = items.reduce((s, item) => s + (item.caseOrder||0)*(item.unitCost||0), 0);
+  const totalCost = items.reduce((s, item) => s + orderLineCost(item), 0);
   const minOk = !rule || !rule.minOrder || totalCost >= rule.minOrder;
   const isPending = (state.pendingOrders||[]).some((po) => po.vendor === vendorName && !po.cleared);
 
@@ -6861,7 +6877,7 @@ function openVendorAnalysisPanel(vendorName) {
         "<td class='num order-highlight'><input type='number' class='vpm-qty-input mini-input' data-code='" + sku.code + "' data-unit-cost='" + (sku.unitCost||0) + "' value='" + (sku.caseOrder||0) + "' min='0' style='width:4rem;text-align:center;font-weight:700' /></td>" +
         "<td class='num'>" + number.format(sku.caseSize||1) + "</td>" +
         "<td class='num'>" + currency.format(sku.unitCost||0) + "</td>" +
-        "<td class='num vpm-line-cost' data-unit-cost='" + (sku.unitCost||0) + "'>" + currency.format((sku.caseOrder||0)*(sku.unitCost||0)) + "</td>" +
+        "<td class='num vpm-line-cost' data-unit-cost='" + (sku.unitCost||0) + "' data-case-size='" + (sku.caseSize||1) + "'>" + currency.format(orderLineCost(sku)) + "</td>" +
         "<td style='text-align:center'>" + (pend ? "&#x1F550;" : "") + "</td>" +
         "</tr>";
     }).join("") || "<tr><td colspan='12' class='empty-cell'>No items to order for this vendor right now.</td></tr>";
@@ -6870,12 +6886,15 @@ function openVendorAnalysisPanel(vendorName) {
       input.addEventListener("input", function() {
         var row = input.closest("tr");
         var uc = parseFloat(input.dataset.unitCost || 0);
+        var caseSize = Math.max(1, toNumber(row.querySelector(".vpm-line-cost")?.dataset.caseSize || 1));
         var qty = Math.max(0, toNumber(input.value)||0);
         var lineCell = row.querySelector(".vpm-line-cost");
-        if (lineCell) lineCell.textContent = currency.format(qty * uc);
+        if (lineCell) lineCell.textContent = currency.format(qty * caseSize * uc);
         var total = 0;
         body.querySelectorAll(".vpm-qty-input").forEach(function(inp) {
-          total += Math.max(0, toNumber(inp.value)||0) * parseFloat(inp.dataset.unitCost||0);
+          var parentRow = inp.closest("tr");
+          var lineCaseSize = Math.max(1, toNumber(parentRow?.querySelector(".vpm-line-cost")?.dataset.caseSize || 1));
+          total += Math.max(0, toNumber(inp.value)||0) * lineCaseSize * parseFloat(inp.dataset.unitCost||0);
         });
         var dispEl = document.querySelector("#vpmTotalDisplay");
         if (dispEl) dispEl.textContent = currency.format(total);
@@ -6900,7 +6919,8 @@ function exportVendorPoPdf(vendorName, items) {
     var qtyInput = tr.querySelector(".vpm-qty-input");
     var qty = Math.max(0, toNumber(qtyInput ? qtyInput.value : 0));
     var uc = parseFloat(qtyInput ? qtyInput.dataset.unitCost : 0);
-    var lineCost = qty * uc;
+    var caseSize = Math.max(1, toNumber(tr.querySelector(".vpm-line-cost")?.dataset.caseSize || 1));
+    var lineCost = qty * caseSize * uc;
     grandTotal += lineCost;
     var cells = Array.from(tr.cells);
     return "<tr><td>" + (cells[0]?cells[0].textContent.trim():"") + "</td>" +
@@ -7222,7 +7242,7 @@ function tryUnlock(pin) {
   if (overlay) overlay.classList.add("lock-dismissed");
   showToast("Welcome, " + user.name + "!", 2000, "success");
   applyRoleRestrictions();
-  // Switch to Scan Mode tab for basic users (better for phone workflow)
+  // Switch to Scan Mode for user role (phone-first workflow)
   if (isUserRole()) { const btn = document.querySelector('.tab-button[data-tab="scanmode"]'); if (btn) btn.click(); }
 }
 
@@ -7241,8 +7261,31 @@ function filterOrderVendors(vendorName) {
 
 // ── PO Modal: case order auto-adjusts when rec order changes ──────────────
 function calcCaseOrder(recOrder, caseSize) {
-  if (!caseSize || caseSize <= 1) return recOrder;
-  return Math.ceil(recOrder / caseSize) * caseSize;
+  const orderQty = Math.max(0, toNumber(recOrder) || 0);
+  const size = Math.max(1, toNumber(caseSize) || 1);
+  if (!orderQty) return 0;
+  if (size <= 1) return orderQty;
+  return Math.max(1, Math.round(orderQty / size));
+}
+
+function orderLineUnits(item) {
+  const cases = Math.max(0, toNumber(item.caseOrder) || 0);
+  const size = Math.max(1, toNumber(item.caseSize) || 1);
+  return size <= 1 ? cases : cases * size;
+}
+
+function orderLineCost(item) {
+  return orderLineUnits(item) * (toNumber(item.unitCost) || 0);
+}
+
+function applyOrderOverride(item) {
+  const overrideQty = state._orderRecOverrides?.get(codeKey(item.code));
+  if (overrideQty == null) return item;
+  return {
+    ...item,
+    recommendedOrder: overrideQty,
+    caseOrder: calcCaseOrder(overrideQty, item.caseSize),
+  };
 }
 
 
@@ -7371,10 +7414,10 @@ document.querySelector("#orderVendorFilterSelect")?.addEventListener("change", (
 })();
 initApp();
 
-// ── Real-time sync: poll Supabase every 30s for stock changes from other devices ──
+// Multi-device sync: poll Supabase every 30s for stock changes from other devices
 (function startSyncPoller() {
-  let _lastPollHash = "";
-  async function pollForChanges() {
+  let _lastHash = "";
+  async function poll() {
     try {
       const url = new URL(`${SUPABASE_URL}/rest/v1/products`);
       url.searchParams.set("select", "code,stock,updated_at");
@@ -7383,11 +7426,9 @@ initApp();
       const resp = await fetch(url.toString(), { headers: supabaseHeaders() });
       if (!resp.ok) return;
       const rows = await resp.json();
-      // Build a lightweight hash to detect changes
-      const hash = rows.map((r) => `${r.code}:${r.stock}:${r.updated_at}`).join("|");
-      if (hash === _lastPollHash) return; // nothing changed
-      _lastPollHash = hash;
-      // Apply stock updates to local latestInventory
+      const hash = rows.map((r) => `${r.code}:${r.stock}`).join("|");
+      if (hash === _lastHash) return;
+      _lastHash = hash;
       let changed = 0;
       rows.forEach((r) => {
         const key = codeKey(r.code);
@@ -7399,17 +7440,11 @@ initApp();
         }
       });
       if (changed > 0) {
-        state._inventoryCache = null; // invalidate cache
-        state._pcRowsCache = null;
-        // Only re-render if not in the middle of a count session
+        state._inventoryCache = null;
         if (!state.activeCountSession) renderDebounced();
         showToast(`\u21ba Synced ${changed} stock update${changed > 1 ? "s" : ""} from another device`, 2400, "success");
       }
-    } catch (e) { /* silent — file:// will fail harmlessly */ }
+    } catch (_) { /* silent fail on file:// */ }
   }
-  // Start polling after initial load settles
-  setTimeout(() => {
-    pollForChanges();
-    setInterval(pollForChanges, 30000);
-  }, 5000);
+  setTimeout(() => { poll(); setInterval(poll, 10000); }, 3000);
 })();

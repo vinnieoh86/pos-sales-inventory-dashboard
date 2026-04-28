@@ -66,7 +66,7 @@
     <main class="app">
       <section class="controls sticky-filters" aria-label="Dashboard filters">
         <label>Search <input id="searchInput" type="search" placeholder="SKU, product, vendor, color..." /></label>
-        <div class="date-nav-row" style="display:none">
+        <div class="date-nav-row">
           <button type="button" id="dateNavPrev" class="date-nav-btn" title="Previous period">&#8249;</button>
           <label>From <input id="startDate" type="date" /></label>
           <label>To <input id="endDate" type="date" /></label>
@@ -945,34 +945,6 @@
         <div class="vpm-footer">
           <span id="vpmGrandTotal" class="vpm-grand-total"></span>
         </div>
-      </div>
-    </div>
-
-    <!-- Vendor PO Analysis Modal -->
-    <div id="vendorPoModal" class="count-modal" hidden>
-      <div class="count-modal__dialog count-modal__dialog--wide vendor-po-modal">
-        <div class="vendor-po-header">
-          <div>
-            <p class="eyebrow">Purchase Order</p>
-            <h2 id="vpmTitle">Vendor</h2>
-            <div id="vpmMeta" class="summary-strip vpm-meta"></div>
-          </div>
-          <div class="vendor-po-header-right">
-            <button type="button" id="vpmSubmitButton" class="count-submit-btn">Submit PO</button>
-            <button type="button" id="vpmClearPendingButton" class="secondary-button" hidden>Clear Pending</button>
-            <button type="button" id="vpmPdfButton" class="pdf-report-btn">PDF</button>
-            <button type="button" id="vpmCloseButton" class="secondary-button">&#x2715;</button>
-          </div>
-        </div>
-        <div class="table-wrap vpm-table-wrap">
-          <table class="order-table vpm-table">
-            <thead>
-              <tr><th>Code</th><th>Item</th><th>Stock</th><th>SV/day</th><th>Min</th><th>Max</th><th>Rec</th><th class="order-highlight">Order Qty</th><th>Case</th><th>Unit Cost</th><th>Total</th><th>PO</th></tr>
-            </thead>
-            <tbody id="vpmBody"></tbody>
-          </table>
-        </div>
-        <div class="vpm-footer"><span id="vpmGrandTotal" class="vpm-grand-total"></span></div>
       </div>
     </div>
 
