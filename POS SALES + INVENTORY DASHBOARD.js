@@ -76,6 +76,7 @@ const state = {
 
 const ENABLE_CUSTOM_PARENT_RULES = true;
 const ENABLE_CUSTOM_ATTRIBUTE_RULES = false;
+const ENABLE_SHARED_SYNC = false;
 
 // Increment this whenever raw data changes to bust the SKU cache
 function bumpDataStamp() {
@@ -3032,6 +3033,9 @@ function renderActiveTab() {
 
 function applyRoleRestrictions() {
   const userMode = isUserRole();
+  if (state._lastRoleRestrictionMode === userMode && state._roleRestrictionApplied) return;
+  state._lastRoleRestrictionMode = userMode;
+  state._roleRestrictionApplied = true;
   // Hide admin-only elements for basic users
   const adminOnly = [
     "#downloadInventoryCsvBtn", ".download-inventory-csv", "[data-admin-only]",
@@ -3088,7 +3092,7 @@ function render() {
   const skuRows = buildSkuRows();
   state.filteredSkus = sortSkuRows(skuRows);
   state._filteredSkuIndex = new Map(state.filteredSkus.map((item) => [codeKey(item.code), item]));
-  const metricRows = buildSkuRows({ ignoreStateFilter: true });
+  const metricRows = els.inventoryStateFilter?.value ? buildSkuRows({ ignoreStateFilter: true }) : skuRows;
   const dates = filteredSalesDates();
   const selectedDayCount = rangeDayCount(els.startDate.value || state.dates[0], els.endDate.value || state.dates[state.dates.length - 1]);
   const totals = metricRows.reduce(
@@ -3679,6 +3683,15 @@ function renderOrders() {
       return true;
     });
   state.orderVendorQuickFilter = "";
+  const vendorOrderStats = new Map();
+  orderRows.forEach((item) => {
+    const vendorName = cleanCell(item.vendor).toUpperCase();
+    if (!vendorName) return;
+    const current = vendorOrderStats.get(vendorName) || { total: 0, count: 0 };
+    current.total += orderLineCost(item);
+    current.count += 1;
+    vendorOrderStats.set(vendorName, current);
+  });
   // Show live formula in header
   const safety = toNumber(els.safetyDays.value) || 7;
   const doi = toNumber(els.daysOfInventory?.value) || 0;
@@ -3696,7 +3709,8 @@ function renderOrders() {
       alertHtml += `<div class="order-day-alert">
         📅 <b>Order today:</b>
         ${todayVendors.map((r) => {
-          const minAlerts2 = (() => { if (!r.minOrder) return false; const vo = currentOrderRows({ ignoreQuery: true, ignoreFilters: true }).filter((item) => (item.vendor||"").toUpperCase()===r.vendor?.toUpperCase()); const total = vo.reduce((s,i)=>s + orderLineCost(i),0); return total < r.minOrder; })();
+          const vendorStats = vendorOrderStats.get((r.vendor || "").toUpperCase()) || { total: 0, count: 0 };
+          const minAlerts2 = !!r.minOrder && vendorStats.total < r.minOrder;
           const isPending = state.pendingOrders?.some((po) => po.vendor === r.vendor && !po.cleared);
           return `<button type="button" class="order-vendor-chip-btn${minAlerts2?" order-min-warn":""}${isPending?" order-pending-chip":""}" data-vendor-order="${escapeHtml(r.vendor)}">${escapeHtml(r.vendor)}${minAlerts2?` ⚠ min`:""}${isPending?" 🕐":""}</button>`;
         }).join("")}
@@ -5950,6 +5964,7 @@ function applySharedProductRows(rows) {
 }
 
 async function restoreSharedDataFromSupabase(options = {}) {
+  if (!ENABLE_SHARED_SYNC) return false;
   const { silent = false, preferCurrentState = false } = options;
   try {
     const [productRows, salesRows] = await Promise.all([
@@ -5992,6 +6007,7 @@ async function restoreSharedDataFromSupabase(options = {}) {
 }
 
 async function syncSharedDataToSupabase(options = {}) {
+  if (!ENABLE_SHARED_SYNC) return false;
   const { productsOnly = false, silent = false } = options;
   try {
     const productRowMap = new Map();
@@ -6035,11 +6051,13 @@ async function initApp() {
   await refreshUsersFromSupabase({ silent: true });
   await restorePersistedState();
   render();
-  const restoredShared = await restoreSharedDataFromSupabase({ silent: true, preferCurrentState: true });
-  if (restoredShared === "kept-local") {
-    await syncSharedDataToSupabase({ silent: true });
-  } else if (restoredShared) {
-    await savePersistedState();
+  if (ENABLE_SHARED_SYNC) {
+    const restoredShared = await restoreSharedDataFromSupabase({ silent: true, preferCurrentState: true });
+    if (restoredShared === "kept-local") {
+      await syncSharedDataToSupabase({ silent: true });
+    } else if (restoredShared) {
+      await savePersistedState();
+    }
   }
   updateMetricsSummaryMode();
   if (els.searchInput) {
@@ -7539,6 +7557,7 @@ function showLockScreen() {
     setTimeout(() => overlay.focus?.(), 0);
   }
   state.currentUser = null;
+  state._roleRestrictionApplied = false;
 }
 
 function lockApp(message = "Session locked.") {
@@ -7574,12 +7593,16 @@ function tryUnlock(pin) {
   state.currentUser = user;
   const overlay = document.querySelector("#lockScreen");
   if (overlay) overlay.classList.add("lock-dismissed");
-  showToast("Welcome, " + user.name + "!", 2000, "success");
-  applyRoleRestrictions();
-  updateMetricsSummaryMode();
-  resetIdleLogoutTimer();
-  // Switch to Scan Mode for user role (phone-first workflow)
-  if (isUserRole()) { const btn = document.querySelector('.tab-button[data-tab="scanmode"]'); if (btn) btn.click(); }
+  requestAnimationFrame(() => {
+    applyRoleRestrictions();
+    updateMetricsSummaryMode();
+    resetIdleLogoutTimer();
+    if (isUserRole()) {
+      const btn = document.querySelector('.tab-button[data-tab="scanmode"]');
+      if (btn) btn.click();
+    }
+    showToast("Welcome, " + user.name + "!", 1200, "success");
+  });
 }
 
 // ── Render ordering vendor filter ──────────────────────────────────────────
@@ -7722,11 +7745,11 @@ document.querySelector("#orderVendorFilterSelect")?.addEventListener("change", (
       pin += k; draw();
       if (pin.length === 4) {
         const p = pin;
-        requestAnimationFrame(() => requestAnimationFrame(() => {
+        setTimeout(() => {
           pin = "";
           draw();
           tryUnlock(p);
-        }));
+        }, 40);
       }
     }
   }
@@ -7760,6 +7783,7 @@ initApp();
 
 // Multi-device sync: poll Supabase every 30s for stock changes from other devices
 (function startSyncPoller() {
+  if (!ENABLE_SHARED_SYNC) return;
   let _lastHash = "";
   async function poll() {
     try {
