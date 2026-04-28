@@ -123,6 +123,13 @@ const DB_KEY = "state_v2";
 const LOCAL_SNAPSHOT_KEY = "posDashboardPersistedState:v2";
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 
+try {
+  const legacySnapshot = localStorage.getItem(LOCAL_SNAPSHOT_KEY);
+  if (legacySnapshot && legacySnapshot.length > 50000) localStorage.removeItem(LOCAL_SNAPSHOT_KEY);
+} catch (_) {
+  // Ignore storage access errors on startup.
+}
+
 const els = {
   fileInput: document.querySelector("#fileInput"),
   folderInput: document.querySelector("#folderInput"),
@@ -638,6 +645,7 @@ els.priceCheckTorchButton?.addEventListener("click", togglePriceCheckTorch);
 els.priceCheckOverlayClose?.addEventListener("click", stopPriceCheckCamera);
 els.priceCheckOverlayTorchButton?.addEventListener("click", togglePriceCheckTorch);
 document.querySelector("#logoutButton")?.addEventListener("click", () => lockApp("Logged out."));
+document.querySelector("#lockLogoutButton")?.addEventListener("click", () => lockApp("Logged out."));
 document.querySelector("#metricsHoverZone .metrics-peek-bar")?.addEventListener("click", () => {
   state.metricsPinned = !state.metricsPinned;
   localStorage.setItem("posDashboardMetricsPinned:v1", JSON.stringify(state.metricsPinned));
@@ -881,6 +889,36 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
+document.addEventListener("change", (event) => {
+  const recInput = event.target.closest(".order-rec-input");
+  if (recInput) {
+    commitOrderRecommendationInput(recInput);
+    return;
+  }
+  const input = event.target.closest("[data-reorder-field]");
+  if (input) commitReorderFieldInput(input);
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    closeDatePickerPopup();
+    closeOrderVendorMenu();
+  }
+  const editable = event.target.closest?.(".mini-input, .order-rec-input");
+  if (!editable || event.key !== "Enter") return;
+  event.preventDefault();
+  if (editable.classList.contains("order-rec-input")) commitOrderRecommendationInput(editable);
+  else commitReorderFieldInput(editable);
+  editable.blur();
+});
+
+document.addEventListener("focusout", (event) => {
+  const editable = event.target.closest?.(".mini-input, .order-rec-input");
+  if (!editable) return;
+  if (editable.classList.contains("order-rec-input")) commitOrderRecommendationInput(editable, { render: false });
+  else commitReorderFieldInput(editable, { render: false });
+});
+
 document.addEventListener("click", (event) => {
   const interactiveTarget = event.target.closest("button, input, select, summary, details, a, label, td, th, tr, .detail-drawer, .row-hover-tooltip");
   if (
@@ -910,6 +948,12 @@ document.addEventListener("click", (event) => {
   document.querySelectorAll(".detail-picker[open]").forEach((detail) => {
     if (!detail.contains(event.target)) detail.removeAttribute("open");
   });
+  if (!event.target.closest(".order-vendor-menu") && !event.target.closest("[data-order-vendor-pill]")) {
+    closeOrderVendorMenu();
+  }
+  if (!event.target.closest("#datePresets")) {
+    closeDatePickerPopup();
+  }
 });
 
 els.downloadOrder.addEventListener("click", () => {
@@ -1002,15 +1046,47 @@ document.querySelectorAll(".rules-box, .parent-rule-editor").forEach((node) => {
   node.hidden = !ENABLE_CUSTOM_PARENT_RULES && !ENABLE_CUSTOM_ATTRIBUTE_RULES;
 });
 
+function commitOrderRecommendationInput(input, options = {}) {
+  if (!input) return;
+  const code = input.dataset.code;
+  const val = Math.max(0, Math.round(toNumber(input.value) || 0));
+  if (!state._orderRecOverrides) state._orderRecOverrides = new Map();
+  state._orderRecOverrides.set(codeKey(code), val);
+  input.value = String(val);
+  if (options.render !== false) renderOrders();
+}
+
+function commitReorderFieldInput(input, options = {}) {
+  if (!input) return;
+  const code = input.dataset.code;
+  const field = input.dataset.reorderField;
+  const val = input.value.trim();
+  if (val === "") {
+    if (state.reorderOverrides[code]) {
+      delete state.reorderOverrides[code][field];
+      if (!Object.keys(state.reorderOverrides[code]).length) delete state.reorderOverrides[code];
+    }
+  } else {
+    state.reorderOverrides[code] = state.reorderOverrides[code] || {};
+    state.reorderOverrides[code][field] = Math.max(0, Math.round(toNumber(val) || 0));
+    input.value = String(state.reorderOverrides[code][field]);
+  }
+  localStorage.setItem("posDashboardReorderOverrides:v1", JSON.stringify(state.reorderOverrides));
+  bumpDataStamp();
+  if (options.render !== false) renderDebounced();
+}
+
 document.addEventListener("input", (event) => {
   const recInput = event.target.closest(".order-rec-input");
   if (recInput) {
     const normalized = String(Math.max(0, Math.round(toNumber(recInput.value) || 0)));
     if (recInput.value !== normalized) recInput.value = normalized;
+    return;
   }
   const input = event.target.closest("[data-reorder-field]");
   if (!input) return;
   input.value = input.value === "" ? "" : String(Math.max(0, Math.round(toNumber(input.value) || 0)));
+  return;
   const code = input.dataset.code;
   const field = input.dataset.reorderField;
   const val = input.value.trim();
@@ -2950,7 +3026,6 @@ function renderActiveTab() {
     renderSettings();
   } else if (activeTab === "ordering") {
     renderOrders();
-    renderTable();
   } else if (activeTab === "parents") {
     renderParents();
   }
@@ -3645,18 +3720,32 @@ function renderOrders() {
     const shownVendors = [...new Set(currentRows.map((item) => cleanCell(item.vendor)).filter(Boolean))].sort(compareDisplayValue);
     const selectedVendor = state.orderVendorQuickFilter || "";
     const chipsHtml = shownVendors.length
-      ? `<div class="order-vendor-chips">
+      ? `<div class="order-vendor-actions">
           <button type="button" class="order-vendor-pill${selectedVendor === "" ? " active" : ""}" data-order-vendor-chip="">All shown</button>
-          ${shownVendors.map((vendor) => `<button type="button" class="order-vendor-pill${selectedVendor.toUpperCase() === vendor.toUpperCase() ? " active" : ""}" data-order-vendor-chip="${escapeHtml(vendor)}">${escapeHtml(vendor)}</button>`).join("")}
+          <button type="button" class="count-submit-btn order-vendor-submit-all" id="submitShownVendorPoButton">Submit All</button>
+        </div>
+        <div class="order-vendor-chips">
+          ${shownVendors.map((vendor) => `<button type="button" class="order-vendor-pill${selectedVendor.toUpperCase() === vendor.toUpperCase() ? " active" : ""}" data-order-vendor-pill="${escapeHtml(vendor)}">${escapeHtml(vendor)}</button>`).join("")}
         </div>`
       : "";
-    let chips = vendorBar.querySelector(".order-vendor-chips");
-    if (chips) chips.remove();
+    vendorBar.querySelector(".order-vendor-actions")?.remove();
+    vendorBar.querySelector(".order-vendor-chips")?.remove();
     vendorBar.insertAdjacentHTML("beforeend", chipsHtml);
     vendorBar.querySelectorAll("[data-order-vendor-chip]").forEach((btn) => {
       btn.addEventListener("click", () => {
         state.orderVendorQuickFilter = btn.dataset.orderVendorChip || "";
         renderOrders();
+      });
+    });
+    vendorBar.querySelector("#submitShownVendorPoButton")?.addEventListener("click", submitShownVendorPo);
+    vendorBar.querySelectorAll("[data-order-vendor-pill]").forEach((btn) => {
+      btn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        const vendorName = btn.dataset.orderVendorPill || "";
+        state.orderVendorQuickFilter = vendorName;
+        renderOrders();
+        const activeBtn = document.querySelector(`[data-order-vendor-pill="${CSS.escape(vendorName)}"]`);
+        openOrderVendorMenu(vendorName, activeBtn);
       });
     });
     if (selectedVendor && !shownVendors.some((vendor) => vendor.toUpperCase() === selectedVendor.toUpperCase())) {
@@ -3760,13 +3849,8 @@ function renderOrders() {
     input.addEventListener("focus", () => input.select?.());
     input.addEventListener("dblclick", () => input.select?.());
     input.addEventListener("input", () => {
-      const code = input.dataset.code;
-      const val = Math.max(0, toNumber(input.value) || 0);
-      // Override in local state
-      if (!state._orderRecOverrides) state._orderRecOverrides = new Map();
-      state._orderRecOverrides.set(codeKey(code), val);
-      input.value = val;
-      renderOrders();
+      const val = Math.max(0, Math.round(toNumber(input.value) || 0));
+      input.value = String(val);
     });
   });
   // Wire per-item clear-pending buttons
@@ -5255,6 +5339,10 @@ function shiftDateRange(direction) {
   render();
 }
 
+function closeDatePickerPopup() {
+  document.getElementById("datePickerPopup")?.remove();
+}
+
 function renderDatePresets() {
   const container = document.getElementById("datePresets");
   if (!container) return;
@@ -5274,7 +5362,7 @@ function renderDatePresets() {
       `<div class="date-preset-chip-row">${presets.map((p) => `<button type="button" class="preset-chip" data-preset-days="${p.days}">${p.label}</button>`).join("")}</div>` +
       `<div class="date-custom-range-group">` +
       `<button type="button" class="date-arrow-btn" id="datePresetPrev" title="Previous period">&#8249;</button>` +
-      `<button type="button" class="date-range-label" id="dateRangeLabel" title="Click to pick custom dates"></button>` +
+      `<span class="date-picker-anchor"><button type="button" class="date-range-label" id="dateRangeLabel" title="Click to pick custom dates"></button></span>` +
       `<button type="button" class="date-arrow-btn" id="datePresetNext" title="Next period">&#8250;</button>` +
       `</div>`;
 
@@ -5311,8 +5399,8 @@ function renderDatePresets() {
         <button type="button" id="popApply" class="date-picker-apply">Apply</button>
         <button type="button" id="popClose" class="date-picker-close">&times;</button>
       </div>`;
-      const lbl = document.getElementById("dateRangeLabel");
-      lbl.parentNode.insertBefore(popup, lbl.nextSibling);
+      const anchor = container.querySelector(".date-picker-anchor");
+      anchor?.append(popup);
       popup.querySelector("#popApply").addEventListener("click", () => {
         const s = popup.querySelector("#popStartDate").value;
         const e2 = popup.querySelector("#popEndDate").value;
@@ -5323,9 +5411,6 @@ function renderDatePresets() {
         render();
       });
       popup.querySelector("#popClose").addEventListener("click", () => popup.remove());
-      setTimeout(() => document.addEventListener("click", function h(ev) {
-        if (!popup.contains(ev.target)) { popup.remove(); document.removeEventListener("click", h); }
-      }), 0);
     });
 
     state._datePresetsReady = true;
@@ -5620,13 +5705,9 @@ async function readPersistedState() {
     });
     if (dbState) return dbState;
   } catch (_) {
-    // Fall through to localStorage snapshot.
+    // Fall back to the tiny local snapshot metadata only.
   }
-  try {
-    return JSON.parse(localStorage.getItem(LOCAL_SNAPSHOT_KEY) || "null");
-  } catch (_) {
-    return null;
-  }
+  return null;
 }
 
 async function savePersistedState() {
@@ -5637,7 +5718,16 @@ async function savePersistedState() {
     excelRows: [...state.excelItems.values()],
     loadedFileSignatures: [...state._loadedFileSignatures],
   };
-  localStorage.setItem(LOCAL_SNAPSHOT_KEY, JSON.stringify(payload));
+  try {
+    localStorage.setItem(LOCAL_SNAPSHOT_KEY, JSON.stringify({
+      savedAt: new Date().toISOString(),
+      salesRows: payload.rawSales.length,
+      inventoryRows: payload.inventoryRows.length,
+      excelRows: payload.excelRows.length,
+    }));
+  } catch (_) {
+    // Ignore quota errors here; IndexedDB is the primary persisted store.
+  }
   try {
     const db = await openDb();
     return await new Promise((resolve, reject) => {
@@ -5947,8 +6037,10 @@ async function syncSharedDataToSupabase(options = {}) {
 async function initApp() {
   mountInventoryQuickTools();
   await refreshUsersFromSupabase({ silent: true });
+  await restorePersistedState();
+  render();
   const restoredShared = await restoreSharedDataFromSupabase({ silent: true });
-  if (!restoredShared) await restorePersistedState();
+  if (restoredShared) await savePersistedState();
   updateMetricsSummaryMode();
   if (els.searchInput) {
     els.searchInput.value = state.tabSearches[activeTabName()] || "";
@@ -6850,6 +6942,60 @@ if (!state.pendingOrders) state.pendingOrders = loadPendingOrders();
 function isPendingOrder(code) {
   if (!state.pendingOrders?.length) return false;
   return state.pendingOrders.some((po) => !po.cleared && (po.codes||[]).includes(codeKey(code)));
+}
+
+function closeOrderVendorMenu() {
+  document.querySelector(".order-vendor-menu")?.remove();
+}
+
+function exportVendorPoExcel(vendorName, items) {
+  if (!items?.length) {
+    showToast(`No items to export for ${vendorName}.`, 2600, "warning");
+    return;
+  }
+  downloadCsv(`po-${vendorName.toLowerCase().replace(/[^a-z0-9]+/g, "-") || "vendor"}.csv`, items);
+}
+
+function submitShownVendorPo() {
+  const vendors = [...new Set(currentOrderRows().map((item) => cleanCell(item.vendor)).filter(Boolean))];
+  if (!vendors.length) {
+    showToast("No vendor orders shown for the current filters.", 3000, "warning");
+    return;
+  }
+  if (!confirm(`Submit POs for all ${vendors.length} vendor${vendors.length === 1 ? "" : "s"} shown?`)) return;
+  vendors.forEach((vendor) => submitVendorPo(vendor));
+}
+
+function openOrderVendorMenu(vendorName, anchor) {
+  if (!vendorName || !anchor) return;
+  const existing = document.querySelector(".order-vendor-menu");
+  if (existing && existing.dataset.vendorName === vendorName) {
+    existing.remove();
+    return;
+  }
+  closeOrderVendorMenu();
+  const items = currentOrderRows().filter((item) => (item.vendor || "").toUpperCase() === vendorName.toUpperCase());
+  const menu = document.createElement("div");
+  menu.className = "order-vendor-menu";
+  menu.dataset.vendorName = vendorName;
+  menu.innerHTML = `
+    <button type="button" class="count-submit-btn" data-vendor-menu-action="submit">Submit PO</button>
+    <button type="button" class="excel-report-btn" data-vendor-menu-action="excel">Excel</button>
+    <button type="button" class="pdf-report-btn" data-vendor-menu-action="pdf">PDF</button>
+  `;
+  anchor.insertAdjacentElement("afterend", menu);
+  menu.querySelector('[data-vendor-menu-action="submit"]')?.addEventListener("click", () => {
+    submitVendorPo(vendorName);
+    closeOrderVendorMenu();
+  });
+  menu.querySelector('[data-vendor-menu-action="excel"]')?.addEventListener("click", () => {
+    exportVendorPoExcel(vendorName, items);
+    closeOrderVendorMenu();
+  });
+  menu.querySelector('[data-vendor-menu-action="pdf"]')?.addEventListener("click", () => {
+    exportVendorPoPdf(vendorName, items);
+    closeOrderVendorMenu();
+  });
 }
 
 function submitVendorPo(vendorName) {

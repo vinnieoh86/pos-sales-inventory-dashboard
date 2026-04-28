@@ -30,7 +30,7 @@
         <button class="tab-button tab-button--pricecheck" type="button" data-tab="scanmode">SCAN MODE</button>
         <button class="tab-button" type="button" data-tab="inventory">Products</button>
         <button class="tab-button" type="button" data-tab="counts">Inventory</button>
-        <button class="tab-button" type="button" data-tab="parents">Parent Styles</button>
+      <button class="tab-button" type="button" data-tab="parents" hidden aria-hidden="true">Parent Styles</button>
         <button class="tab-button" type="button" data-tab="ordering">Ordering</button>
         <button class="tab-button tab-button--reports" type="button" data-tab="reports">Reports</button>
         <button class="tab-button tab-button--vendors" type="button" data-tab="vendors">Vendors</button>
@@ -286,7 +286,7 @@
         </section>
       </section>
 
-      <section class="tab-view" data-tab-view="parents">
+      <section class="tab-view" data-tab-view="parents" hidden aria-hidden="true">
         <section class="panel table-panel">
           <div class="panel-heading">
             <div><p class="eyebrow">Parent style performance</p><h2>Group totals with color breakdowns</h2></div>
@@ -408,9 +408,9 @@
         <div id="orderCards" class="order-cards"></div>
       </section>
 
-      <section class="panel table-panel" id="sku-table">
+      <section class="panel table-panel" id="sku-table" hidden aria-hidden="true">
         <div class="panel-heading">
-          <div><p class="eyebrow">Manager detail</p><h2>SKU performance</h2></div>
+            <div><p class="eyebrow">Manager detail</p><h2>SKU performance</h2></div>
           <div class="table-tools">
             <select id="sortMode">
               <option value="sales">Sort by sales</option>
@@ -974,11 +974,11 @@
     </section>
 
     <!-- Lock screen overlay -->
-    <div id="lockScreen" class="lock-overlay">
-      <div class="lock-box">
-        <h2 class="lock-title">Sign in</h2>
-        <p class="lock-subtitle">Enter your 4-digit PIN</p>
-        <div id="lockPinDisplay" class="lock-display">&#9679;&#9679;&#9679;&#9679;</div>
+      <div id="lockScreen" class="lock-overlay">
+        <div class="lock-box">
+          <h2 class="lock-title">Sign in</h2>
+          <p class="lock-subtitle">Enter your 4-digit PIN</p>
+          <div id="lockPinDisplay" class="lock-display">&#9679;&#9679;&#9679;&#9679;</div>
         <div class="lock-keypad">
           <button type="button" class="lock-key" data-lock-key="1">1</button>
           <button type="button" class="lock-key" data-lock-key="2">2</button>
@@ -989,12 +989,15 @@
           <button type="button" class="lock-key" data-lock-key="7">7</button>
           <button type="button" class="lock-key" data-lock-key="8">8</button>
           <button type="button" class="lock-key" data-lock-key="9">9</button>
-          <button type="button" class="lock-key lock-key--clear" data-lock-key="clear">Clear</button>
-          <button type="button" class="lock-key" data-lock-key="0">0</button>
-          <button type="button" class="lock-key lock-key--del" data-lock-key="del">&#9003;</button>
+            <button type="button" class="lock-key lock-key--clear" data-lock-key="clear">Clear</button>
+            <button type="button" class="lock-key" data-lock-key="0">0</button>
+            <button type="button" class="lock-key lock-key--del" data-lock-key="del">&#9003;</button>
+          </div>
+          <div class="lock-actions">
+            <button type="button" id="lockLogoutButton" class="secondary-button">Log Out</button>
+          </div>
         </div>
       </div>
-    </div>
 
         <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
     <script src="POS SALES + INVENTORY DASHBOARD.js"></script>

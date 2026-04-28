@@ -616,8 +616,7 @@ body {
 }
 
 .sticky-filters {
-  position: sticky;
-  top: calc(var(--command-bar-height) + var(--metrics-height));
+  position: static;
   z-index: 34;
 }
 
@@ -1939,8 +1938,7 @@ th[data-sort][data-sort-dir="desc"]::after {
   padding: 0.25rem 1.5rem 0.6rem;
 }
 .sticky-pills {
-  position: sticky;
-  top: calc(var(--command-bar-height) + var(--metrics-height) + var(--filters-height));
+  position: static;
   z-index: 24;
   background: linear-gradient(180deg, rgba(247,248,245,0.99), rgba(247,248,245,0.96));
   padding-top: 0.2rem;
@@ -4063,8 +4061,8 @@ body[data-active-tab="settings"] .sticky-pills {
 
 /* Keep the date presets directly under filters and above table totals */
 .sticky-pills {
-  position: sticky !important;
-  top: calc(var(--command-bar-height) + var(--metrics-height) + var(--filters-height)) !important;
+  position: relative !important;
+  top: auto !important;
   z-index: 33 !important;
   overflow: visible !important;
 }
@@ -4089,13 +4087,63 @@ body[data-active-tab="settings"] .sticky-pills {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
-  margin-left: auto;
+  position: relative;
 }
 
 .date-range-label {
   min-height: 2.1rem;
   padding: 0.3rem 0.85rem;
   border-radius: 10px;
+}
+
+.date-picker-anchor {
+  position: relative;
+  display: inline-flex;
+}
+
+.ordering-vendor-filter-bar {
+  position: relative;
+}
+
+.order-vendor-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.order-vendor-submit-all {
+  min-height: 2rem;
+  padding: 0.35rem 0.8rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.order-vendor-menu {
+  position: absolute;
+  top: calc(100% + 0.45rem);
+  left: 0;
+  min-width: 10.5rem;
+  padding: 0.55rem;
+  border: 1px solid rgba(28, 35, 32, 0.14);
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 18px 36px rgba(18, 28, 24, 0.18);
+  display: grid;
+  gap: 0.4rem;
+  z-index: 120;
+}
+
+.order-vendor-menu button {
+  width: 100%;
+  justify-content: center;
+}
+
+.lock-actions {
+  display: flex;
+  justify-content: center;
+  margin-top: 0.9rem;
 }
 
 .date-nav-row {
