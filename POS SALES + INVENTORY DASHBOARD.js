@@ -91,6 +91,7 @@ function bumpDataStamp() {
   state._skuCache = null;
   state._inventoryCache = null;
   state._salesIndex = null;
+  state._pcRowsCache = null; // invalidate scan mode cache
   state._salesIndexStamp = 0;
   state._salesWindowsCache = new Map();
   state._dailyTotals = new Map();
@@ -429,7 +430,7 @@ document.addEventListener("dragleave", (event) => {
   }
 });
 
-const renderDebounced = debounce(render, 120);
+const renderDebounced = debounce(render, 180);
 
 // Date navigation arrows + period mode
 document.querySelector("#dateNavPrev")?.addEventListener("click", () => shiftDateRange(-1));
@@ -791,6 +792,11 @@ document.addEventListener("keydown", (event) => {
   if (document.querySelector("#vendorRuleModal") && !document.querySelector("#vendorRuleModal").hidden) {
     if (event.key === "Escape") { document.querySelector("#vendorRuleModal").hidden = true; return; }
     if (event.key === "Enter") { event.preventDefault(); saveVendorRule(); return; }
+  }
+  // countReportModal is inner — close it before sessionHistoryModal
+  if (!els.countReportModal.hidden && event.key === "Escape") {
+    closeCountReport();
+    return;
   }
   if (document.querySelector("#sessionHistoryModal") && !document.querySelector("#sessionHistoryModal").hidden) {
     if (event.key === "Escape") { document.querySelector("#sessionHistoryModal").hidden = true; return; }
@@ -1397,9 +1403,11 @@ function syncStickyHeights() {
   const commandBar = document.querySelector(".command-bar");
   const metrics = document.querySelector(".metrics");
   const filters = document.querySelector(".sticky-filters");
+  const pills = document.querySelector(".sticky-pills");
   if (commandBar) root.style.setProperty("--command-bar-height", `${commandBar.offsetHeight}px`);
   if (metrics) root.style.setProperty("--metrics-height", `${metrics.offsetHeight}px`);
   if (filters) root.style.setProperty("--filters-height", `${filters.offsetHeight}px`);
+  if (pills) root.style.setProperty("--pills-height", `${pills.offsetHeight}px`);
 }
 
 function mountInventoryQuickTools() {
@@ -1558,8 +1566,13 @@ function priceCheckMatches(query, limit = 12) {
   const raw = cleanCell(query);
   if (!raw) return [];
   const keyed = codeKey(raw);
-  const rows = priceCheckRows();
   const search = raw.toLowerCase();
+  // Use cached rows — only rebuild when data changes
+  if (!state._pcRowsCache || state._pcRowsStamp !== state._dataCacheStamp) {
+    state._pcRowsCache = priceCheckRows();
+    state._pcRowsStamp = state._dataCacheStamp;
+  }
+  const rows = state._pcRowsCache;
   const scored = [];
   for (const item of rows) {
     const code = cleanCell(item.code);
@@ -2963,6 +2976,8 @@ function queueActiveTabRender() {
 
 function render() {
   if (els.countSessionModal && !els.countSessionModal.hidden) return;
+  // Skip full render if page is hidden (tab in background) — just queue for when it returns
+  if (document.hidden) { document.addEventListener("visibilitychange", renderDebounced, { once: true }); return; }
   const skuRows = buildSkuRows();
   state.filteredSkus = sortSkuRows(skuRows);
   state._filteredSkuIndex = new Map(state.filteredSkus.map((item) => [codeKey(item.code), item]));
@@ -3022,17 +3037,17 @@ function buildSkuRows(options = {}) {
 
   // Fast filter pass on already-aggregated rows
   return [...allRows.values()].filter((sku) => {
-    if (department && sku.department !== department) return false;
-    if (category && sku.category !== category) return false;
-    if (vendor && sku.vendor !== vendor) return false;
-    if (color && sku.color !== color) return false;
+    if (department && (sku.department || "").trim().toLowerCase() !== department.trim().toLowerCase()) return false;
+    if (category && (sku.category || "").trim().toLowerCase() !== category.trim().toLowerCase()) return false;
+    if (vendor && (sku.vendor || "").trim().toLowerCase() !== vendor.trim().toLowerCase()) return false;
+    if (color && (sku.color || "").trim().toLowerCase() !== color.trim().toLowerCase()) return false;
     if (stateFilter) {
       const s = (sku.state || "").toLowerCase().trim();
       if (stateFilter === "Active") {
         if (s !== "active" && s !== "force order") return false;
       } else if ((sku.state || "") !== stateFilter) return false;
     }
-    if (query && !sku._haystack.includes(query.toLowerCase())) return false;
+    if (query) { const q = query.toLowerCase(); if (!q.split(/\s+/).every((w) => sku._haystack.includes(w))) return false; }
     return true;
   });
 }
@@ -4059,12 +4074,16 @@ function buildInventoryRows(options = {}) {
         return false;
       }
     }
-    if (query && !item._haystack.includes(query.toLowerCase())) return false;
+    if (query) { const q = query.toLowerCase(); if (!q.split(/\s+/).every((w) => item._haystack.includes(w))) return false; }
     if (!options.ignoreFilters) {
-      if (els.departmentFilter.value && item.department && item.department !== els.departmentFilter.value) return false;
-      if (els.categoryFilter.value && item.category !== els.categoryFilter.value) return false;
-      if (els.vendorFilter.value && item.vendor !== els.vendorFilter.value) return false;
-      if (els.colorFilter.value && item.color !== els.colorFilter.value && item.subType !== els.colorFilter.value) return false;
+      const _dept = els.departmentFilter.value.trim().toLowerCase();
+      const _cat  = els.categoryFilter.value.trim().toLowerCase();
+      const _vend = els.vendorFilter.value.trim().toLowerCase();
+      const _col  = els.colorFilter.value.trim().toLowerCase();
+      if (_dept && (item.department || "").trim().toLowerCase() !== _dept) return false;
+      if (_cat  && (item.category  || "").trim().toLowerCase() !== _cat)  return false;
+      if (_vend && (item.vendor    || "").trim().toLowerCase() !== _vend) return false;
+      if (_col  && (item.color     || "").trim().toLowerCase() !== _col && (item.subType || "").trim().toLowerCase() !== _col) return false;
     }
     return true;
   }).sort(compareInventoryRows);
@@ -5195,6 +5214,37 @@ function renderDatePresets() {
     });
     document.getElementById("datePresetPrev")?.addEventListener("click", () => shiftDateRange(-1));
     document.getElementById("datePresetNext")?.addEventListener("click", () => shiftDateRange(1));
+    // Clicking the date label opens a calendar popup with two date pickers
+    document.getElementById("dateRangeLabel")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      let popup = document.getElementById("datePickerPopup");
+      if (popup) { popup.remove(); return; }
+      popup = document.createElement("div");
+      popup.id = "datePickerPopup";
+      popup.className = "date-picker-popup";
+      popup.innerHTML = `
+        <div class="date-picker-popup__row">
+          <label>From<input type="date" id="popStartDate" value="${els.startDate.value}" /></label>
+          <label>To<input type="date" id="popEndDate" value="${els.endDate.value}" /></label>
+          <button type="button" id="popApply" class="date-picker-apply">Apply</button>
+          <button type="button" id="popClose" class="date-picker-close">&times;</button>
+        </div>`;
+      const label = document.getElementById("dateRangeLabel");
+      label.parentNode.insertBefore(popup, label.nextSibling);
+      popup.querySelector("#popApply").addEventListener("click", () => {
+        const s = popup.querySelector("#popStartDate").value;
+        const e2 = popup.querySelector("#popEndDate").value;
+        if (s) els.startDate.value = s;
+        if (e2) els.endDate.value = e2;
+        state.activePresetDays = null;
+        popup.remove();
+        render();
+      });
+      popup.querySelector("#popClose").addEventListener("click", () => popup.remove());
+      setTimeout(() => document.addEventListener("click", function handler(ev) {
+        if (!popup.contains(ev.target)) { popup.remove(); document.removeEventListener("click", handler); }
+      }), 0);
+    });
     state._datePresetsReady = true;
   }
   container.querySelectorAll(".preset-chip").forEach((chip) => {
@@ -5542,6 +5592,22 @@ async function supabaseInsertRows(tableName, rows) {
   }
 }
 
+async function supabaseUpsertRows(tableName, rows, onConflict = "code") {
+  if (!rows.length) return;
+  const chunkSize = 500;
+  for (let i = 0; i < rows.length; i += chunkSize) {
+    const url = new URL(supabaseRestUrl(tableName));
+    url.searchParams.set("on_conflict", onConflict);
+    const headers = { ...supabaseHeaders(true), Prefer: "resolution=merge-duplicates,return=minimal" };
+    const response = await fetch(url.toString(), {
+      method: "POST",
+      headers,
+      body: JSON.stringify(rows.slice(i, i + chunkSize)),
+    });
+    if (!response.ok) throw new Error(`${tableName} upsert failed (${response.status})`);
+  }
+}
+
 function productRowForSupabase(item) {
   const excel = findExcelFor(item);
   return {
@@ -5711,8 +5777,8 @@ async function syncSharedDataToSupabase(options = {}) {
       });
     const productRows = [...productRowMap.values()].filter((row) => row.code || row.product);
     if (productRows.length) {
-      await supabaseDeleteAllRows("products");
-      await supabaseInsertRows("products", productRows);
+      // UPSERT: much faster than delete-all + insert, safe for multi-device
+      await supabaseUpsertRows("products", productRows, "code");
     }
 
     if (!productsOnly) {
@@ -7156,8 +7222,8 @@ function tryUnlock(pin) {
   if (overlay) overlay.classList.add("lock-dismissed");
   showToast("Welcome, " + user.name + "!", 2000, "success");
   applyRoleRestrictions();
-  // Switch to Products tab for basic users
-  if (isUserRole()) { const btn = document.querySelector('.tab-button[data-tab="inventory"]'); if (btn) btn.click(); }
+  // Switch to Scan Mode tab for basic users (better for phone workflow)
+  if (isUserRole()) { const btn = document.querySelector('.tab-button[data-tab="scanmode"]'); if (btn) btn.click(); }
 }
 
 // ── Render ordering vendor filter ──────────────────────────────────────────
@@ -7304,3 +7370,46 @@ document.querySelector("#orderVendorFilterSelect")?.addEventListener("change", (
   draw();
 })();
 initApp();
+
+// ── Real-time sync: poll Supabase every 30s for stock changes from other devices ──
+(function startSyncPoller() {
+  let _lastPollHash = "";
+  async function pollForChanges() {
+    try {
+      const url = new URL(`${SUPABASE_URL}/rest/v1/products`);
+      url.searchParams.set("select", "code,stock,updated_at");
+      url.searchParams.set("order", "updated_at.desc");
+      url.searchParams.set("limit", "500");
+      const resp = await fetch(url.toString(), { headers: supabaseHeaders() });
+      if (!resp.ok) return;
+      const rows = await resp.json();
+      // Build a lightweight hash to detect changes
+      const hash = rows.map((r) => `${r.code}:${r.stock}:${r.updated_at}`).join("|");
+      if (hash === _lastPollHash) return; // nothing changed
+      _lastPollHash = hash;
+      // Apply stock updates to local latestInventory
+      let changed = 0;
+      rows.forEach((r) => {
+        const key = codeKey(r.code);
+        const item = state.latestInventory.get(key);
+        if (item && item.stock !== Number(r.stock)) {
+          item.stock = Number(r.stock);
+          state.latestInventory.set(key, item);
+          changed++;
+        }
+      });
+      if (changed > 0) {
+        state._inventoryCache = null; // invalidate cache
+        state._pcRowsCache = null;
+        // Only re-render if not in the middle of a count session
+        if (!state.activeCountSession) renderDebounced();
+        showToast(`\u21ba Synced ${changed} stock update${changed > 1 ? "s" : ""} from another device`, 2400, "success");
+      }
+    } catch (e) { /* silent — file:// will fail harmlessly */ }
+  }
+  // Start polling after initial load settles
+  setTimeout(() => {
+    pollForChanges();
+    setInterval(pollForChanges, 30000);
+  }, 5000);
+})();
