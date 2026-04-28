@@ -1213,7 +1213,6 @@ async function loadFiles(fileList) {
     updateFilterOptions();
     setDefaultDates();
     await savePersistedState();
-    await savePersistedState();
     await syncSharedDataToSupabase({ silent: true });
     render();
     if (skippedDuplicates) {
@@ -2088,7 +2087,6 @@ function currentOrderRows(options = {}) {
         if (vendorFilter === "Active" && rule && rule.status !== "Active") return false;
         if (vendorFilter === "Disabled" && (!rule || rule.status !== "Disabled")) return false;
       }
-      if (state.orderVendorQuickFilter && (item.vendor || "").toUpperCase() !== state.orderVendorQuickFilter.toUpperCase()) return false;
       return true;
     })
     .sort((a, b) => (b.recommendedOrder || b.qtyNeeded || 0) - (a.recommendedOrder || a.qtyNeeded || 0));
@@ -3060,6 +3058,10 @@ function applyRoleRestrictions() {
     // Only show products and inventory tabs
     document.querySelectorAll(".tab-button").forEach((btn) => {
       const tab = btn.dataset.tab;
+      if (!tab) {
+        btn.style.display = "";
+        return;
+      }
       if (!["inventory","counts","scanmode"].includes(tab)) btn.style.display = "none";
     });
   } else {
@@ -3662,7 +3664,7 @@ function renderOrderColumnPicker() {
 }
 
 function renderOrders() {
-  const rowsWithoutVendorChip = buildInventoryRows()
+  const orderRows = buildInventoryRows()
     .map(applyOrderOverride)
     .filter((item) => {
       if (item.isOrderable === false) return false;
@@ -3676,9 +3678,7 @@ function renderOrders() {
       }
       return true;
     });
-  if (state.orderVendorQuickFilter && !rowsWithoutVendorChip.some((item) => (item.vendor || "").toUpperCase() === state.orderVendorQuickFilter.toUpperCase())) {
-    state.orderVendorQuickFilter = "";
-  }
+  state.orderVendorQuickFilter = "";
   // Show live formula in header
   const safety = toNumber(els.safetyDays.value) || 7;
   const doi = toNumber(els.daysOfInventory?.value) || 0;
@@ -3688,8 +3688,6 @@ function renderOrders() {
   // Today's ordering alert
   const today = new Date().toLocaleDateString("en-US", { weekday: "long" }).toLowerCase();
   const todayVendors = state.vendorRules.filter((r) => r.status === "Active" && (r.orderDays || []).includes(today));
-  const disabledCount = state.vendorRules.filter((r) => r.status !== "Active").length;
-
   // Write alert to the dedicated banner, not into orderCards (so it persists)
   const banner = document.querySelector("#orderAlertBanner");
   if (banner) {
@@ -3713,44 +3711,11 @@ function renderOrders() {
     document.querySelector("#submitAllPoButton")?.addEventListener("click", () => submitAllPo());
   }
 
-  const orders = currentOrderRows().slice(0, 80);
   const vendorBar = document.querySelector(".ordering-vendor-filter-bar");
   if (vendorBar) {
-    const currentRows = rowsWithoutVendorChip;
-    const shownVendors = [...new Set(currentRows.map((item) => cleanCell(item.vendor)).filter(Boolean))].sort(compareDisplayValue);
-    const selectedVendor = state.orderVendorQuickFilter || "";
-    const chipsHtml = shownVendors.length
-      ? `<div class="order-vendor-actions">
-          <button type="button" class="order-vendor-pill${selectedVendor === "" ? " active" : ""}" data-order-vendor-chip="">All shown</button>
-          <button type="button" class="count-submit-btn order-vendor-submit-all" id="submitShownVendorPoButton">Submit All</button>
-        </div>
-        <div class="order-vendor-chips">
-          ${shownVendors.map((vendor) => `<button type="button" class="order-vendor-pill${selectedVendor.toUpperCase() === vendor.toUpperCase() ? " active" : ""}" data-order-vendor-pill="${escapeHtml(vendor)}">${escapeHtml(vendor)}</button>`).join("")}
-        </div>`
-      : "";
     vendorBar.querySelector(".order-vendor-actions")?.remove();
     vendorBar.querySelector(".order-vendor-chips")?.remove();
-    vendorBar.insertAdjacentHTML("beforeend", chipsHtml);
-    vendorBar.querySelectorAll("[data-order-vendor-chip]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        state.orderVendorQuickFilter = btn.dataset.orderVendorChip || "";
-        renderOrders();
-      });
-    });
-    vendorBar.querySelector("#submitShownVendorPoButton")?.addEventListener("click", submitShownVendorPo);
-    vendorBar.querySelectorAll("[data-order-vendor-pill]").forEach((btn) => {
-      btn.addEventListener("click", (event) => {
-        event.stopPropagation();
-        const vendorName = btn.dataset.orderVendorPill || "";
-        state.orderVendorQuickFilter = vendorName;
-        renderOrders();
-        const activeBtn = document.querySelector(`[data-order-vendor-pill="${CSS.escape(vendorName)}"]`);
-        openOrderVendorMenu(vendorName, activeBtn);
-      });
-    });
-    if (selectedVendor && !shownVendors.some((vendor) => vendor.toUpperCase() === selectedVendor.toUpperCase())) {
-      state.orderVendorQuickFilter = "";
-    }
+    closeOrderVendorMenu();
   }
   // Render column picker
   renderOrderColumnPicker();
@@ -3760,7 +3725,7 @@ function renderOrders() {
   const sortDir = state.orderSort?.dir || "desc";
 
   // Sort orders
-  const sorted = currentOrderRows().sort((a, b) => {
+  const sorted = [...orderRows].sort((a, b) => {
     const av = a[sortKey] ?? 0, bv = b[sortKey] ?? 0;
     if (typeof av === "string") return sortDir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
     return sortDir === "asc" ? av - bv : bv - av;
@@ -5765,6 +5730,33 @@ async function restorePersistedState() {
   }
 }
 
+function sharedSnapshotIsOlderThanCurrent(productRows = [], salesRows = []) {
+  const currentSalesRows = state.rawSales.length;
+  const currentSalesDays = state.dates.length;
+  const currentProductRows = Math.max(state.latestInventory.size, state.excelItems.size);
+  const sharedSalesDays = new Set(salesRows.map((row) => row.sales_date).filter(Boolean)).size;
+  const sharedSalesCount = salesRows.length;
+  const sharedProductCount = productRows.length;
+  const currentLatestSales = state.dates.at(-1) || "";
+  const sharedLatestSales = [...new Set(salesRows.map((row) => row.sales_date).filter(Boolean))].sort().at(-1) || "";
+  const currentLatestInventory = latestInventoryDate() || latestExcelAddDate() || "";
+  const sharedLatestInventory = productRows
+    .map((row) => cleanCell(row.updated_at || row.add_date))
+    .filter(Boolean)
+    .map((value) => String(value).slice(0, 10))
+    .sort()
+    .at(-1) || "";
+
+  const currentHasData = currentSalesRows || currentProductRows;
+  if (!currentHasData) return false;
+  if (currentSalesDays > sharedSalesDays) return true;
+  if (currentSalesRows > sharedSalesCount) return true;
+  if (currentProductRows > sharedProductCount) return true;
+  if (currentLatestSales && sharedLatestSales && currentLatestSales > sharedLatestSales) return true;
+  if (currentLatestInventory && sharedLatestInventory && currentLatestInventory > sharedLatestInventory) return true;
+  return false;
+}
+
 function supabaseRestUrl(tableName) {
   return `${SUPABASE_URL}/rest/v1/${tableName}`;
 }
@@ -5958,13 +5950,17 @@ function applySharedProductRows(rows) {
 }
 
 async function restoreSharedDataFromSupabase(options = {}) {
-  const { silent = false } = options;
+  const { silent = false, preferCurrentState = false } = options;
   try {
     const [productRows, salesRows] = await Promise.all([
       supabaseSelectRows("products", { select: "*" }),
       supabaseSelectRows("daily_sales", { select: "*", order: "sales_date.asc" }),
     ]);
     if (!productRows.length && !salesRows.length) return false;
+    if (preferCurrentState && sharedSnapshotIsOlderThanCurrent(productRows, salesRows)) {
+      if (!silent) showToast("Kept newer local data instead of older shared snapshot.", 2800, "success");
+      return "kept-local";
+    }
 
     state.rawSales = salesRows.map(hydrateSalesFromSupabase).filter((row) => row.code || row.product);
     state.dates = [...new Set(state.rawSales.map((row) => row.date))].sort();
@@ -6039,8 +6035,12 @@ async function initApp() {
   await refreshUsersFromSupabase({ silent: true });
   await restorePersistedState();
   render();
-  const restoredShared = await restoreSharedDataFromSupabase({ silent: true });
-  if (restoredShared) await savePersistedState();
+  const restoredShared = await restoreSharedDataFromSupabase({ silent: true, preferCurrentState: true });
+  if (restoredShared === "kept-local") {
+    await syncSharedDataToSupabase({ silent: true });
+  } else if (restoredShared) {
+    await savePersistedState();
+  }
   updateMetricsSummaryMode();
   if (els.searchInput) {
     els.searchInput.value = state.tabSearches[activeTabName()] || "";
@@ -7137,10 +7137,35 @@ function openVendorAnalysisPanel(vendorName) {
     clearBtn.hidden = !isPending;
     clearBtn.onclick = function() { clearVendorPending(vendorName); modal.hidden = true; };
   }
+  const syncModalOverrides = function() {
+    const body = document.querySelector("#vpmBody");
+    if (!body) return;
+    body.querySelectorAll(".vpm-qty-input").forEach(function(input) {
+      const code = codeKey(input.dataset.code);
+      const row = input.closest("tr");
+      const caseSize = Math.max(1, toNumber(row?.querySelector(".vpm-line-cost")?.dataset.caseSize || 1));
+      const caseQty = Math.max(0, Math.round(toNumber(input.value) || 0));
+      if (!state._orderRecOverrides) state._orderRecOverrides = new Map();
+      state._orderRecOverrides.set(code, caseQty * caseSize);
+    });
+  };
   const submitBtn = document.querySelector("#vpmSubmitButton");
-  if (submitBtn) submitBtn.onclick = function() { submitVendorPo(vendorName); modal.hidden = true; };
+  if (submitBtn) submitBtn.onclick = function() {
+    syncModalOverrides();
+    renderOrders();
+    submitVendorPo(vendorName);
+    modal.hidden = true;
+  };
+  const excelBtn = document.querySelector("#vpmExcelButton");
+  if (excelBtn) excelBtn.onclick = function() {
+    syncModalOverrides();
+    exportVendorPoExcel(vendorName, currentOrderRows().filter((item) => (item.vendor||"").toUpperCase() === vendorName.toUpperCase()));
+  };
   const pdfBtn = document.querySelector("#vpmPdfButton");
-  if (pdfBtn) pdfBtn.onclick = function() { exportVendorPoPdf(vendorName, items); };
+  if (pdfBtn) pdfBtn.onclick = function() {
+    syncModalOverrides();
+    exportVendorPoPdf(vendorName, currentOrderRows().filter((item) => (item.vendor||"").toUpperCase() === vendorName.toUpperCase()));
+  };
 
   const body = document.querySelector("#vpmBody");
   if (body) {
@@ -7170,6 +7195,8 @@ function openVendorAnalysisPanel(vendorName) {
         var qty = Math.max(0, toNumber(input.value)||0);
         var lineCell = row.querySelector(".vpm-line-cost");
         if (lineCell) lineCell.textContent = currency.format(qty * caseSize * uc);
+        if (!state._orderRecOverrides) state._orderRecOverrides = new Map();
+        state._orderRecOverrides.set(codeKey(input.dataset.code), qty * caseSize);
         var total = 0;
         body.querySelectorAll(".vpm-qty-input").forEach(function(inp) {
           var parentRow = inp.closest("tr");
@@ -7506,7 +7533,11 @@ async function addSettingsUser() {
 // ── Lock screen ────────────────────────────────────────────────────────────
 function showLockScreen() {
   const overlay = document.querySelector("#lockScreen");
-  if (overlay) overlay.classList.remove("lock-dismissed");
+  if (overlay) {
+    overlay.classList.remove("lock-dismissed");
+    overlay.tabIndex = -1;
+    setTimeout(() => overlay.focus?.(), 0);
+  }
   state.currentUser = null;
 }
 
@@ -7690,8 +7721,12 @@ document.querySelector("#orderVendorFilterSelect")?.addEventListener("change", (
     if (/^[0-9]$/.test(k) && pin.length < 4) {
       pin += k; draw();
       if (pin.length === 4) {
-        const p = pin; pin = ""; draw();
-        tryUnlock(p);
+        const p = pin;
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          pin = "";
+          draw();
+          tryUnlock(p);
+        }));
       }
     }
   }
@@ -7699,6 +7734,7 @@ document.querySelector("#orderVendorFilterSelect")?.addEventListener("change", (
   // Button clicks — mousedown not click to remove any delay
   overlay.addEventListener("mousedown", (e) => {
     const btn = e.target.closest("[data-lock-key]");
+    overlay.focus?.();
     if (!btn) return;
     e.preventDefault(); e.stopPropagation();
     btn.classList.add("lock-key--pressed");

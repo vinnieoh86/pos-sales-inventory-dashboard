@@ -403,7 +403,7 @@ td { font-size: 0.82rem; }
 #inventory th[data-col="needs"], #inventoryBody td[data-col="needs"] { width: 4.8rem; min-width: 4.8rem; text-align: center; }
 
 .tab-view[data-tab-view="inventory"] thead th {
-  top: calc(var(--command-bar-height) + var(--metrics-height) + var(--filters-height) + 2.15rem);
+  top: 0;
   z-index: 18;
   background: #f4f7f4;
 }
