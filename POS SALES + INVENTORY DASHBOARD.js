@@ -47,12 +47,14 @@ const state = {
   orderSort: { key: "recommendedOrder", dir: "desc" },
   orderVendorFilter: "Active",
   orderVisibleColumns: JSON.parse(localStorage.getItem("posOrderColumns:v1") || "null"),
-  activeCountSession: null,
+  activeCountSession: JSON.parse(localStorage.getItem("posDashboardActiveCountSession:v1") || "null"),
   countQtyBuffer: "0",
   selectedCountItemCode: "",
   countStage: "search",
   pendingDuplicateCount: null,
   countReportMode: "input",
+  metricsPinned: JSON.parse(localStorage.getItem("posDashboardMetricsPinned:v1") || "false"),
+  orderVendorQuickFilter: "",
   // Stock adjust modal state
   stockAdjustItem: null,
   stockAdjustAction: null,   // "add" | "remove" | "set"
@@ -74,8 +76,6 @@ const state = {
 
 const ENABLE_CUSTOM_PARENT_RULES = true;
 const ENABLE_CUSTOM_ATTRIBUTE_RULES = false;
-
-localStorage.removeItem("posDashboardActiveCountSession:v1");
 
 // Increment this whenever raw data changes to bust the SKU cache
 function bumpDataStamp() {
@@ -120,6 +120,8 @@ const DB_NAME = "posDashboardHistory_launch421";
 const DB_VERSION = 1;
 const DB_STORE = "app";
 const DB_KEY = "state_v2";
+const LOCAL_SNAPSHOT_KEY = "posDashboardPersistedState:v2";
+const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 
 const els = {
   fileInput: document.querySelector("#fileInput"),
@@ -429,7 +431,7 @@ document.addEventListener("dragleave", (event) => {
   }
 });
 
-const renderDebounced = debounce(render, 120);
+const renderDebounced = debounce(render, 40);
 
 // Date navigation arrows + period mode
 document.querySelector("#dateNavPrev")?.addEventListener("click", () => shiftDateRange(-1));
@@ -454,6 +456,9 @@ els.searchInput?.addEventListener("keydown", (e) => {
 });
 els.searchInput?.addEventListener("focus", () => {
   setTimeout(() => els.searchInput?.select(), 0);
+});
+els.searchInput?.addEventListener("click", () => {
+  els.searchInput.select?.();
 });
 els.parentsSearch?.addEventListener("input", () => {
   const upper = els.parentsSearch.value.toUpperCase();
@@ -507,6 +512,8 @@ els.chooseSalesButton.addEventListener("click", () => els.fileInput.click());
 els.chooseFolderButton.addEventListener("click", () => els.folderInput.click());
 els.chooseExcelButton.addEventListener("click", () => els.excelInput.click());
 els.createPoShortcut?.addEventListener("click", () => {
+  state.tabSearches["ordering"] = els.searchInput?.value || "";
+  localStorage.setItem("posDashboardTabSearches:v1", JSON.stringify(state.tabSearches));
   switchTab("ordering");
 });
 els.countLaunchCard?.addEventListener("click", openCountSetupModal);
@@ -630,6 +637,12 @@ els.priceCheckStopButton?.addEventListener("click", stopPriceCheckCamera);
 els.priceCheckTorchButton?.addEventListener("click", togglePriceCheckTorch);
 els.priceCheckOverlayClose?.addEventListener("click", stopPriceCheckCamera);
 els.priceCheckOverlayTorchButton?.addEventListener("click", togglePriceCheckTorch);
+document.querySelector("#logoutButton")?.addEventListener("click", () => lockApp("Logged out."));
+document.querySelector("#metricsHoverZone .metrics-peek-bar")?.addEventListener("click", () => {
+  state.metricsPinned = !state.metricsPinned;
+  localStorage.setItem("posDashboardMetricsPinned:v1", JSON.stringify(state.metricsPinned));
+  updateMetricsSummaryMode();
+});
 els.priceCheckSearchInput?.addEventListener("keydown", (event) => {
   if (event.key === "Enter") {
     event.preventDefault();
@@ -990,8 +1003,14 @@ document.querySelectorAll(".rules-box, .parent-rule-editor").forEach((node) => {
 });
 
 document.addEventListener("input", (event) => {
+  const recInput = event.target.closest(".order-rec-input");
+  if (recInput) {
+    const normalized = String(Math.max(0, Math.round(toNumber(recInput.value) || 0)));
+    if (recInput.value !== normalized) recInput.value = normalized;
+  }
   const input = event.target.closest("[data-reorder-field]");
   if (!input) return;
+  input.value = input.value === "" ? "" : String(Math.max(0, Math.round(toNumber(input.value) || 0)));
   const code = input.dataset.code;
   const field = input.dataset.reorderField;
   const val = input.value.trim();
@@ -1012,20 +1031,44 @@ document.addEventListener("input", (event) => {
   renderDebounced();
 });
 
+document.addEventListener("focusin", (event) => {
+  const editable = event.target.closest(".mini-input, .order-rec-input");
+  if (!editable) return;
+  setTimeout(() => editable.select?.(), 0);
+});
+
+document.addEventListener("dblclick", (event) => {
+  const editable = event.target.closest(".mini-input, .order-rec-input");
+  if (!editable) return;
+  editable.select?.();
+});
+
 // Reset-override button: click the ðŸ”’ icon to clear that field's override
 document.addEventListener("click", (event) => {
   const resetBtn = event.target.closest(".reset-override");
-  if (!resetBtn) return;
-  event.stopPropagation();
-  const { code, field } = resetBtn.dataset;
-  if (state.reorderOverrides[code]) {
-    delete state.reorderOverrides[code][field];
-    if (!Object.keys(state.reorderOverrides[code]).length) delete state.reorderOverrides[code];
-    localStorage.setItem("posDashboardReorderOverrides:v1", JSON.stringify(state.reorderOverrides));
+  if (resetBtn) {
+    event.stopPropagation();
+    const { code, field } = resetBtn.dataset;
+    if (state.reorderOverrides[code]) {
+      delete state.reorderOverrides[code][field];
+      if (!Object.keys(state.reorderOverrides[code]).length) delete state.reorderOverrides[code];
+      localStorage.setItem("posDashboardReorderOverrides:v1", JSON.stringify(state.reorderOverrides));
+    }
+    showToast(`${field === "min" ? "Min" : "Max"} restored to auto for ${code}`);
+    bumpDataStamp();
+    render();
+    return;
   }
-  showToast(`${field === "min" ? "Min" : "Max"} restored to auto for ${code}`);
-  bumpDataStamp();
-  render();
+  const editableCell = event.target.closest("td.order-col, td.order-highlight");
+  if (editableCell) {
+    const innerInput = editableCell.querySelector("input");
+    if (innerInput) {
+      innerInput.focus();
+      innerInput.select?.();
+      event.stopPropagation();
+      return;
+    }
+  }
 });
 
 async function loadDroppedFiles(fileList) {
@@ -1093,6 +1136,7 @@ async function loadFiles(fileList) {
     bumpDataStamp();
     updateFilterOptions();
     setDefaultDates();
+    await savePersistedState();
     await savePersistedState();
     await syncSharedDataToSupabase({ silent: true });
     render();
@@ -1968,6 +2012,7 @@ function currentOrderRows(options = {}) {
         if (vendorFilter === "Active" && rule && rule.status !== "Active") return false;
         if (vendorFilter === "Disabled" && (!rule || rule.status !== "Disabled")) return false;
       }
+      if (state.orderVendorQuickFilter && (item.vendor || "").toUpperCase() !== state.orderVendorQuickFilter.toUpperCase()) return false;
       return true;
     })
     .sort((a, b) => (b.recommendedOrder || b.qtyNeeded || 0) - (a.recommendedOrder || a.qtyNeeded || 0));
@@ -3524,7 +3569,8 @@ function renderOrderColumnPicker() {
   const panel = document.querySelector("#orderColumnPickerPanel");
   if (!panel || panel.dataset.built) return;
   panel.dataset.built = "1";
-  panel.innerHTML = `<div class="column-picker-grid">${orderColumns.map((c) => `
+  const sortedColumns = [...orderColumns].sort((a, b) => compareDisplayValue(a.label, b.label));
+  panel.innerHTML = `<div class="column-picker-grid">${sortedColumns.map((c) => `
     <label class="column-choice">
       <input type="checkbox" data-order-col="${c.key}" ${state.orderVisibleColumns[c.key] ? "checked" : ""} />
       <span>${c.label}</span>
@@ -3541,6 +3587,23 @@ function renderOrderColumnPicker() {
 }
 
 function renderOrders() {
+  const rowsWithoutVendorChip = buildInventoryRows()
+    .map(applyOrderOverride)
+    .filter((item) => {
+      if (item.isOrderable === false) return false;
+      if (item.recommendedOrder <= 0 && !item.qtyNeeded) return false;
+      const vendorFilter = getOrderVendorFilter ? getOrderVendorFilter() : "Active";
+      if (state.vendorRules.length && vendorFilter !== "") {
+        const vendorName = (item.vendor || "").toUpperCase();
+        const rule = state.vendorRules.find((r) => r.vendor?.toUpperCase() === vendorName);
+        if (vendorFilter === "Active" && rule && rule.status !== "Active") return false;
+        if (vendorFilter === "Disabled" && (!rule || rule.status !== "Disabled")) return false;
+      }
+      return true;
+    });
+  if (state.orderVendorQuickFilter && !rowsWithoutVendorChip.some((item) => (item.vendor || "").toUpperCase() === state.orderVendorQuickFilter.toUpperCase())) {
+    state.orderVendorQuickFilter = "";
+  }
   // Show live formula in header
   const safety = toNumber(els.safetyDays.value) || 7;
   const doi = toNumber(els.daysOfInventory?.value) || 0;
@@ -3576,6 +3639,30 @@ function renderOrders() {
   }
 
   const orders = currentOrderRows().slice(0, 80);
+  const vendorBar = document.querySelector(".ordering-vendor-filter-bar");
+  if (vendorBar) {
+    const currentRows = rowsWithoutVendorChip;
+    const shownVendors = [...new Set(currentRows.map((item) => cleanCell(item.vendor)).filter(Boolean))].sort(compareDisplayValue);
+    const selectedVendor = state.orderVendorQuickFilter || "";
+    const chipsHtml = shownVendors.length
+      ? `<div class="order-vendor-chips">
+          <button type="button" class="order-vendor-pill${selectedVendor === "" ? " active" : ""}" data-order-vendor-chip="">All shown</button>
+          ${shownVendors.map((vendor) => `<button type="button" class="order-vendor-pill${selectedVendor.toUpperCase() === vendor.toUpperCase() ? " active" : ""}" data-order-vendor-chip="${escapeHtml(vendor)}">${escapeHtml(vendor)}</button>`).join("")}
+        </div>`
+      : "";
+    let chips = vendorBar.querySelector(".order-vendor-chips");
+    if (chips) chips.remove();
+    vendorBar.insertAdjacentHTML("beforeend", chipsHtml);
+    vendorBar.querySelectorAll("[data-order-vendor-chip]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        state.orderVendorQuickFilter = btn.dataset.orderVendorChip || "";
+        renderOrders();
+      });
+    });
+    if (selectedVendor && !shownVendors.some((vendor) => vendor.toUpperCase() === selectedVendor.toUpperCase())) {
+      state.orderVendorQuickFilter = "";
+    }
+  }
   // Render column picker
   renderOrderColumnPicker();
 
@@ -3670,6 +3757,8 @@ function renderOrders() {
   // Wire editable Rec Order inputs — stopPropagation prevents opening detail drawer
   els.orderCards.querySelectorAll(".order-rec-input").forEach((input) => {
     input.addEventListener("click", (e) => e.stopPropagation());
+    input.addEventListener("focus", () => input.select?.());
+    input.addEventListener("dblclick", () => input.select?.());
     input.addEventListener("input", () => {
       const code = input.dataset.code;
       const val = Math.max(0, toNumber(input.value) || 0);
@@ -3745,6 +3834,8 @@ function renderTable() {
 
 function renderInventory() {
   const rows = currentInventoryRows();
+  const renderToken = (state._inventoryRenderToken || 0) + 1;
+  state._inventoryRenderToken = renderToken;
   els.inventoryBody.innerHTML = "";
   renderInventorySummary(rows);
   renderInventoryHeader();
@@ -3760,6 +3851,7 @@ function renderInventory() {
   let offset = 0;
 
   function renderChunk() {
+    if (renderToken !== state._inventoryRenderToken) return;
     const fragment = document.createDocumentFragment();
     const end = Math.min(offset + CHUNK, visible.length);
     for (let i = offset; i < end; i++) {
@@ -3789,6 +3881,7 @@ function renderInventory() {
     if (offset < visible.length) {
       requestAnimationFrame(renderChunk);
     } else {
+      if (renderToken !== state._inventoryRenderToken) return;
       els.inventoryBody.querySelectorAll(".pending-clear-btn").forEach((btn) => {
         btn.addEventListener("click", (event) => {
           event.stopPropagation();
@@ -4953,7 +5046,8 @@ function recommendedOrderQty({ stock, min, max }) {
 }
 
 function renderColumnPicker() {
-  els.columnPickerPanel.innerHTML = `<div class="column-picker-grid order-cp-grid">${inventoryColumns.map(([key, label]) => `
+  const sortedColumns = [...inventoryColumns].sort((a, b) => compareDisplayValue(a[1], b[1]));
+  els.columnPickerPanel.innerHTML = `<div class="column-picker-grid order-cp-grid">${sortedColumns.map(([key, label]) => `
     <label class="column-choice">
       <input type="checkbox" data-column-toggle="${key}" ${state.visibleColumns[key] ? "checked" : ""} />
       <span>${label}</span>
@@ -5177,10 +5271,12 @@ function renderDatePresets() {
   ];
   if (!state._datePresetsReady) {
     container.innerHTML =
+      `<div class="date-preset-chip-row">${presets.map((p) => `<button type="button" class="preset-chip" data-preset-days="${p.days}">${p.label}</button>`).join("")}</div>` +
+      `<div class="date-custom-range-group">` +
       `<button type="button" class="date-arrow-btn" id="datePresetPrev" title="Previous period">&#8249;</button>` +
-      presets.map((p) => `<button type="button" class="preset-chip" data-preset-days="${p.days}">${p.label}</button>`).join("") +
+      `<button type="button" class="date-range-label" id="dateRangeLabel" title="Click to pick custom dates"></button>` +
       `<button type="button" class="date-arrow-btn" id="datePresetNext" title="Next period">&#8250;</button>` +
-      `<span class="date-range-label" id="dateRangeLabel" title="Click to pick custom dates"></span>`;
+      `</div>`;
 
     container.querySelectorAll("[data-preset-days]").forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -5514,17 +5610,26 @@ function openDb() {
 }
 
 async function readPersistedState() {
-  const db = await openDb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(DB_STORE, "readonly");
-    const request = tx.objectStore(DB_STORE).get(DB_KEY);
-    request.onsuccess = () => resolve(request.result || null);
-    request.onerror = () => reject(request.error);
-  });
+  try {
+    const db = await openDb();
+    const dbState = await new Promise((resolve, reject) => {
+      const tx = db.transaction(DB_STORE, "readonly");
+      const request = tx.objectStore(DB_STORE).get(DB_KEY);
+      request.onsuccess = () => resolve(request.result || null);
+      request.onerror = () => reject(request.error);
+    });
+    if (dbState) return dbState;
+  } catch (_) {
+    // Fall through to localStorage snapshot.
+  }
+  try {
+    return JSON.parse(localStorage.getItem(LOCAL_SNAPSHOT_KEY) || "null");
+  } catch (_) {
+    return null;
+  }
 }
 
 async function savePersistedState() {
-  const db = await openDb();
   const payload = {
     rawSales: state.rawSales,
     inventoryDate: latestInventoryDate(),
@@ -5532,12 +5637,18 @@ async function savePersistedState() {
     excelRows: [...state.excelItems.values()],
     loadedFileSignatures: [...state._loadedFileSignatures],
   };
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(DB_STORE, "readwrite");
-    tx.objectStore(DB_STORE).put(payload, DB_KEY);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
+  localStorage.setItem(LOCAL_SNAPSHOT_KEY, JSON.stringify(payload));
+  try {
+    const db = await openDb();
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction(DB_STORE, "readwrite");
+      tx.objectStore(DB_STORE).put(payload, DB_KEY);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch (_) {
+    return;
+  }
 }
 
 async function restorePersistedState() {
@@ -5735,6 +5846,27 @@ function hydrateSalesFromSupabase(row) {
   };
 }
 
+function applySharedProductRows(rows) {
+  if (!rows?.length) return 0;
+  const snapshotDate = rows.map((row) => row.updated_at ? String(row.updated_at).slice(0, 10) : "").filter(Boolean).sort().at(-1)
+    || latestInventoryDate()
+    || new Date().toISOString().slice(0, 10);
+  const mergedInventory = new Map([...state.latestInventory.entries()]);
+  rows.forEach((row) => {
+    const inventoryItem = hydrateInventoryFromSupabase(row);
+    const excelItem = hydrateExcelFromSupabase(row);
+    const key = codeKey(inventoryItem.code || excelItem.code);
+    if (!key) return;
+    mergedInventory.set(key, inventoryItem);
+    addExcelIndex(excelItem);
+  });
+  state.latestInventory = mergedInventory;
+  state.inventories.set(snapshotDate, [...mergedInventory.values()]);
+  rebuildExcelIndexes();
+  bumpDataStamp();
+  return rows.length;
+}
+
 async function restoreSharedDataFromSupabase(options = {}) {
   const { silent = false } = options;
   try {
@@ -5803,6 +5935,7 @@ async function syncSharedDataToSupabase(options = {}) {
       await supabaseDeleteAllRows("daily_sales");
       await supabaseInsertRows("daily_sales", salesRows);
     }
+    await savePersistedState();
     if (!silent) showToast("Shared Supabase data updated.", 2800, "success");
     return true;
   } catch (error) {
@@ -5816,6 +5949,7 @@ async function initApp() {
   await refreshUsersFromSupabase({ silent: true });
   const restoredShared = await restoreSharedDataFromSupabase({ silent: true });
   if (!restoredShared) await restorePersistedState();
+  updateMetricsSummaryMode();
   if (els.searchInput) {
     els.searchInput.value = state.tabSearches[activeTabName()] || "";
   }
@@ -6719,7 +6853,7 @@ function isPendingOrder(code) {
 }
 
 function submitVendorPo(vendorName) {
-  const items = currentOrderRows({ ignoreQuery: true, ignoreFilters: true }).filter((item) => (item.vendor||"").toUpperCase() === vendorName.toUpperCase());
+  const items = currentOrderRows().filter((item) => (item.vendor||"").toUpperCase() === vendorName.toUpperCase());
   if (!items.length) { showToast(`No items to order for ${vendorName}.`, 2800, "warning"); return; }
   const clearAt = Date.now() + 10 * 24 * 60 * 60 * 1000; // 10 days
   const po = {
@@ -6837,7 +6971,7 @@ document.querySelector("#vpmCloseButton")?.addEventListener("click", () => {
 function openVendorAnalysisPanel(vendorName) {
   const modal = document.querySelector("#vendorPoModal");
   if (!modal) return;
-  const items = currentOrderRows({ ignoreQuery: true, ignoreFilters: true }).filter((item) => (item.vendor||"").toUpperCase() === vendorName.toUpperCase());
+  const items = currentOrderRows().filter((item) => (item.vendor||"").toUpperCase() === vendorName.toUpperCase());
   const rule = state.vendorRules.find((r) => r.vendor && r.vendor.toUpperCase() === vendorName.toUpperCase());
   const totalCost = items.reduce((s, item) => s + orderLineCost(item), 0);
   const minOk = !rule || !rule.minOrder || totalCost >= rule.minOrder;
@@ -7230,6 +7364,29 @@ function showLockScreen() {
   state.currentUser = null;
 }
 
+function lockApp(message = "Session locked.") {
+  showLockScreen();
+  clearTimeout(state._idleLogoutTimer);
+  if (message) showToast(message, 2200, "warning");
+}
+
+function updateMetricsSummaryMode() {
+  const zone = document.querySelector("#metricsHoverZone");
+  const bar = zone?.querySelector(".metrics-peek-bar");
+  if (!zone || !bar) return;
+  zone.classList.toggle("pinned", !!state.metricsPinned);
+  bar.textContent = state.metricsPinned
+    ? "Sales summary — pinned (click to return to hover)"
+    : "Sales summary — hover to expand (click to pin)";
+}
+
+function resetIdleLogoutTimer() {
+  clearTimeout(state._idleLogoutTimer);
+  const overlay = document.querySelector("#lockScreen");
+  if (!state.currentUser || !overlay || !overlay.classList.contains("lock-dismissed")) return;
+  state._idleLogoutTimer = setTimeout(() => lockApp("Logged out after 5 minutes of inactivity."), IDLE_TIMEOUT_MS);
+}
+
 function tryUnlock(pin) {
   const user = verifyPin(pin);
   if (!user) {
@@ -7242,6 +7399,8 @@ function tryUnlock(pin) {
   if (overlay) overlay.classList.add("lock-dismissed");
   showToast("Welcome, " + user.name + "!", 2000, "success");
   applyRoleRestrictions();
+  updateMetricsSummaryMode();
+  resetIdleLogoutTimer();
   // Switch to Scan Mode for user role (phone-first workflow)
   if (isUserRole()) { const btn = document.querySelector('.tab-button[data-tab="scanmode"]'); if (btn) btn.click(); }
 }
@@ -7412,6 +7571,9 @@ document.querySelector("#orderVendorFilterSelect")?.addEventListener("change", (
 
   draw();
 })();
+["pointerdown", "keydown", "input", "focusin"].forEach((eventName) => {
+  document.addEventListener(eventName, () => resetIdleLogoutTimer(), true);
+});
 initApp();
 
 // Multi-device sync: poll Supabase every 30s for stock changes from other devices
@@ -7420,29 +7582,26 @@ initApp();
   async function poll() {
     try {
       const url = new URL(`${SUPABASE_URL}/rest/v1/products`);
-      url.searchParams.set("select", "code,stock,updated_at");
+      url.searchParams.set("select", "code,product,plu,item_number,vendor,category,department,color,state,stock,price,unit_cost,case_size,add_date,updated_at");
       url.searchParams.set("order", "updated_at.desc");
-      url.searchParams.set("limit", "500");
+      url.searchParams.set("limit", "2000");
       const resp = await fetch(url.toString(), { headers: supabaseHeaders() });
       if (!resp.ok) return;
       const rows = await resp.json();
-      const hash = rows.map((r) => `${r.code}:${r.stock}`).join("|");
+      if (!rows.length) return;
+      const hash = rows.map((r) => `${r.code}:${r.stock}:${r.case_size}:${r.state}:${r.updated_at}`).join("|");
       if (hash === _lastHash) return;
       _lastHash = hash;
-      let changed = 0;
-      rows.forEach((r) => {
-        const key = codeKey(r.code);
-        const item = state.latestInventory.get(key);
-        if (item && item.stock !== Number(r.stock)) {
-          item.stock = Number(r.stock);
-          state.latestInventory.set(key, item);
-          changed++;
-        }
-      });
+      const beforeHash = [...state.latestInventory.values()].map((item) => `${item.code}:${item.stock}:${item.state}:${item.addDate}:${item.caseSize}`).join("|");
+      applySharedProductRows(rows);
+      const afterHash = [...state.latestInventory.values()].map((item) => `${item.code}:${item.stock}:${item.state}:${item.addDate}:${item.caseSize}`).join("|");
+      const changed = beforeHash === afterHash ? 0 : 1;
       if (changed > 0) {
-        state._inventoryCache = null;
+        updateFilterOptions();
+        updateInventoryStateFilter();
+        await savePersistedState();
         if (!state.activeCountSession) renderDebounced();
-        showToast(`\u21ba Synced ${changed} stock update${changed > 1 ? "s" : ""} from another device`, 2400, "success");
+        showToast(`\u21ba Synced shared inventory updates from another device`, 2400, "success");
       }
     } catch (_) { /* silent fail on file:// */ }
   }

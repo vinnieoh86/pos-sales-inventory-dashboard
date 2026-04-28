@@ -1990,6 +1990,7 @@ th[data-sort][data-sort-dir="desc"]::after {
   border-color: var(--gold);
   background: #fffbeb;
   font-weight: 700;
+  box-shadow: inset 0 0 0 1px rgba(240, 181, 0, 0.22);
 }
 .reset-override {
   display: inline-flex;
@@ -2488,6 +2489,10 @@ th[data-sort][data-sort-dir="desc"]::after {
   text-align: center;
 }
 .metrics-peek-bar:hover { background: #333; }
+.metrics-hover-zone.pinned .metrics-peek-bar {
+  background: var(--green);
+  border-bottom-color: #0f5d40;
+}
 .metrics-dropdown {
   display: none;
   position: absolute;
@@ -2972,6 +2977,12 @@ th[data-sort][data-sort-dir="desc"]::after {
 }
 .order-rec-input:hover { border-color: var(--line); background: #fff; }
 .order-rec-input:focus { border-color: var(--green); background: #fff; outline: none; }
+
+.tab-button--logout {
+  background: #fff4e8;
+  color: #9a4f00;
+  border-color: rgba(154, 79, 0, 0.18);
+}
 
 /* ── Ordering table: fit one page, no horizontal scroll ─────────────────── */
 .order-cards .table-wrap,
@@ -3615,6 +3626,33 @@ body[data-active-tab="scanmode"] .load-strip {
   padding: 8px 0;
   border-bottom: 1px solid var(--line);
   margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.order-vendor-chips {
+  display: inline-flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.order-vendor-pill {
+  border: 1px solid rgba(22, 131, 91, 0.22);
+  background: #eef8f1;
+  color: #106545;
+  border-radius: 999px;
+  padding: 0.32rem 0.72rem;
+  font-size: 0.76rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.order-vendor-pill.active {
+  background: var(--green);
+  border-color: var(--green);
+  color: #fff;
 }
 
 /* ── Date navigation group ───────────────────────────────────────────────── */
@@ -4033,8 +4071,35 @@ body[data-active-tab="settings"] .sticky-pills {
 
 #datePresets {
   position: relative;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem;
   padding: 0.35rem 0.45rem 0.5rem;
   margin-bottom: 0.45rem;
+}
+
+.date-preset-chip-row {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.date-custom-range-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-left: auto;
+}
+
+.date-range-label {
+  min-height: 2.1rem;
+  padding: 0.3rem 0.85rem;
+  border-radius: 10px;
+}
+
+.date-nav-row {
+  display: none !important;
 }
 
 /* Ensure column pickers can open above sticky bars */
@@ -4159,7 +4224,13 @@ body[data-active-tab="settings"] .sticky-pills {
 #inventoryBody td[data-col="reorderMin"],
 #inventory th[data-col="reorderMax"],
 #inventoryBody td[data-col="reorderMax"] {
-  width: 4.5% !important;
+  width: 3.6% !important;
+}
+
+#inventory th[data-col="needs"],
+#inventoryBody td[data-col="needs"] {
+  width: 3.7rem !important;
+  min-width: 3.7rem !important;
 }
 
 .order-table .sku-name,
