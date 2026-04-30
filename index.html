@@ -27,14 +27,16 @@
       </div>
       <nav class="tab-list" aria-label="Dashboard tabs">
         <button class="tab-button active" type="button" data-tab="dashboard">Dashboard</button>
-        <button class="tab-button tab-button--pricecheck" type="button" data-tab="scanmode">SCAN MODE</button>
-        <button class="tab-button" type="button" data-tab="inventory">Products</button>
+      <button class="tab-button tab-button--pricecheck" type="button" data-tab="scanmode">SCAN MODE</button>
+      <button class="tab-button" type="button" data-tab="inventory">Products</button>
+      <button class="tab-button" type="button" data-tab="newitems">New Items</button>
         <button class="tab-button" type="button" data-tab="counts">Inventory</button>
       <button class="tab-button" type="button" data-tab="parents" hidden aria-hidden="true">Parent Styles</button>
-        <button class="tab-button" type="button" data-tab="ordering">Ordering</button>
-        <button class="tab-button tab-button--reports" type="button" data-tab="reports">Reports</button>
-        <button class="tab-button tab-button--vendors" type="button" data-tab="vendors">Vendors</button>
-        <button class="tab-button tab-button--settings" type="button" data-tab="settings">Settings</button>
+      <button class="tab-button" type="button" data-tab="ordering">Ordering</button>
+      <button class="tab-button tab-button--reports" type="button" data-tab="reports">Reports</button>
+      <button class="tab-button" type="button" data-tab="logs" hidden aria-hidden="true">Logs</button>
+      <button class="tab-button tab-button--vendors" type="button" data-tab="vendors">Vendors</button>
+      <button class="tab-button tab-button--settings" type="button" data-tab="settings">Settings</button>
         <button class="tab-button tab-button--logout" id="logoutButton" type="button">Log Out</button>
       </nav>
       <section class="drop-inbox compact-uploader" id="dropInbox">
@@ -46,6 +48,7 @@
           <button id="chooseSalesButton" type="button">Sales CSVs</button>
           <button id="chooseFolderButton" type="button">POS Folder</button>
           <button id="chooseExcelButton" type="button">Excel</button>
+          <button id="chooseMultiButton" type="button">Multi</button>
         </div>
       </section>
       <div class="load-strip" id="dropZone" aria-hidden="true">
@@ -60,6 +63,10 @@
         <label class="file-button excel">
           One-Time Excel
           <input id="excelInput" type="file" accept=".xlsx,.xls" />
+        </label>
+        <label class="file-button secondary">
+          Multi
+          <input id="multiBarcodeInput" type="file" accept=".xlsx,.xls" />
         </label>
       </div>
     </header>
@@ -76,7 +83,7 @@
         <label>Department <span class="filter-label-actions"><button class="filter-clear-button" type="button" data-clear-filter="departmentFilter" aria-label="Clear department filter">Clear</button></span><select id="departmentFilter"></select></label>
         <label>Category <span class="filter-label-actions"><button class="filter-clear-button" type="button" data-clear-filter="categoryFilter" aria-label="Clear category filter">Clear</button></span><select id="categoryFilter"></select></label>
         <label>Vendor <span class="filter-label-actions"><button class="filter-clear-button" type="button" data-clear-filter="vendorFilter" aria-label="Clear vendor filter">Clear</button></span><select id="vendorFilter"></select></label>
-        <label>Color <select id="colorFilter"></select></label>
+        <label style="display:none" aria-hidden="true">Color <select id="colorFilter"></select></label>
         <label title="Days of stock to hold as safety buffer. Min = SV × Safety">Safety days <input id="safetyDays" type="number" min="0" max="120" value="21" /></label>
         <label class="lead-days-field" title="Hidden legacy field"><input id="leadDays" type="number" min="0" max="0" value="0" tabindex="-1" /></label>
         <label title="Extra days of inventory to stock beyond min">Days of inventory <input id="daysOfInventory" type="number" min="0" max="365" value="7" /></label>
@@ -286,6 +293,55 @@
         </section>
       </section>
 
+      <section class="tab-view" data-tab-view="newitems">
+        <section class="panel table-panel">
+          <div class="panel-heading">
+            <div><p class="eyebrow">Monthly intake</p><h2>New items by vendor</h2></div>
+            <div class="table-tools">
+              <input id="newItemsSearchInput" type="search" placeholder="Search parent, variant, vendor..." class="tab-search" />
+              <label class="session-filter-label">Year
+                <select id="newItemsYearFilter"></select>
+              </label>
+              <label class="session-filter-label">Month
+                <select id="newItemsMonthFilter"></select>
+              </label>
+              <label class="session-filter-label">Sales alert
+                <select id="newItemsDormantFilter">
+                  <option value="">All</option>
+                  <option value="1">No sales 1M</option>
+                  <option value="3">No sales 3M</option>
+                  <option value="6">No sales 6M</option>
+                  <option value="12">No sales 12M</option>
+                </select>
+              </label>
+              <label class="session-filter-label">Vendor
+                <select id="newItemsVendorFilter"></select>
+              </label>
+              <label class="session-filter-label">Department
+                <select id="newItemsDepartmentFilter"></select>
+              </label>
+              <label class="session-filter-label">Category
+                <select id="newItemsCategoryFilter"></select>
+              </label>
+              <button id="newItemsClearButton" class="secondary-button" type="button">Clear all</button>
+            </div>
+          </div>
+          <div id="newItemsSummary" class="summary-strip"></div>
+          <div class="table-wrap tall">
+            <table class="order-table">
+              <thead>
+                <tr>
+                  <th>Vendor</th><th>Department</th><th>Category</th><th>Parent</th><th>Variants</th><th>Sold Qty</th><th>Sold $</th><th>Stock</th><th>Month</th><th>Badge</th>
+                </tr>
+              </thead>
+              <tbody id="newItemsBody">
+                <tr><td colspan="10" class="empty-cell">Load inventory and Excel data to review new items.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
       <section class="tab-view" data-tab-view="parents" hidden aria-hidden="true">
         <section class="panel table-panel">
           <div class="panel-heading">
@@ -389,6 +445,7 @@
               <summary>Columns ▾</summary>
               <div id="orderColumnPickerPanel" class="column-picker-panel order-cp-panel"></div>
             </details>
+            <button id="orderArrangeColumnsButton" type="button">Arrange columns</button>
             <button id="exportPoExcel" type="button" class="po-btn excel-btn">Create PO Excel</button>
             <button id="exportPoPdf" type="button" class="po-btn pdf-btn">Create PO PDF</button>
             <button id="downloadOrder" type="button">Download CSV</button>
@@ -455,6 +512,10 @@
           <p class="eyebrow">Inventory</p><h3>Count Reports</h3>
           <p class="muted">Final count exports for POS import</p>
         </button>
+        <button type="button" class="report-box" id="reportBoxLogs">
+          <p class="eyebrow">Imports</p><h3>Logs</h3>
+          <p class="muted">Coverage for sales, inventory, and data files</p>
+        </button>
       </div>
 
       <div id="reportAdjustModal" class="count-modal" hidden>
@@ -462,6 +523,11 @@
           <div class="panel-heading">
             <div><p class="eyebrow">Stock records</p><h3>Adjustment log</h3></div>
             <div class="table-tools">
+              <label class="session-filter-label">Month
+                <select id="adjustLogMonthFilter">
+                  <option value="">All months</option>
+                </select>
+              </label>
               <details class="report-export-details"><summary class="report-export-summary">Export</summary>
                 <div class="report-export-dropdown">
                   <button id="exportAdjustPdfButton" type="button" class="pdf-report-btn">PDF</button>
@@ -483,11 +549,14 @@
         <div class="count-modal__dialog count-modal__dialog--wide">
           <div class="panel-heading">
             <div><p class="eyebrow">Purchase orders</p><h3>Order history</h3></div>
-            <div class="table-tools"><button type="button" class="secondary-button report-modal-close" data-close-modal="reportPoModal">&#x2715;</button></div>
+            <div class="table-tools">
+              <button type="button" id="clearAllPendingPoButton" class="secondary-button">Clear All Pending</button>
+              <button type="button" class="secondary-button report-modal-close" data-close-modal="reportPoModal">&#x2715;</button>
+            </div>
           </div>
           <div class="table-wrap"><table class="count-report-table">
-            <thead><tr><th>Date</th><th>Vendor</th><th>Items</th><th>Total</th><th>Status</th></tr></thead>
-            <tbody id="poHistoryBody"><tr><td colspan="5" class="empty-cell">No POs submitted yet.</td></tr></tbody>
+            <thead><tr><th>Date</th><th>Vendor</th><th>Items</th><th>Total</th><th>Status</th><th>Action</th></tr></thead>
+            <tbody id="poHistoryBody"><tr><td colspan="6" class="empty-cell">No POs submitted yet.</td></tr></tbody>
           </table></div>
         </div>
       </div>
@@ -502,6 +571,32 @@
             <thead><tr><th>Date</th><th>Label</th><th>Items</th><th>Submitted</th><th>Export</th></tr></thead>
             <tbody id="countReportHistoryBody"><tr><td colspan="5" class="empty-cell">No final counts saved yet.</td></tr></tbody>
           </table></div>
+        </div>
+      </div>
+
+      <div id="reportLogsModal" class="count-modal" hidden>
+        <div class="count-modal__dialog count-modal__dialog--wide">
+          <div class="panel-heading">
+            <div><p class="eyebrow">Imported files</p><h3>Upload Logs</h3></div>
+            <div class="table-tools"><button type="button" class="secondary-button report-modal-close" data-close-modal="reportLogsModal">&#x2715;</button></div>
+          </div>
+          <div id="uploadLogSummary" class="summary-strip"></div>
+          <div class="table-wrap">
+            <table class="count-report-table">
+              <thead>
+                <tr><th>Date</th><th>Inventory CSV</th><th>Daily Sales</th><th>Data</th></tr>
+                <tr class="logs-filter-row">
+                  <th></th>
+                  <th><select id="logsInventoryFilter"><option value="">All</option><option value="Loaded">Loaded</option><option value="Missing">Missing</option><option value="Closed">Closed</option></select></th>
+                  <th><select id="logsSalesFilter"><option value="">All</option><option value="Loaded">Loaded</option><option value="Missing">Missing</option><option value="Closed">Closed</option></select></th>
+                  <th><select id="logsDataFilter"><option value="">All</option><option value="Loaded">Loaded</option><option value="Missing">Missing</option><option value="Closed">Closed</option></select></th>
+                </tr>
+              </thead>
+              <tbody id="uploadLogBody">
+                <tr><td colspan="4" class="empty-cell">No files imported yet.</td></tr>
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     </section>
@@ -925,6 +1020,7 @@
           </div>
           <div class="vendor-po-header-right">
             <button type="button" id="vpmSubmitButton" class="count-submit-btn vpm-submit-btn">✓ Submit PO</button>
+            <button type="button" id="vpmCancelButton" class="secondary-button" hidden>Clear PO</button>
             <button type="button" id="vpmClearPendingButton" class="secondary-button" hidden>Clear Pending</button>
             <button type="button" id="vpmExcelButton" class="excel-report-btn">Excel</button>
             <button type="button" id="vpmPdfButton" class="pdf-report-btn">PDF</button>
@@ -935,10 +1031,10 @@
           <table class="order-table vpm-table">
             <thead>
               <tr>
-                <th>Code</th><th>Item</th><th>Stock</th><th>SV/day</th>
-                <th>Min</th><th>Max</th><th>Rec. Order</th>
-                <th class="order-highlight">Case Order</th><th>Case Size</th>
-                <th>Unit Cost</th><th>Total Cost</th><th>Pending</th>
+                <th data-vpm-sort="code-asc">Code</th><th data-vpm-sort="item-asc">Item</th><th data-vpm-sort="stock-desc">Stock</th><th data-vpm-sort="velocity-desc">SV/day</th>
+                <th data-vpm-sort="min-desc">Min</th><th data-vpm-sort="max-desc">Max</th><th data-vpm-sort="rec-desc">Rec. Order</th>
+                <th class="order-highlight" data-vpm-sort="case-desc">Case Order</th><th data-vpm-sort="caseSize-desc">Case Size</th>
+                <th data-vpm-sort="unitCost-desc">Unit Cost</th><th data-vpm-sort="totalCost-desc">Total Cost</th><th>Pending</th>
               </tr>
             </thead>
             <tbody id="vpmBody"></tbody>
@@ -946,6 +1042,70 @@
         </div>
         <div class="vpm-footer">
           <span id="vpmGrandTotal" class="vpm-grand-total"></span>
+        </div>
+      </div>
+    </div>
+
+    <div id="productPoReviewModal" class="count-modal" hidden>
+      <div class="count-modal__dialog count-modal__dialog--wide vendor-po-modal">
+        <div class="vendor-po-header">
+          <div class="vendor-po-header-left">
+            <p class="eyebrow">Products review</p>
+            <h2 id="productPoReviewTitle">Create PO / Order</h2>
+            <div id="productPoReviewMeta" class="summary-strip vpm-meta"></div>
+          </div>
+          <div class="vendor-po-header-right">
+            <label class="session-filter-label">Sort
+              <select id="productPoReviewSortSelect">
+                <option value="rec-desc">Rec High-Low</option>
+                <option value="rec-asc">Rec Low-High</option>
+                <option value="item-asc">Item A-Z</option>
+                <option value="item-desc">Item Z-A</option>
+                <option value="code-asc">Code A-Z</option>
+                <option value="code-desc">Code Z-A</option>
+              </select>
+            </label>
+            <button type="button" id="productPoSendButton" class="count-submit-btn">Send PO</button>
+            <button type="button" id="productPoSendAllButton" class="count-submit-btn">Send All</button>
+            <button type="button" id="productPoExcelButton" class="excel-report-btn">Excel</button>
+            <button type="button" id="productPoPdfButton" class="pdf-report-btn">PDF</button>
+            <button type="button" id="productPoCloseButton" class="secondary-button">&#x2715;</button>
+          </div>
+        </div>
+        <div id="productPoReviewPills" class="order-review-pills"></div>
+        <div class="table-wrap vpm-table-wrap">
+          <table class="order-table vpm-table">
+            <thead>
+              <tr>
+                <th>Vendor</th><th>Code</th><th>Item</th><th>Stock</th><th>Min</th><th>Max</th><th>Rec. Order</th>
+                <th class="order-highlight">Cases to Order</th><th>Case Size</th><th>Total Cost</th>
+              </tr>
+            </thead>
+            <tbody id="productPoReviewBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div id="poHistoryDetailModal" class="count-modal" hidden>
+      <div class="count-modal__dialog count-modal__dialog--wide vendor-po-modal">
+        <div class="vendor-po-header">
+          <div class="vendor-po-header-left">
+            <p class="eyebrow">Purchase order review</p>
+            <h2 id="poHistoryDetailTitle">PO Review</h2>
+            <div id="poHistoryDetailMeta" class="summary-strip vpm-meta"></div>
+          </div>
+          <div class="vendor-po-header-right">
+            <button type="button" id="poHistoryDetailCloseButton" class="secondary-button">&#x2715;</button>
+          </div>
+        </div>
+        <div class="table-wrap vpm-table-wrap">
+          <table class="order-table vpm-table">
+            <thead>
+              <tr><th>Code</th><th>Item</th><th>Vendor</th><th>Rec. Order</th><th>Case Order</th><th>Case Size</th><th>Total Cost</th></tr>
+            </thead>
+            <tbody id="poHistoryDetailBody"></tbody>
+          </table>
         </div>
       </div>
     </div>

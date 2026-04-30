@@ -1,4 +1,4 @@
-const state = {
+﻿const state = {
   rawSales: [],
   inventories: new Map(),
   latestInventory: new Map(),
@@ -6,6 +6,7 @@ const state = {
   excelByPlu: new Map(),
   excelByItemNumber: new Map(),
   reorderOverrides: JSON.parse(localStorage.getItem("posDashboardReorderOverrides:v1") || "{}"),
+  itemMeta: {},
   visibleColumns: JSON.parse(localStorage.getItem("posDashboardVisibleColumns:v3") || "null"),
   columnOrder: JSON.parse(localStorage.getItem("posDashboardColumnOrder:v3") || "null"),
   arrangeColumns: false,
@@ -19,7 +20,7 @@ const state = {
   inventoryRows: [],
   parentRows: [],
   activePresetDays: 90,
-  // Performance cache â€” invalidated on data load, valid across filter/search changes
+  // Performance cache Ã¢â‚¬â€ invalidated on data load, valid across filter/search changes
   _skuCache: null,      // full unfiltered SKU map keyed by codeKey
   _skuCacheStamp: 0,    // increments when raw data changes
   _dataCacheStamp: 0,   // stamp written on load; cache valid when stamps match
@@ -28,6 +29,8 @@ const state = {
   _salesWindowsCache: new Map(),
   _dailyTotals: new Map(),
   _inventoryRowIndex: new Map(),
+  _priceCheckExactIndex: null,
+  _priceCheckExactIndexStamp: 0,
   _filteredSkuIndex: new Map(),
   _loadedFileSignatures: new Set(),
   _activeDetailCode: "",
@@ -47,6 +50,7 @@ const state = {
   orderSort: { key: "recommendedOrder", dir: "desc" },
   orderVendorFilter: "Active",
   orderVisibleColumns: JSON.parse(localStorage.getItem("posOrderColumns:v1") || "null"),
+  orderColumnOrder: JSON.parse(localStorage.getItem("posOrderColumnOrder:v1") || "null"),
   activeCountSession: JSON.parse(localStorage.getItem("posDashboardActiveCountSession:v1") || "null"),
   countQtyBuffer: "0",
   selectedCountItemCode: "",
@@ -55,6 +59,28 @@ const state = {
   countReportMode: "input",
   metricsPinned: JSON.parse(localStorage.getItem("posDashboardMetricsPinned:v1") || "false"),
   orderVendorQuickFilter: "",
+  orderSubmissionVendors: [],
+  orderSubmissionActiveVendor: "",
+  orderSubmissionDrafts: {},
+  orderArrangeColumns: false,
+  orderArrangeSource: "",
+  orderDismissedVendors: JSON.parse(localStorage.getItem("posDashboardDismissedOrderVendors:v1") || "[]"),
+  productPoReviewVendor: "",
+  productPoReviewSort: "rec-desc",
+  vendorPoSort: "item-asc",
+  uploadLogs: JSON.parse(localStorage.getItem("posDashboardUploadLogs:v1") || "[]"),
+  multiBarcodeMap: JSON.parse(localStorage.getItem("posDashboardMultiBarcodeMap:v1") || "{}"),
+  multiBarcodeMasters: JSON.parse(localStorage.getItem("posDashboardMultiBarcodeMasters:v1") || "[]"),
+  multiBarcodeFileName: localStorage.getItem("posDashboardMultiBarcodeFileName:v1") || "",
+  multiBarcodeSearch: "",
+  manualMultiBarcodes: JSON.parse(localStorage.getItem("posDashboardManualMultiBarcodes:v1") || "{}"),
+  detailDrawerTab: "fields",
+  newItemsVendor: "",
+  newItemsDepartment: "",
+  newItemsCategory: "",
+  newItemsYear: "",
+  newItemsSearch: "",
+  newItemsDormantMonths: "",
   // Stock adjust modal state
   stockAdjustItem: null,
   stockAdjustAction: null,   // "add" | "remove" | "set"
@@ -96,19 +122,21 @@ function bumpDataStamp() {
   state._salesWindowsCache = new Map();
   state._dailyTotals = new Map();
   state._inventoryRowIndex = new Map();
+  state._priceCheckExactIndex = null;
+  state._priceCheckExactIndexStamp = 0;
   state._countSearchIndex = null; // invalidate count search index too
   // Pre-warm inventory cache in background after a short delay so the
   // UI stays responsive but the next render is instant
   clearTimeout(state._prewarmTimer);
   state._prewarmTimer = setTimeout(() => {
     if (activeTabName() !== "inventory") {
-      // Build but don't display — just warms the cache
+      // Build but don't display â€” just warms the cache
       buildInventoryRows({ ignoreQuery: true, ignoreFilters: true, ignoreStateFilter: true });
     }
   }, 400);
 }
 
-// Debounce helper â€” delays fast-typing renders
+// Debounce helper Ã¢â‚¬â€ delays fast-typing renders
 function debounce(fn, ms) {
   let timer;
   return (...args) => {
@@ -121,12 +149,16 @@ const DB_NAME = "posDashboardHistory_launch421";
 const DB_VERSION = 1;
 const DB_STORE = "app";
 const DB_KEY = "state_v2";
+const DB_ITEM_META_KEY = "item_meta_v3";
 const LOCAL_SNAPSHOT_KEY = "posDashboardPersistedState:v2";
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
+const ITEM_META_STORAGE_KEY = "posDashboardItemMeta:v1";
 
 try {
   const legacySnapshot = localStorage.getItem(LOCAL_SNAPSHOT_KEY);
   if (legacySnapshot && legacySnapshot.length > 50000) localStorage.removeItem(LOCAL_SNAPSHOT_KEY);
+  const legacyItemMeta = localStorage.getItem(ITEM_META_STORAGE_KEY);
+  if (legacyItemMeta && legacyItemMeta.length > 50000) localStorage.removeItem(ITEM_META_STORAGE_KEY);
 } catch (_) {
   // Ignore storage access errors on startup.
 }
@@ -216,6 +248,27 @@ const els = {
   downloadSku: document.querySelector("#downloadSku"),
   downloadInventory: document.querySelector("#downloadInventory"),
   downloadParents: document.querySelector("#downloadParents"),
+  uploadLogBody: document.querySelector("#uploadLogBody"),
+  uploadLogSummary: document.querySelector("#uploadLogSummary"),
+  productPoReviewModal: document.querySelector("#productPoReviewModal"),
+  productPoReviewTitle: document.querySelector("#productPoReviewTitle"),
+  productPoReviewMeta: document.querySelector("#productPoReviewMeta"),
+  productPoReviewPills: document.querySelector("#productPoReviewPills"),
+  productPoReviewBody: document.querySelector("#productPoReviewBody"),
+  multiBarcodeInput: document.querySelector("#multiBarcodeInput"),
+  multiSummary: document.querySelector("#multiSummary"),
+  multiSearchInput: document.querySelector("#multiSearchInput"),
+  multiBody: document.querySelector("#multiBody"),
+  newItemsMonthFilter: document.querySelector("#newItemsMonthFilter"),
+  newItemsYearFilter: document.querySelector("#newItemsYearFilter"),
+  newItemsSummary: document.querySelector("#newItemsSummary"),
+  newItemsSearchInput: document.querySelector("#newItemsSearchInput"),
+  newItemsVendorFilter: document.querySelector("#newItemsVendorFilter"),
+  newItemsDepartmentFilter: document.querySelector("#newItemsDepartmentFilter"),
+  newItemsCategoryFilter: document.querySelector("#newItemsCategoryFilter"),
+  newItemsDormantFilter: document.querySelector("#newItemsDormantFilter"),
+  newItemsClearButton: document.querySelector("#newItemsClearButton"),
+  newItemsBody: document.querySelector("#newItemsBody"),
   parentRuleName: document.querySelector("#parentRuleName"),
   parentRuleAliases: document.querySelector("#parentRuleAliases"),
   addParentRuleButton: document.querySelector("#addParentRuleButton"),
@@ -359,6 +412,15 @@ const orderColumns = [
 if (!state.orderVisibleColumns) {
   state.orderVisibleColumns = Object.fromEntries(orderColumns.map((c) => [c.key, c.defaultOn]));
 }
+if (!state.orderColumnOrder) {
+  state.orderColumnOrder = orderColumns.map((c) => c.key);
+}
+const validOrderColumnKeys = orderColumns.map((c) => c.key);
+state.orderColumnOrder = state.orderColumnOrder.filter((key) => validOrderColumnKeys.includes(key));
+validOrderColumnKeys.forEach((key) => {
+  if (!state.orderColumnOrder.includes(key)) state.orderColumnOrder.push(key);
+  if (!(key in state.orderVisibleColumns)) state.orderVisibleColumns[key] = true;
+});
 
 const hoverTooltip = document.createElement("div");
 hoverTooltip.className = "row-hover-tooltip";
@@ -398,6 +460,7 @@ function saveActiveTabSearch() {
 els.fileInput.addEventListener("change", (event) => loadFiles(event.target.files));
 els.folderInput.addEventListener("change", (event) => loadFiles(event.target.files));
 els.excelInput.addEventListener("change", (event) => loadExcelFile(event.target.files[0]));
+els.multiBarcodeInput?.addEventListener("change", (event) => loadMultiBarcodeFile(event.target.files[0]));
 els.dropZone.addEventListener("dragover", (event) => {
   event.preventDefault();
   els.dropZone.classList.add("dragging");
@@ -450,8 +513,12 @@ document.querySelector("#datePeriodMode")?.addEventListener("change", (e) => {
 const renderParentsDebounced = debounce(renderParents, 120);
 const syncStickyHeightsDebounced = debounce(syncStickyHeights, 60);
 window.addEventListener("resize", syncStickyHeightsDebounced);
-// Text/number inputs debounce so fast typing doesn't rebuild 1000+ rows on every keystroke
-[els.searchInput, els.leadDays, els.safetyDays, els.daysOfInventory].filter(Boolean).forEach((input) => input.addEventListener("input", renderDebounced));
+function renderInventoryControlsLight() {
+  syncStickyHeights();
+  queueActiveTabRender();
+}
+// Keep search and ordering controls on the lighter active-tab render path.
+[els.searchInput, els.leadDays, els.safetyDays, els.daysOfInventory].filter(Boolean).forEach((input) => input.addEventListener("input", renderInventoryControlsLight));
 els.parentsSearch?.addEventListener("input", renderParentsDebounced);
 els.searchInput?.addEventListener("input", () => {
   const upper = els.searchInput.value.toUpperCase();
@@ -476,7 +543,13 @@ els.parentsSearch?.addEventListener("input", () => {
 [els.startDate, els.endDate, els.departmentFilter, els.categoryFilter, els.vendorFilter,
  els.colorFilter, els.segmentMetric, els.segmentGroup, els.sortMode, els.inventoryStateFilter,
  els.comparePeriod, els.compareGroup].filter(Boolean)
-  .forEach((input) => input.addEventListener("input", render));
+  .forEach((input) => input.addEventListener("input", () => {
+    if ([els.departmentFilter, els.categoryFilter, els.vendorFilter, els.colorFilter, els.inventoryStateFilter].includes(input)) {
+      renderInventoryControlsLight();
+      return;
+    }
+    render();
+  }));
 [els.startDate, els.endDate].filter(Boolean).forEach((input) => {
   input.addEventListener("input", () => {
     state.activePresetDays = null;
@@ -519,11 +592,16 @@ els.clearFilterButtons.forEach((button) => {
 els.chooseSalesButton.addEventListener("click", () => els.fileInput.click());
 els.chooseFolderButton.addEventListener("click", () => els.folderInput.click());
 els.chooseExcelButton.addEventListener("click", () => els.excelInput.click());
-els.createPoShortcut?.addEventListener("click", () => {
-  state.tabSearches["ordering"] = els.searchInput?.value || "";
-  localStorage.setItem("posDashboardTabSearches:v1", JSON.stringify(state.tabSearches));
-  switchTab("ordering");
+document.querySelector("#chooseMultiButton")?.addEventListener("click", () => els.multiBarcodeInput?.click());
+document.querySelector("#chooseMultiButtonInline")?.addEventListener("click", () => els.multiBarcodeInput?.click());
+document.querySelector("#orderArrangeColumnsButton")?.addEventListener("click", () => {
+  state.orderArrangeColumns = !state.orderArrangeColumns;
+  if (!state.orderArrangeColumns) state.orderArrangeSource = "";
+  document.querySelector("#orderArrangeColumnsButton").classList.toggle("active", state.orderArrangeColumns);
+  document.querySelector("#orderArrangeColumnsButton").textContent = state.orderArrangeColumns ? "Lock columns" : "Arrange columns";
+  renderOrders();
 });
+els.createPoShortcut?.addEventListener("click", openProductPoReviewModal);
 els.countLaunchCard?.addEventListener("click", openCountSetupModal);
 els.closeCountSessionButton?.addEventListener("click", closeActiveCountSession);
 els.countReviewButton?.addEventListener("click", () => openCountReport(state.activeCountSession?.id, "input"));
@@ -578,7 +656,7 @@ els.countSearchInput?.addEventListener("keydown", (event) => {
     hideCountDropdown();
   }
 });
-// Debounced count search — avoids scanning 25k items on every keystroke
+// Debounced count search â€” avoids scanning 25k items on every keystroke
 const renderCountDropdownDebounced = debounce((val) => renderCountDropdown(val), 120);
 els.countSearchInput?.addEventListener("input", () => {
   renderCountDropdownDebounced(els.countSearchInput.value);
@@ -600,7 +678,7 @@ els.priceCheckManualButton?.addEventListener("click", () => {
 els.scanModeStartButton?.addEventListener("click", () => startPriceCheckCamera({ fullscreen: prefersPhoneBarcodeScanner() }));
 els.scanModeManualButton?.addEventListener("click", () => switchTab("pricecheck"));
 
-// Scan mode — Bluetooth scanner: Enter fires lookup, auto-refocus for next scan
+// Scan mode â€” Bluetooth scanner: Enter fires lookup, auto-refocus for next scan
 document.querySelector("#scanModeLookupButton")?.addEventListener("click", () => {
   const inp = document.querySelector("#scanModeInput");
   if (!inp) return;
@@ -691,6 +769,77 @@ els.countCloseReportButton?.addEventListener("click", closeCountReport);
 document.querySelector("#countPdfReportButton")?.addEventListener("click", () => exportCountReportPdf());
 document.querySelector("#countExcelReportButton")?.addEventListener("click", () => exportCountReportExcel());
 document.querySelector("#countContinueButton")?.addEventListener("click", () => continueCountFromReport());
+document.querySelector("#productPoCloseButton")?.addEventListener("click", closeProductPoReviewModal);
+document.querySelector("#productPoSendButton")?.addEventListener("click", () => sendProductPoSelection(false));
+document.querySelector("#productPoSendAllButton")?.addEventListener("click", () => sendProductPoSelection(true));
+document.querySelector("#productPoExcelButton")?.addEventListener("click", () => exportProductReviewCsv());
+document.querySelector("#productPoPdfButton")?.addEventListener("click", () => exportProductReviewPdf());
+document.querySelector("#productPoReviewSortSelect")?.addEventListener("change", (event) => {
+  state.productPoReviewSort = event.target.value || "rec-desc";
+  renderProductPoReviewModal();
+});
+["#logsInventoryFilter", "#logsSalesFilter", "#logsDataFilter"].forEach((selector) => {
+  document.querySelector(selector)?.addEventListener("change", () => renderUploadLogs());
+});
+document.querySelector("#adjustLogMonthFilter")?.addEventListener("change", () => renderAdjustLog());
+document.querySelector("#clearAllPendingPoButton")?.addEventListener("click", () => clearAllPendingPo());
+document.querySelector("#reportBoxLogs")?.addEventListener("click", () => {
+  document.querySelector("#reportLogsModal").hidden = false;
+  renderUploadLogs();
+});
+document.querySelector("#poHistoryDetailCloseButton")?.addEventListener("click", () => {
+  document.querySelector("#poHistoryDetailModal").hidden = true;
+});
+document.querySelector("#poHistoryDetailModal")?.addEventListener("click", (event) => {
+  if (event.target === document.querySelector("#poHistoryDetailModal")) document.querySelector("#poHistoryDetailModal").hidden = true;
+});
+els.newItemsMonthFilter?.addEventListener("change", () => renderNewItems());
+els.newItemsYearFilter?.addEventListener("change", () => {
+  state.newItemsYear = els.newItemsYearFilter.value || "";
+  renderNewItems();
+});
+els.newItemsVendorFilter?.addEventListener("change", () => {
+  state.newItemsVendor = els.newItemsVendorFilter.value || "";
+  renderNewItems();
+});
+els.newItemsDepartmentFilter?.addEventListener("change", () => {
+  state.newItemsDepartment = els.newItemsDepartmentFilter.value || "";
+  renderNewItems();
+});
+els.newItemsCategoryFilter?.addEventListener("change", () => {
+  state.newItemsCategory = els.newItemsCategoryFilter.value || "";
+  renderNewItems();
+});
+els.newItemsSearchInput?.addEventListener("input", () => {
+  state.newItemsSearch = cleanCell(els.newItemsSearchInput.value || "");
+  renderNewItems();
+});
+els.newItemsDormantFilter?.addEventListener("change", () => {
+  state.newItemsDormantMonths = els.newItemsDormantFilter.value || "";
+  renderNewItems();
+});
+els.newItemsClearButton?.addEventListener("click", () => {
+  state.newItemsYear = "";
+  state.newItemsVendor = "";
+  state.newItemsDepartment = "";
+  state.newItemsCategory = "";
+  state.newItemsSearch = "";
+  state.newItemsDormantMonths = "";
+  if (els.newItemsYearFilter) els.newItemsYearFilter.value = "";
+  if (els.newItemsVendorFilter) els.newItemsVendorFilter.value = "";
+  if (els.newItemsDepartmentFilter) els.newItemsDepartmentFilter.value = "";
+  if (els.newItemsCategoryFilter) els.newItemsCategoryFilter.value = "";
+  if (els.newItemsSearchInput) els.newItemsSearchInput.value = "";
+  if (els.newItemsDormantFilter) els.newItemsDormantFilter.value = "";
+  renderNewItems();
+});
+els.multiSearchInput?.addEventListener("input", () => {
+  state.multiBarcodeSearch = cleanCell(els.multiSearchInput.value || "");
+  renderMultiBarcodes();
+});
+els.productPoReviewModal?.addEventListener("click", (event) => {
+  if (event.target === els.productPoReviewModal) closeProductPoReviewModal();
+});
 document.querySelector("#countSubmitButton")?.addEventListener("click", () => openConfirmSubmitCount());
 document.querySelector("#zeroNegativeStockButton")?.addEventListener("click", () => openConfirmZeroNeg());
 document.querySelector("#confirmDeleteSessionYes")?.addEventListener("click", () => confirmDeleteSavedSession());
@@ -794,8 +943,14 @@ document.addEventListener("keydown", (event) => {
   if (document.querySelector("#vendorPoModal") && !document.querySelector("#vendorPoModal").hidden) {
     if (event.key === "Escape") { document.querySelector("#vendorPoModal").hidden = true; return; }
   }
+  if (document.querySelector("#poHistoryDetailModal") && !document.querySelector("#poHistoryDetailModal").hidden) {
+    if (event.key === "Escape") { document.querySelector("#poHistoryDetailModal").hidden = true; return; }
+  }
+  if (els.productPoReviewModal && !els.productPoReviewModal.hidden) {
+    if (event.key === "Escape") { closeProductPoReviewModal(); return; }
+  }
   // Report modals
-  for (const id of ["reportAdjustModal","reportPoModal","reportCountModal"]) {
+  for (const id of ["reportAdjustModal","reportPoModal","reportCountModal","reportLogsModal"]) {
     const el = document.querySelector("#" + id);
     if (el && !el.hidden && event.key === "Escape") { el.hidden = true; return; }
   }
@@ -828,7 +983,7 @@ document.addEventListener("keydown", (event) => {
     closeCountSetupModal();
     return;
   }
-  // Enter in setup modal navigates: date → vendor → category → status → start
+  // Enter in setup modal navigates: date â†’ vendor â†’ category â†’ status â†’ start
   if (!els.countSetupModal.hidden && event.key === "Enter") {
     event.preventDefault();
     const focused = document.activeElement;
@@ -896,6 +1051,17 @@ document.addEventListener("change", (event) => {
     commitOrderRecommendationInput(recInput);
     return;
   }
+  const itemField = event.target.closest("[data-item-field]");
+  if (itemField) {
+    if (itemField.dataset.itemField === "state") {
+      itemField.className = itemField.className
+        .replace(/\bstate-select[a-z-]*\b/g, "")
+        .trim();
+      itemField.classList.add(`state-select-${normalizeItemState(itemField.value).toLowerCase().replace(/\s+/g, "")}`);
+    }
+    commitItemFieldInput(itemField);
+    return;
+  }
   const input = event.target.closest("[data-reorder-field]");
   if (input) commitReorderFieldInput(input);
 });
@@ -905,18 +1071,28 @@ document.addEventListener("keydown", (event) => {
     closeDatePickerPopup();
     closeOrderVendorMenu();
   }
-  const editable = event.target.closest?.(".mini-input, .order-rec-input");
-  if (!editable || event.key !== "Enter") return;
+  const editable = event.target.closest?.(".mini-input, .order-rec-input, [data-item-field]");
+  if (!editable) return;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    if (editable.matches("[data-item-field]")) revertEditableInput(editable);
+    else revertEditableInput(editable);
+    editable.blur();
+    return;
+  }
+  if (event.key !== "Enter") return;
   event.preventDefault();
   if (editable.classList.contains("order-rec-input")) commitOrderRecommendationInput(editable);
+  else if (editable.matches("[data-item-field]")) commitItemFieldInput(editable);
   else commitReorderFieldInput(editable);
-  editable.blur();
+  moveEditableFocus(editable, event.shiftKey ? "prev" : "next");
 });
 
 document.addEventListener("focusout", (event) => {
-  const editable = event.target.closest?.(".mini-input, .order-rec-input");
+  const editable = event.target.closest?.(".mini-input, .order-rec-input, [data-item-field]");
   if (!editable) return;
   if (editable.classList.contains("order-rec-input")) commitOrderRecommendationInput(editable, { render: false });
+  else if (editable.matches("[data-item-field]")) commitItemFieldInput(editable, { render: false });
   else commitReorderFieldInput(editable, { render: false });
 });
 
@@ -980,8 +1156,8 @@ els.inventoryBody?.addEventListener("click", (event) => {
     copyText(copyButton.dataset.copyCode || copyButton.textContent.trim(), copyButton);
     return;
   }
-  if (event.target.closest(".mini-input, .reset-override")) return;
-  // Stock cell click → open stock adjust modal
+  if (event.target.closest(".mini-input, .reset-override, [data-item-field]")) return;
+  // Stock cell click â†’ open stock adjust modal
   const stockCell = event.target.closest("td[data-col='stock']");
   if (stockCell) {
     const row = stockCell.closest("tr[data-item-code]");
@@ -996,13 +1172,19 @@ els.inventoryBody?.addEventListener("click", (event) => {
   if (item) showDetail(item);
 });
 els.inventoryBody?.addEventListener("mousedown", (event) => {
-  if (event.target.closest(".mini-input, .copy-code, .reset-override")) {
+  if (event.target.closest(".mini-input, .copy-code, .reset-override, [data-item-field]")) {
     event.stopPropagation();
   }
 });
 els.inventoryBody?.addEventListener("mousemove", (event) => {
   const row = event.target.closest("tr[data-item-code]");
   if (!row) { hideHoverTooltip(); return; }
+  const hoverCell = event.target.closest("td[data-col]");
+  const hoverableCols = new Set(["code", "product", "plu", "vendor"]);
+  if (!hoverCell || !hoverableCols.has(hoverCell.dataset.col || "")) {
+    hideHoverTooltip();
+    return;
+  }
   // Build tooltip lazily on first hover (deferred flag set during render)
   if (row.dataset.tooltipDeferred) {
     delete row.dataset.tooltipDeferred;
@@ -1046,14 +1228,21 @@ renderAttributeRules();
 document.querySelectorAll(".rules-box, .parent-rule-editor").forEach((node) => {
   node.hidden = !ENABLE_CUSTOM_PARENT_RULES && !ENABLE_CUSTOM_ATTRIBUTE_RULES;
 });
+els.detailDrawer?.addEventListener("click", (event) => event.stopPropagation());
+els.detailDrawer?.addEventListener("mousedown", (event) => event.stopPropagation());
 
 function commitOrderRecommendationInput(input, options = {}) {
   if (!input) return;
   const code = input.dataset.code;
   const val = Math.max(0, Math.round(toNumber(input.value) || 0));
+  if (input.dataset.lastCommittedValue === String(val)) {
+    input.value = String(val);
+    return;
+  }
   if (!state._orderRecOverrides) state._orderRecOverrides = new Map();
   state._orderRecOverrides.set(codeKey(code), val);
   input.value = String(val);
+  input.dataset.lastCommittedValue = String(val);
   if (options.render !== false) renderOrders();
 }
 
@@ -1062,6 +1251,11 @@ function commitReorderFieldInput(input, options = {}) {
   const code = input.dataset.code;
   const field = input.dataset.reorderField;
   const val = input.value.trim();
+  const nextCommitted = val === "" ? "" : String(Math.max(0, Math.round(toNumber(val) || 0)));
+  if (input.dataset.lastCommittedValue === nextCommitted) {
+    if (val !== nextCommitted) input.value = nextCommitted;
+    return;
+  }
   if (val === "") {
     if (state.reorderOverrides[code]) {
       delete state.reorderOverrides[code][field];
@@ -1072,9 +1266,79 @@ function commitReorderFieldInput(input, options = {}) {
     state.reorderOverrides[code][field] = Math.max(0, Math.round(toNumber(val) || 0));
     input.value = String(state.reorderOverrides[code][field]);
   }
+  input.dataset.lastCommittedValue = val === "" ? "" : input.value;
   localStorage.setItem("posDashboardReorderOverrides:v1", JSON.stringify(state.reorderOverrides));
   bumpDataStamp();
-  if (options.render !== false) renderDebounced();
+  if (options.render !== false) refreshAfterInventoryEdit();
+}
+
+function revertEditableInput(input) {
+  if (!input) return;
+  const field = input.dataset.itemField || input.dataset.reorderField || "";
+  const prev = input.dataset.prevValue ?? "";
+  if (field === "caseSize") input.value = String(Math.max(1, Math.round(toNumber(prev) || 1)));
+  else input.value = prev;
+}
+
+function refreshAfterInventoryEdit(options = {}) {
+  if (options.refreshStates) updateInventoryStateFilter();
+  syncStickyHeights();
+  const active = activeTabName();
+  if (active === "inventory") renderInventory();
+  else if (active === "ordering") renderOrders();
+  else if (active === "newitems") renderNewItems();
+  else queueActiveTabRender();
+  refreshDetailDrawer();
+}
+
+function moveEditableFocus(current, direction = "next") {
+  if (!current) return;
+  const selector = current.matches("[data-item-field]")
+    ? `[data-item-field="${current.dataset.itemField || ""}"]`
+    : current.matches("[data-reorder-field]")
+      ? "[data-reorder-field]"
+      : "";
+  if (!selector) return;
+  const inputs = [...document.querySelectorAll(selector)].filter((node) => !node.disabled && node.offsetParent !== null);
+  const index = inputs.indexOf(current);
+  if (index < 0) return;
+  const next = direction === "prev"
+    ? inputs[Math.max(index - 1, 0)]
+    : inputs[Math.min(index + 1, inputs.length - 1)];
+  if (next && next !== current) {
+    next.focus();
+    next.select?.();
+  }
+}
+
+function commitItemFieldInput(input, options = {}) {
+  if (!input) return;
+  const code = input.dataset.code;
+  const field = input.dataset.itemField;
+  if (!code || !field) return;
+  if (field === "caseSize") {
+    const nextValue = Math.max(1, Math.round(toNumber(input.value) || 1));
+    if (input.dataset.lastCommittedValue === String(nextValue)) {
+      input.value = String(nextValue);
+      return;
+    }
+    input.value = String(nextValue);
+    input.dataset.prevValue = String(nextValue);
+    input.dataset.lastCommittedValue = String(nextValue);
+    setItemMeta(code, { caseSize: nextValue, caseSizeManual: true });
+  } else if (field === "state") {
+    const nextValue = normalizeItemState(input.value);
+    if (input.dataset.lastCommittedValue === nextValue) {
+      input.value = nextValue;
+      return;
+    }
+    input.value = nextValue;
+    input.dataset.prevValue = nextValue;
+    input.dataset.lastCommittedValue = nextValue;
+    setItemMeta(code, { state: nextValue, stateManual: true });
+  }
+  bumpDataStamp();
+  if (options.render !== false) refreshAfterInventoryEdit({ refreshStates: field === "state" });
 }
 
 document.addEventListener("input", (event) => {
@@ -1082,6 +1346,11 @@ document.addEventListener("input", (event) => {
   if (recInput) {
     const normalized = String(Math.max(0, Math.round(toNumber(recInput.value) || 0)));
     if (recInput.value !== normalized) recInput.value = normalized;
+    return;
+  }
+  const itemInput = event.target.closest("[data-item-field='caseSize']");
+  if (itemInput) {
+    itemInput.value = itemInput.value === "" ? "" : String(Math.max(1, Math.round(toNumber(itemInput.value) || 1)));
     return;
   }
   const input = event.target.closest("[data-reorder-field]");
@@ -1101,7 +1370,7 @@ document.addEventListener("input", (event) => {
   } else {
     state.reorderOverrides[code] = state.reorderOverrides[code] || {};
     state.reorderOverrides[code][field] = toNumber(val);
-    showToast(`ðŸ”’ Manual ${field === "min" ? "Min" : "Max"} set â€” clear field to restore auto`);
+    showToast(`Manual ${field === "min" ? "Min" : "Max"} set - clear field to restore auto`);
   }
   localStorage.setItem("posDashboardReorderOverrides:v1", JSON.stringify(state.reorderOverrides));
   bumpDataStamp();
@@ -1109,31 +1378,35 @@ document.addEventListener("input", (event) => {
 });
 
 document.addEventListener("focusin", (event) => {
-  const editable = event.target.closest(".mini-input, .order-rec-input");
+  const editable = event.target.closest(".mini-input, .order-rec-input, [data-item-field]");
   if (!editable) return;
   setTimeout(() => editable.select?.(), 0);
 });
 
 document.addEventListener("dblclick", (event) => {
-  const editable = event.target.closest(".mini-input, .order-rec-input");
+  const editable = event.target.closest(".mini-input, .order-rec-input, [data-item-field]");
   if (!editable) return;
   editable.select?.();
 });
 
-// Reset-override button: click the ðŸ”’ icon to clear that field's override
+// Reset-override button: click Auto to clear that field's override
 document.addEventListener("click", (event) => {
   const resetBtn = event.target.closest(".reset-override");
   if (resetBtn) {
     event.stopPropagation();
     const { code, field } = resetBtn.dataset;
     if (state.reorderOverrides[code]) {
-      delete state.reorderOverrides[code][field];
-      if (!Object.keys(state.reorderOverrides[code]).length) delete state.reorderOverrides[code];
+      if (field === "all") {
+        delete state.reorderOverrides[code];
+      } else {
+        delete state.reorderOverrides[code][field];
+        if (!Object.keys(state.reorderOverrides[code]).length) delete state.reorderOverrides[code];
+      }
       localStorage.setItem("posDashboardReorderOverrides:v1", JSON.stringify(state.reorderOverrides));
     }
-    showToast(`${field === "min" ? "Min" : "Max"} restored to auto for ${code}`);
+    showToast(`${field === "all" ? "Min / Max" : field === "min" ? "Min" : "Max"} restored to auto for ${code}`);
     bumpDataStamp();
-    render();
+    refreshAfterInventoryEdit();
     return;
   }
   const editableCell = event.target.closest("td.order-col, td.order-highlight");
@@ -1142,6 +1415,16 @@ document.addEventListener("click", (event) => {
     if (innerInput) {
       innerInput.focus();
       innerInput.select?.();
+      event.stopPropagation();
+      return;
+    }
+  }
+  const inventoryEditableCell = event.target.closest("td.inventory-edit-cell");
+  if (inventoryEditableCell) {
+    const innerControl = inventoryEditableCell.querySelector("input, select");
+    if (innerControl) {
+      innerControl.focus();
+      innerControl.select?.();
       event.stopPropagation();
       return;
     }
@@ -1162,6 +1445,7 @@ async function loadFiles(fileList) {
   els.fileCount.textContent = `Reading ${files.length} files...`;
   try {
     let selectedInventory = null;
+    const previousCodes = new Set([...state.latestInventory.keys()]);
     let skippedDuplicates = 0;
     let processedFiles = 0;
     for (const file of files) {
@@ -1179,9 +1463,11 @@ async function loadFiles(fileList) {
         if (normalized.length && (!selectedInventory || date.iso >= selectedInventory.date)) {
           selectedInventory = { date: date.iso, rows: normalized };
         }
+        logUploadedFile({ filename: file.name, type: "Current_Inventory", status: "Success" });
       } else {
         state.rawSales = state.rawSales.filter((row) => row.date !== date.iso);
         state.rawSales.push(...rows.map((row) => normalizeSalesRow(row, date)).filter(Boolean));
+        logUploadedFile({ filename: file.name, type: "Daily_Sale", status: "Success" });
       }
       state._loadedFileSignatures.add(signature);
       processedFiles += 1;
@@ -1207,17 +1493,20 @@ async function loadFiles(fileList) {
       // inventory snapshot, even if a previously synced shared snapshot has a
       // newer timestamp such as a test/debug row.
       state.inventories = new Map([[selectedInventory.date, selectedInventory.rows]]);
+      registerInventorySnapshotMeta(selectedInventory.date, selectedInventory.rows, previousCodes);
     }
     state.dates = [...new Set(state.rawSales.map((row) => row.date))].sort();
     buildLatestInventory();
+    ensureVendorRulesFromData();
     bumpDataStamp();
     updateFilterOptions();
     setDefaultDates();
     await savePersistedState();
     await syncSharedDataToSupabase({ silent: true });
     render();
+    renderUploadLogs();
     if (skippedDuplicates) {
-      els.fileCount.textContent = `${fileSummary()} â€¢ skipped ${skippedDuplicates} duplicate file${skippedDuplicates === 1 ? "" : "s"}`;
+      els.fileCount.textContent = `${fileSummary()} - skipped ${skippedDuplicates} duplicate file${skippedDuplicates === 1 ? "" : "s"}`;
     }
   } catch (error) {
     console.error("CSV import failed", error);
@@ -1229,13 +1518,6 @@ async function loadExcelFile(file) {
   if (!file) return;
   try {
     const signature = fileSignature(file);
-    if (state._loadedFileSignatures.has(signature)) {
-      const synced = await syncSharedDataToSupabase({ productsOnly: true, silent: true });
-      els.excelStatus.textContent = synced
-        ? `Skipped duplicate Excel file: ${file.name}. Synced existing product data to cloud.`
-        : `Skipped duplicate Excel file: ${file.name}`;
-      return;
-    }
     els.excelStatus.textContent = `Reading ${file.name}...`;
     const xlsx = await ensureXlsxReader();
     if (!xlsx) {
@@ -1252,17 +1534,66 @@ async function loadExcelFile(file) {
       const item = normalizeExcelRow(row);
       addExcelIndex(item);
     });
+    seedItemMetaFromExcelRows([...state.excelItems.values()]);
     state._loadedFileSignatures.add(signature);
+    ensureVendorRulesFromData();
     updateFilterOptions();
     updateInventoryStateFilter();
     bumpDataStamp();
     els.excelStatus.textContent = `${number.format(state.excelItems.size)} Excel items imported for ordering fields.`;
+    logUploadedFile({ filename: file.name, type: "Excel_Product", status: "Success" });
     await savePersistedState();
     await syncSharedDataToSupabase({ productsOnly: true, silent: true });
     render();
+    renderUploadLogs();
   } catch (error) {
     console.error("Excel import failed", error);
     els.excelStatus.textContent = `Excel import failed: ${error.message || error}`;
+  }
+}
+
+async function loadMultiBarcodeFile(file) {
+  if (!file) return;
+  try {
+    els.excelStatus.textContent = `Reading ${file.name}...`;
+    const xlsx = await ensureXlsxReader();
+    if (!xlsx) {
+      els.excelStatus.textContent = "Excel reader could not load.";
+      return;
+    }
+    const workbook = xlsx.read(await file.arrayBuffer(), { type: "array" });
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    const matrix = xlsx.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+    const masters = [];
+    matrix.slice(1).forEach((row) => {
+      const masterCode = normalizeCode(row[0]);
+      const masterKey = rawCodeKey(masterCode);
+      if (!masterCode || !masterKey) return;
+      const aliases = row.slice(2, 18).map((value) => normalizeCode(value)).filter(Boolean);
+      if (!aliases.length) return;
+      const item = findCurrentItemByCode(masterCode) || findExcelFor({ code: masterCode }) || {};
+      masters.push({
+        masterCode,
+        masterKey,
+        product: item.product || "",
+        vendor: item.vendor || "",
+        plu: item.plu || "",
+        itemNumber: item.itemNumber || "",
+        aliases,
+      });
+    });
+    state.multiBarcodeMasters = masters.sort((a, b) => compareDisplayValue(a.product || a.masterCode, b.product || b.masterCode));
+    state.multiBarcodeFileName = file.name || "";
+    rebuildMultiBarcodeLookup();
+    els.excelStatus.textContent = `${number.format(state.multiBarcodeMasters.length)} multi-barcode master items loaded.`;
+    logUploadedFile({ filename: file.name, type: "Multi_Barcode", status: "Success" });
+    refreshDetailDrawer();
+    renderInventory();
+    renderOrders();
+  } catch (error) {
+    console.error(error);
+    els.excelStatus.textContent = `Multi barcode import failed: ${error?.message || error}`;
+    logUploadedFile({ filename: file?.name || "multi barcode", type: "Multi_Barcode", status: "Failed" });
   }
 }
 
@@ -1296,6 +1627,187 @@ function addExcelIndex(item) {
     state.excelByItemNumber.set(item.itemNumber, item);
     state.excelByItemNumber.set(codeKey(item.itemNumber), item);
   }
+}
+
+function saveMultiBarcodeState() {
+  localStorage.setItem("posDashboardMultiBarcodeMap:v1", JSON.stringify(state.multiBarcodeMap || {}));
+  localStorage.setItem("posDashboardMultiBarcodeMasters:v1", JSON.stringify(state.multiBarcodeMasters || []));
+  localStorage.setItem("posDashboardMultiBarcodeFileName:v1", state.multiBarcodeFileName || "");
+  localStorage.setItem("posDashboardManualMultiBarcodes:v1", JSON.stringify(state.manualMultiBarcodes || {}));
+}
+
+function multiAliasesForCode(code) {
+  const key = codeKey(code);
+  if (!key) return [];
+  const imported = (state.multiBarcodeMasters || []).find((row) => codeKey(row.masterCode) === key)?.aliases || [];
+  const manual = state.manualMultiBarcodes?.[key] || [];
+  return [...new Set([...imported.map(normalizeCode), ...manual.map(normalizeCode)].filter(Boolean))];
+}
+
+function rebuildMultiBarcodeLookup() {
+  const map = {};
+  (state.multiBarcodeMasters || []).forEach((row) => {
+    const masterKey = rawCodeKey(row.masterCode);
+    (row.aliases || []).forEach((alias) => {
+      const aliasKey = normalizeCode(alias);
+      if (!aliasKey) return;
+      const resolvedKey = rawCodeKey(aliasKey);
+      if (resolvedKey && resolvedKey !== masterKey) map[resolvedKey] = masterKey;
+    });
+  });
+  Object.entries(state.manualMultiBarcodes || {}).forEach(([masterCode, aliases]) => {
+    const masterKey = rawCodeKey(masterCode);
+    (aliases || []).forEach((alias) => {
+      const aliasKey = normalizeCode(alias);
+      if (!aliasKey) return;
+      const resolvedKey = rawCodeKey(aliasKey);
+      if (resolvedKey && resolvedKey !== masterKey) map[resolvedKey] = masterKey;
+    });
+  });
+  state.multiBarcodeMap = map;
+  saveMultiBarcodeState();
+}
+
+function saveItemMeta() {
+  try {
+    localStorage.setItem("posDashboardItemMetaMeta:v1", JSON.stringify({
+      savedAt: new Date().toISOString(),
+      items: Object.keys(state.itemMeta || {}).length,
+    }));
+    localStorage.removeItem(ITEM_META_STORAGE_KEY);
+  } catch (_) {
+    // Ignore localStorage quota issues; IndexedDB is the source of truth.
+  }
+  scheduleItemMetaPersist();
+}
+
+let itemMetaPersistTimer = 0;
+
+function scheduleItemMetaPersist() {
+  clearTimeout(itemMetaPersistTimer);
+  itemMetaPersistTimer = setTimeout(() => {
+    persistItemMetaToDb();
+  }, 180);
+}
+
+async function persistItemMetaToDb() {
+  try {
+    const db = await openDb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(DB_STORE, "readwrite");
+      tx.objectStore(DB_STORE).put(state.itemMeta || {}, DB_ITEM_META_KEY);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch (error) {
+    console.warn("Could not persist item metadata", error);
+  }
+}
+
+function allowedItemStates() {
+  return ["Active", "Force Order", "Disabled", "Discontinued"];
+}
+
+function normalizeItemState(value) {
+  const raw = cleanCell(value);
+  if (!raw) return "";
+  const normalized = raw.toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
+  if (normalized === "active") return "Active";
+  if (
+    normalized === "force order" ||
+    normalized === "forceorder" ||
+    normalized === "forced order" ||
+    normalized === "forcedorder" ||
+    normalized === "force reorder" ||
+    normalized === "forcereorder" ||
+    normalized === "forced reorder" ||
+    normalized === "forcedreorder" ||
+    normalized === "force"
+  ) return "Force Order";
+  if (normalized === "disabled") return "Disabled";
+  if (normalized === "discontinued") return "Discontinued";
+  return raw;
+}
+
+function normalizeItemDate(value) {
+  const raw = cleanCell(value);
+  if (!raw) return "";
+  const iso = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (iso) return raw;
+  const us = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (us) {
+    const [, mm, dd, yyyy] = us;
+    return `${yyyy}-${mm.padStart(2, "0")}-${dd.padStart(2, "0")}`;
+  }
+  const parsed = Date.parse(raw);
+  if (Number.isFinite(parsed)) {
+    const d = new Date(parsed);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }
+  return raw;
+}
+
+function itemMetaFor(code) {
+  return state.itemMeta?.[codeKey(code)] || {};
+}
+
+function setItemMeta(code, patch = {}) {
+  const key = codeKey(code);
+  if (!key) return;
+  state.itemMeta = state.itemMeta || {};
+  state.itemMeta[key] = { ...(state.itemMeta[key] || {}), ...patch };
+  saveItemMeta();
+}
+
+function seedItemMetaFromExcelRows(rows = []) {
+  const snapshotDate = latestInventoryDate();
+  let changed = false;
+  rows.forEach((item) => {
+    const key = codeKey(item.code);
+    if (!key) return;
+    const existing = state.itemMeta[key] || {};
+    const excelAddDate = normalizeItemDate(item.addDate || "");
+    const existingAddDate = normalizeItemDate(existing.addDate || "");
+    const seededInventoryDate = existingAddDate && snapshotDate && existingAddDate === snapshotDate;
+    const excelCaseSize = Math.max(1, Math.round(toNumber(item.caseSize) || 1));
+    const existingCaseSize = Math.max(1, Math.round(toNumber(existing.caseSize) || 1));
+    const excelState = normalizeItemState(item.state || "");
+    const existingState = normalizeItemState(existing.state || "");
+    const merged = {
+      ...existing,
+      addDate: excelAddDate || (seededInventoryDate ? "" : existingAddDate) || "",
+      state: existing.stateManual ? existingState : (excelState || ((existingState === "Active" && !existing.stateManual) ? "" : existingState) || ""),
+      caseSize: existing.caseSizeManual ? existingCaseSize : ((excelCaseSize > 1 || existingCaseSize <= 1) ? excelCaseSize : existingCaseSize),
+    };
+    if (JSON.stringify(existing) !== JSON.stringify(merged)) {
+      state.itemMeta[key] = merged;
+      changed = true;
+    }
+  });
+  if (changed) saveItemMeta();
+}
+
+function registerInventorySnapshotMeta(snapshotDate, rows = [], previousCodes = new Set()) {
+  let changed = false;
+  rows.forEach((row) => {
+    const key = codeKey(row.code);
+    if (!key) return;
+    const existing = state.itemMeta[key] || {};
+    const isNew = !previousCodes.has(key) && !existing.addDate;
+    const merged = {
+      ...existing,
+      addDate: normalizeItemDate(existing.addDate || (isNew ? snapshotDate : "")),
+      state: normalizeItemState(existing.state || row.state || ""),
+      caseSize: existing.caseSize ?? (toNumber(row.caseSize) > 0 ? toNumber(row.caseSize) : undefined),
+      firstSeenDate: existing.firstSeenDate || (isNew ? snapshotDate : ""),
+      lastSeenDate: snapshotDate || existing.lastSeenDate || "",
+    };
+    if (JSON.stringify(existing) !== JSON.stringify(merged)) {
+      state.itemMeta[key] = merged;
+      changed = true;
+    }
+  });
+  if (changed) saveItemMeta();
 }
 
 function rebuildExcelIndexes() {
@@ -1344,14 +1856,14 @@ function normalizeExcelRow(row) {
     reorderMin: toNumber(field("reorder_qty_min", "REORDER QTY MIN", "Reorder Qty Min", "MIN", "Min")),
     reorderMax: toNumber(field("reorder_qty_max", "REORDER QTY MAX", "Reorder Qty Max", "MAX", "Max")),
     daysBeforeRestock: toNumber(field("days_before_restock", "DAYS BEFORE RESTOCK", "Days Before Restock")),
-    state: cleanCell(field("state", "STATE", "Status")),
+    state: normalizeItemState(field("state", "STATE", "Status", "ITEM STATUS", "Item Status", "ITEM STATE", "Item State")),
     plu: cleanCell(field("PLU", "plu")),
     itemNumber: cleanCell(field("item_number", "ITEM NUMBER", "Item Number", "itemnum", "ITEMNUM")),
     category: cleanCell(field("category", "CATEGORY")),
-    addDate: cleanCell(field("add_date", "ADD DATE", "Add Date", "addDate")),
+    addDate: normalizeItemDate(field("add_date", "ADD DATE", "Add Date", "addDate", "DATE ADDED", "Date Added")),
     cost: toNumber(field("cost", "COST", "unit_cost", "UNIT COST", "Unit Cost")),
     price: toNumber(field("price", "PRICE")),
-    caseSize: toNumber(field("case_size", "CASE SIZE", "Case Size", "case size", "CASE")) || 1,
+    caseSize: toNumber(field("case_size", "CASE SIZE", "Case Size", "case size", "CASE", "CASE QTY", "Case Qty")) || 1,
     maxOrderQty: toNumber(field("max_order_qty", "MAX ORDER QTY", "Max Order Qty")),
     qtyNeeded: toNumber(field("qty_needed", "QTY NEEDED", "Qty Needed")),
     orderPendingId: cleanCell(field("order_pending_id", "ORDER PENDING ID", "Order Pending Id")),
@@ -1411,8 +1923,9 @@ function normalizeSalesRow(row, date) {
   const code = normalizeCode(row.CODE);
   const product = cleanCell(row.PRODUCT);
   const department = cleanCell(row.DEPARTMENT);
-  if (!code && !product && !department) return null;
-  if (!code && product && !department) return null;
+  const summaryLabel = `${product} ${department} ${cleanCell(row["::CAT::"])} ${cleanCell(row["::VENDOR::"])}`.toUpperCase();
+  if (!code) return null;
+  if (/\b(TOTAL|SUBTOTAL|SUMMARY|GRAND TOTAL|NET SALES|TAX|DISCOUNT)\b/.test(summaryLabel)) return null;
   return {
     date: date.iso,
     code,
@@ -1428,23 +1941,32 @@ function normalizeSalesRow(row, date) {
 }
 
 function normalizeInventoryRow(row, date) {
+  const field = (...names) => {
+    for (const name of names) {
+      if (Object.prototype.hasOwnProperty.call(row, name) && cleanCell(row[name]) !== "") return row[name];
+    }
+    return "";
+  };
   return {
     date: date.iso,
-    code: normalizeCode(row.CODE),
-    category: cleanCell(row.CATEGORY),
-    product: cleanCell(row.NAME),
-    plu: cleanCell(row.PLU),
-    itemNumber: cleanCell(row["ITEM NUMBER"]),
-    price: toNumber(row.PRICE),
-    cost: toNumber(row.COST),
-    stock: toNumber(row.STOCK),
-    vendor: cleanCell(row.VENDOR),
-    vendorCode: cleanCell(row["VENDOR CODE"]),
-    color: cleanCell(row.COLOR),
-    size: cleanCell(row.SIZE),
-    length: cleanCell(row.LENGTH),
-    manufacture: cleanCell(row.MANUFACTURE),
-    memo: cleanCell(row.MEMO),
+    code: normalizeCode(field("CODE", "code")),
+    category: cleanCell(field("CATEGORY", "category")),
+    product: cleanCell(field("NAME", "name", "ITEM NAME", "item_name")),
+    plu: cleanCell(field("PLU", "plu")),
+    itemNumber: cleanCell(field("ITEM NUMBER", "item number", "ITEMNUM", "itemnum")),
+    price: toNumber(field("PRICE", "price")),
+    cost: toNumber(field("COST", "cost")),
+    stock: toNumber(field("STOCK", "stock")),
+    vendor: cleanCell(field("VENDOR", "vendor")),
+    vendorCode: cleanCell(field("VENDOR CODE", "vendor code")),
+    color: cleanCell(field("COLOR", "color")),
+    size: cleanCell(field("SIZE", "size")),
+    length: cleanCell(field("LENGTH", "length")),
+    manufacture: cleanCell(field("MANUFACTURE", "manufacture")),
+    memo: cleanCell(field("MEMO", "memo")),
+    state: normalizeItemState(field("STATE", "state", "Status", "ITEM STATUS", "Item Status", "ITEM STATE", "Item State")),
+    addDate: normalizeItemDate(field("ADD DATE", "add_date", "Add Date", "addDate", "DATE ADDED", "Date Added")),
+    caseSize: toNumber(field("CASE SIZE", "case_size", "Case Size", "CASE", "CASE QTY", "Case Qty")) || 1,
   };
 }
 
@@ -1528,12 +2050,55 @@ function mountInventoryQuickTools() {
   if (!source) return;
   const row = document.createElement("div");
   row.className = "inventory-quick-tools__row";
-  [els.inventoryStateFilter, els.arrangeColumnsButton, document.querySelector(".column-picker"), els.downloadInventory, els.createPoShortcut]
-    .filter(Boolean)
-    .forEach((node) => row.append(node));
   els.inventoryQuickTools.append(row);
   els.inventoryQuickTools.dataset.mounted = "true";
   source.hidden = true;
+  renderSharedQuickTools(activeTabName());
+}
+
+function renderSharedQuickTools(tab = activeTabName()) {
+  if (!els.inventoryQuickTools) return;
+  const row = els.inventoryQuickTools.querySelector(".inventory-quick-tools__row");
+  if (!row) return;
+  const inventoryColumnPicker = document.querySelector(".column-picker");
+  const orderColumnPicker = document.querySelector("#orderColumnPicker");
+  const orderArrangeButton = document.querySelector("#orderArrangeColumnsButton");
+  const exportPoExcelButton = document.querySelector("#exportPoExcel");
+  const exportPoPdfButton = document.querySelector("#exportPoPdf");
+  const downloadOrderButton = document.querySelector("#downloadOrder");
+  const orderActions = document.querySelector(".po-actions");
+  const formulaNote = document.querySelector("#formulaNote");
+  const isOrdering = tab === "ordering";
+  const isInventory = tab === "inventory";
+
+  els.inventoryQuickTools.classList.toggle("inventory-quick-tools--ordering", isOrdering);
+  els.inventoryQuickTools.classList.toggle("inventory-quick-tools--inventory", isInventory);
+  if (orderActions) orderActions.hidden = isOrdering;
+  if (formulaNote) formulaNote.hidden = isOrdering;
+
+  if (isOrdering) {
+    row.replaceChildren(
+      orderArrangeButton,
+      orderColumnPicker,
+      exportPoExcelButton,
+      exportPoPdfButton,
+      downloadOrderButton,
+    );
+    return;
+  }
+
+  if (isInventory) {
+    row.replaceChildren(
+      els.inventoryStateFilter,
+      els.arrangeColumnsButton,
+      inventoryColumnPicker,
+      els.downloadInventory,
+      els.createPoShortcut,
+    );
+    return;
+  }
+
+  row.replaceChildren();
 }
 
 function currentInventoryRows() {
@@ -1745,7 +2310,7 @@ function renderPriceCheckDropdown(query) {
       cleanCell(item.code),
       cleanCell(item.plu) ? `PLU ${cleanCell(item.plu)}` : "",
       cleanCell(item.vendor),
-    ].filter(Boolean).join(" · ");
+    ].filter(Boolean).join(" Â· ");
     return `<div class="price-check-dd-item${index === 0 ? " price-check-dd-item--active" : ""}" data-key="${escapeHtml(itemKey)}">
       <span class="price-check-dd-name">${escapeHtml(item.product || item.code || "Unknown item")}</span>
       <span class="price-check-dd-meta">${escapeHtml(meta)}</span>
@@ -2076,6 +2641,12 @@ function latestExcelAddDate() {
 }
 
 function currentOrderRows(options = {}) {
+  if (!options.ignoreSubmissionDrafts && state.orderSubmissionVendors?.length && Object.keys(state.orderSubmissionDrafts || {}).length) {
+    const vendorKeys = state.orderSubmissionActiveVendor ? [state.orderSubmissionActiveVendor] : state.orderSubmissionVendors;
+    return vendorKeys
+      .flatMap((vendor) => (state.orderSubmissionDrafts[vendor.toUpperCase()] || []).map((item) => applyOrderOverride({ ...item })))
+      .sort((a, b) => (b.recommendedOrder || b.qtyNeeded || 0) - (a.recommendedOrder || a.qtyNeeded || 0));
+  }
   const vendorFilter = getOrderVendorFilter ? getOrderVendorFilter() : "Active";
   return buildInventoryRows(options)
     .map(applyOrderOverride)
@@ -2088,9 +2659,232 @@ function currentOrderRows(options = {}) {
         if (vendorFilter === "Active" && rule && rule.status !== "Active") return false;
         if (vendorFilter === "Disabled" && (!rule || rule.status !== "Disabled")) return false;
       }
+      if (state.orderSubmissionVendors?.length) {
+        const submitted = state.orderSubmissionVendors.map((vendor) => vendor.toUpperCase());
+        if (!submitted.includes((item.vendor || "").toUpperCase())) return false;
+      }
+      if (state.orderSubmissionActiveVendor && (item.vendor || "").toUpperCase() !== state.orderSubmissionActiveVendor.toUpperCase()) return false;
       return true;
     })
     .sort((a, b) => (b.recommendedOrder || b.qtyNeeded || 0) - (a.recommendedOrder || a.qtyNeeded || 0));
+}
+
+function buildOrderSubmissionDrafts(vendors, rows) {
+  const drafts = { ...(state.orderSubmissionDrafts || {}) };
+  vendors.forEach((vendor) => {
+    drafts[vendor.toUpperCase()] = rows
+      .filter((item) => (item.vendor || "").toUpperCase() === vendor.toUpperCase())
+      .map((item) => ({ ...item }));
+  });
+  return drafts;
+}
+
+function removeSubmittedVendor(vendorName) {
+  const normalized = String(vendorName || "").trim().toUpperCase();
+  if (!normalized) return;
+  state.orderSubmissionVendors = (state.orderSubmissionVendors || []).filter((vendor) => vendor.toUpperCase() !== normalized);
+  const drafts = { ...(state.orderSubmissionDrafts || {}) };
+  delete drafts[normalized];
+  state.orderSubmissionDrafts = drafts;
+  if ((state.orderSubmissionActiveVendor || "").toUpperCase() === normalized) {
+    state.orderSubmissionActiveVendor = "";
+  }
+  renderOrders();
+}
+
+function saveDismissedOrderVendors() {
+  localStorage.setItem("posDashboardDismissedOrderVendors:v1", JSON.stringify(state.orderDismissedVendors || []));
+}
+
+function dismissOrderVendor(vendorName) {
+  const normalized = String(vendorName || "").trim().toUpperCase();
+  if (!normalized) return;
+  const next = new Set((state.orderDismissedVendors || []).map((vendor) => String(vendor || "").toUpperCase()).filter(Boolean));
+  next.add(normalized);
+  state.orderDismissedVendors = [...next];
+  saveDismissedOrderVendors();
+}
+
+function undismissOrderVendor(vendorName) {
+  const normalized = String(vendorName || "").trim().toUpperCase();
+  if (!normalized) return;
+  state.orderDismissedVendors = (state.orderDismissedVendors || []).filter((vendor) => String(vendor || "").toUpperCase() !== normalized);
+  saveDismissedOrderVendors();
+}
+
+function cancelVendorPo(vendorName) {
+  const normalized = String(vendorName || "").trim().toUpperCase();
+  if (!normalized) return false;
+  const staged = (state.orderSubmissionVendors || []).some((vendor) => vendor.toUpperCase() === normalized);
+  const stagedDraft = !!state.orderSubmissionDrafts?.[normalized]?.length;
+  const pending = (state.pendingOrders || []).some((po) => !po.cleared && (po.vendor || "").toUpperCase() === normalized);
+  if (staged || stagedDraft) removeSubmittedVendor(vendorName);
+  if (pending) clearVendorPending(vendorName);
+  dismissOrderVendor(vendorName);
+  return true;
+}
+
+function productReviewRows() {
+  return buildInventoryRows()
+    .map(applyOrderOverride)
+    .filter((item) => item.isOrderable !== false && (item.recommendedOrder > 0 || item.qtyNeeded))
+    .filter((item) => {
+      if (!state.productPoReviewVendor) return true;
+      return (item.vendor || "").toUpperCase() === state.productPoReviewVendor.toUpperCase();
+    })
+    .sort((a, b) => (b.recommendedOrder || 0) - (a.recommendedOrder || 0));
+}
+
+function closeProductPoReviewModal() {
+  if (els.productPoReviewModal) els.productPoReviewModal.hidden = true;
+}
+
+function renderProductPoReviewModal() {
+  if (!els.productPoReviewBody || !els.productPoReviewMeta || !els.productPoReviewPills) return;
+  const allRows = buildInventoryRows()
+    .map(applyOrderOverride)
+    .filter((item) => item.isOrderable !== false && (item.recommendedOrder > 0 || item.qtyNeeded))
+    .sort((a, b) => (b.recommendedOrder || 0) - (a.recommendedOrder || 0));
+  const vendors = [...new Set(allRows.map((item) => cleanCell(item.vendor)).filter(Boolean))].sort(compareDisplayValue);
+  if (state.productPoReviewVendor && !vendors.some((vendor) => vendor.toUpperCase() === state.productPoReviewVendor.toUpperCase())) {
+    state.productPoReviewVendor = "";
+  }
+  const rows = productReviewRows().sort((a, b) => {
+    const mode = state.productPoReviewSort || "rec-desc";
+    if (mode === "item-asc") return compareDisplayValue(a.product, b.product);
+    if (mode === "item-desc") return compareDisplayValue(b.product, a.product);
+    if (mode === "code-asc") return compareDisplayValue(a.code, b.code);
+    if (mode === "code-desc") return compareDisplayValue(b.code, a.code);
+    if (mode === "rec-asc") return (a.recommendedOrder || 0) - (b.recommendedOrder || 0);
+    return (b.recommendedOrder || 0) - (a.recommendedOrder || 0);
+  });
+  const totalQty = rows.reduce((sum, item) => sum + Math.max(0, toNumber(item.recommendedOrder) || 0), 0);
+  const totalCost = rows.reduce((sum, item) => sum + orderLineCost(item), 0);
+  const reviewSortSelect = document.querySelector("#productPoReviewSortSelect");
+  if (reviewSortSelect) reviewSortSelect.value = state.productPoReviewSort || "rec-desc";
+  els.productPoReviewTitle.textContent = "Create PO / Order";
+  els.productPoReviewMeta.innerHTML = `
+    <span><b>${number.format(rows.length)}</b> items</span>
+    <span><b>${number.format(vendors.length)}</b> vendors</span>
+    <span><b>${number.format(totalQty)}</b> total qty</span>
+    <span><b>${currency.format(totalCost)}</b> total cost</span>
+    <span><b>${escapeHtml(els.searchInput?.value || "All search results")}</b></span>`;
+  els.productPoReviewPills.innerHTML = `
+    <button type="button" class="order-vendor-pill${state.productPoReviewVendor ? "" : " active"}" data-product-review-vendor="">All</button>
+    ${vendors.map((vendor) => `<button type="button" class="order-vendor-pill${state.productPoReviewVendor.toUpperCase() === vendor.toUpperCase() ? " active" : ""}" data-product-review-vendor="${escapeHtml(vendor)}">${escapeHtml(vendor)}</button>`).join("")}
+  `;
+  els.productPoReviewPills.querySelectorAll("[data-product-review-vendor]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      state.productPoReviewVendor = btn.dataset.productReviewVendor || "";
+      renderProductPoReviewModal();
+    });
+  });
+  if (!rows.length) {
+    els.productPoReviewBody.innerHTML = `<tr><td colspan="10" class="empty-cell">No orderable items match the current Products filters.</td></tr>`;
+    return;
+  }
+  els.productPoReviewBody.innerHTML = rows.map((item) => `<tr>
+    <td>${escapeHtml(item.vendor || "-")}</td>
+    <td>${escapeHtml(item.code)}</td>
+    <td class="sku-name">${escapeHtml(item.product)}</td>
+    <td class="num">${number.format(item.stock || 0)}</td>
+    <td class="num">${number.format(item.reorderMin || 0)}</td>
+    <td class="num">${number.format(item.reorderMax || 0)}</td>
+    <td class="num"><input type="number" class="order-rec-input mini-input" data-code="${escapeHtml(item.code)}" value="${Math.max(0, toNumber(item.recommendedOrder) || 0)}" min="0" style="width:4rem;text-align:center;font-weight:700" /></td>
+    <td class="num"><b>${number.format(calcCaseOrder(item.recommendedOrder || 0, item.caseSize || 1))}</b></td>
+    <td class="num">${number.format(item.caseSize || 1)}</td>
+    <td class="num">${currency.format(orderLineCost(item))}</td>
+  </tr>`).join("");
+  els.productPoReviewBody.querySelectorAll(".order-rec-input").forEach((input) => {
+    input.addEventListener("input", () => {
+      const val = Math.max(0, Math.round(toNumber(input.value) || 0));
+      input.value = String(val);
+      const row = input.closest("tr");
+      const code = codeKey(input.dataset.code);
+      if (!state._orderRecOverrides) state._orderRecOverrides = new Map();
+      state._orderRecOverrides.set(code, val);
+      const item = rows.find((entry) => codeKey(entry.code) === code);
+      if (!row || !item) return;
+      const caseCount = calcCaseOrder(val, item.caseSize || 1);
+      row.cells[7].innerHTML = `<b>${number.format(caseCount)}</b>`;
+      row.cells[9].textContent = currency.format((toNumber(item.unitCost) || 0) * caseCount * Math.max(1, toNumber(item.caseSize) || 1));
+    });
+  });
+  repairMojibakeText(els.productPoReviewModal || document.body);
+}
+
+function openProductPoReviewModal() {
+  state.productPoReviewVendor = "";
+  renderProductPoReviewModal();
+  if (els.productPoReviewModal) els.productPoReviewModal.hidden = false;
+}
+
+function sendProductPoSelection(sendAll = false) {
+  const baseRows = buildInventoryRows()
+    .map(applyOrderOverride)
+    .filter((item) => item.isOrderable !== false && (item.recommendedOrder > 0 || item.qtyNeeded));
+  const allVendors = [...new Set(baseRows.map((item) => cleanCell(item.vendor)).filter(Boolean))];
+  if (!sendAll && !state.productPoReviewVendor && allVendors.length > 1) {
+    showToast("Choose a vendor pill first, or use Send All.", 2600, "warning");
+    return;
+  }
+  const vendors = sendAll
+    ? allVendors
+    : (state.productPoReviewVendor ? [state.productPoReviewVendor] : allVendors.slice(0, 1));
+  if (!vendors.length) {
+    showToast("No vendors available for this PO review.", 2600, "warning");
+    return;
+  }
+  const existing = [...(state.orderSubmissionVendors || [])];
+  vendors.forEach((vendor) => {
+    if (!existing.some((entry) => entry.toUpperCase() === vendor.toUpperCase())) existing.push(vendor);
+    undismissOrderVendor(vendor);
+  });
+  state.orderSubmissionVendors = existing;
+  state.orderSubmissionDrafts = buildOrderSubmissionDrafts(vendors, baseRows);
+  state.orderSubmissionActiveVendor = sendAll ? "" : vendors[0];
+  closeProductPoReviewModal();
+  switchTab("ordering");
+  renderOrders();
+}
+
+function exportProductReviewCsv() {
+  downloadCsv("products-po-review.csv", productReviewRows().map((item) => ({
+    vendor: item.vendor,
+    code: item.code,
+    product: item.product,
+    stock: item.stock,
+    reorderMin: item.reorderMin,
+    reorderMax: item.reorderMax,
+    recommendedOrder: item.recommendedOrder,
+    caseOrder: calcCaseOrder(item.recommendedOrder || 0, item.caseSize || 1),
+    caseSize: item.caseSize,
+    totalCost: orderLineCost(item),
+  })));
+}
+
+function exportProductReviewPdf() {
+  const body = els.productPoReviewBody;
+  const rows = [...(body?.querySelectorAll("tr") || [])];
+  if (!rows.length) return;
+  const htmlRows = rows.map((tr) => `<tr>${[...tr.cells].map((cell, index) => `<td class="${index >= 3 ? "num" : ""}">${cell.textContent.trim()}</td>`).join("")}</tr>`).join("");
+  const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Products PO Review</title>
+  <style>
+    body { font-family: Arial, sans-serif; font-size: 11px; color: #1c2320; padding: 18px; }
+    h1 { font-size: 20px; margin: 0 0 10px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 5px 6px; border-bottom: 1px solid #ddd; }
+    th { background: #eef3ef; text-transform: uppercase; font-size: 9px; }
+    .num { text-align: right; }
+  </style></head><body>
+  <h1>Products PO Review</h1>
+  <table><thead><tr><th>Vendor</th><th>Code</th><th>Item</th><th>Stock</th><th>Min</th><th>Max</th><th>Rec. Order</th><th>Cases</th><th>Case Size</th><th>Total</th></tr></thead>
+  <tbody>${htmlRows}</tbody></table></body></html>`;
+  const win = window.open("", "_blank", "width=960,height=720");
+  if (!win) { showToast("Pop-up blocked.", 3000, "warning"); return; }
+  win.document.write(html);
+  win.document.close();
+  setTimeout(() => win.print(), 350);
 }
 
 function persistCountSessions() {
@@ -2100,7 +2894,7 @@ function persistCountSessions() {
 
 let _persistCountTimer = null;
 function persistActiveCountSession() {
-  // Defer localStorage write off the critical path — batches rapid scans
+  // Defer localStorage write off the critical path â€” batches rapid scans
   clearTimeout(_persistCountTimer);
   _persistCountTimer = setTimeout(() => {
     localStorage.setItem("posDashboardActiveCountSession:v1", JSON.stringify(state.activeCountSession));
@@ -2140,7 +2934,7 @@ function countSessionLabel(session) {
   if (!session) return "Physical count";
   const vendorLabel = session.vendor || session.department || "All vendors";
   const parts = [session.date || "No date", vendorLabel, session.category || "All categories"];
-  return parts.join(" · ");
+  return parts.join(" Â· ");
 }
 
 function openCountSetupModal() {
@@ -2160,7 +2954,7 @@ function closeCountSetupModal() {
 }
 
 function populateCountSetupOptions() {
-  // Pull from ALL inventory rows — no filters applied
+  // Pull from ALL inventory rows â€” no filters applied
   const allRows = [...state.latestInventory.values()];
   const excelRows = [...state.excelItems.values()];
   const combined = allRows.length ? allRows : excelRows;
@@ -2233,7 +3027,7 @@ function saveCountSession() {
       state.latestInventory.set(key, existing);
       updatedCount++;
     } else {
-      // Item may be keyed differently — try to find it
+      // Item may be keyed differently â€” try to find it
       state.latestInventory.forEach((item, k) => {
         if (codeKey(item.code) === key) {
           item.stock = Number(entry.countedQty || 0);
@@ -2253,7 +3047,7 @@ function saveCountSession() {
   // Defer the expensive full render until after modal closes
   setTimeout(() => render(), 50);
   void syncSharedDataToSupabase({ productsOnly: true, silent: true });
-  showToast(`Count saved · ${updatedCount} item stock quantities updated`, 3200, "success");
+  showToast(`Count saved Â· ${updatedCount} item stock quantities updated`, 3200, "success");
 }
 
 function deleteCountSession() {
@@ -2295,7 +3089,7 @@ function findCountMatch(query) {
   const needle = raw.toLowerCase();
   const normalizedNeedle = codeKey(raw); // strips leading zeros for numeric matching
 
-  // First: try exact code match (barcode scan) — check across ALL inventory rows, not just filtered
+  // First: try exact code match (barcode scan) â€” check across ALL inventory rows, not just filtered
   // This ensures scans work even with strict vendor/category/status filters
   const allRows = allCountCandidateRows();
   const exactMatch = allRows.find((item) =>
@@ -2356,7 +3150,7 @@ function handleCountLookup() {
   if (!match) {
     state.selectedCountItemCode = "";
     renderSelectedCountItem();
-    // Immediately flash red — don't wait for qty entry
+    // Immediately flash red â€” don't wait for qty entry
     if (els.countSearchInput) {
       els.countSearchInput.classList.add("count-search-error");
       setTimeout(() => els.countSearchInput && els.countSearchInput.classList.remove("count-search-error"), 1200);
@@ -2440,7 +3234,7 @@ function commitCountEntry(item, qty, mode) {
   state.countStage = "search";
   state.selectedCountItemCode = "";
   persistActiveCountSession();
-  // Fast path: prepend new row, update summary, reset UI — no full workspace rebuild
+  // Fast path: prepend new row, update summary, reset UI â€” no full workspace rebuild
   renderCountEntryRows(true);
   renderSelectedCountItem();
   renderCountQuantity();
@@ -2544,26 +3338,26 @@ function renderCountDropdown(query) {
   const inScopeMatches = matches.filter((e) => inScopeCodes.has(e.codeKey));
   const outScopeMatches = matches.filter((e) => !inScopeCodes.has(e.codeKey));
   const session = state.activeCountSession;
-  const scopeLabel = [session?.vendor, session?.category, session?.status].filter(Boolean).join(" · ") || "All items";
+  const scopeLabel = [session?.vendor, session?.category, session?.status].filter(Boolean).join(" Â· ") || "All items";
   const counted = new Set((session?.entries || []).map((e) => codeKey(e.code)));
 
   let html = "";
   if (inScopeMatches.length) {
-    html += `<div class="count-dd-group-label">✓ In scope — ${escapeHtml(scopeLabel)}</div>`;
+    html += `<div class="count-dd-group-label">âœ“ In scope â€” ${escapeHtml(scopeLabel)}</div>`;
     html += inScopeMatches.map(({ item }) => {
       const alreadyCounted = counted.has(codeKey(item.code));
       return `<div class="count-dd-item${alreadyCounted ? " count-dd-counted" : ""}" data-code="${escapeHtml(item.code)}">
         <span class="count-dd-name">${escapeHtml(item.product)}</span>
-        <span class="count-dd-meta">${escapeHtml(item.code)}${item.vendor ? ` · ${escapeHtml(item.vendor)}` : ""}${alreadyCounted ? " · <b>Counted</b>" : ""}</span>
+        <span class="count-dd-meta">${escapeHtml(item.code)}${item.vendor ? ` Â· ${escapeHtml(item.vendor)}` : ""}${alreadyCounted ? " Â· <b>Counted</b>" : ""}</span>
       </div>`;
     }).join("");
   }
   if (outScopeMatches.length) {
-    html += `<div class="count-dd-group-label count-dd-out-label">✗ Outside scope</div>`;
+    html += `<div class="count-dd-group-label count-dd-out-label">âœ— Outside scope</div>`;
     html += outScopeMatches.map(({ item }) => `
       <div class="count-dd-item count-dd-out" title="Not in this session's scope">
         <span class="count-dd-name">${escapeHtml(item.product)}</span>
-        <span class="count-dd-meta">${escapeHtml(item.code)}${item.vendor ? ` · ${escapeHtml(item.vendor)}` : ""}</span>
+        <span class="count-dd-meta">${escapeHtml(item.code)}${item.vendor ? ` Â· ${escapeHtml(item.vendor)}` : ""}</span>
       </div>`).join("");
   }
 
@@ -2612,8 +3406,8 @@ function openCountReport(sessionId = state.activeCountSession?.id, mode = state.
   state.countReportOpenId = sessionId;
   if (els.countReportTitle) {
     els.countReportTitle.textContent = mode === "comparison"
-      ? `${countSessionLabel(session)} · Comparison report`
-      : `${countSessionLabel(session)} · Input log`;
+      ? `${countSessionLabel(session)} Â· Comparison report`
+      : `${countSessionLabel(session)} Â· Input log`;
   }
   if (els.countReportHead) {
     els.countReportHead.innerHTML = mode === "comparison"
@@ -2685,7 +3479,7 @@ function exportCountReportPdf() {
   }
 
   const html = `<!DOCTYPE html><html><head><meta charset="UTF-8">
-  <title>Physical Count Report – ${escapeHtml(session.date || "-")}</title>
+  <title>Physical Count Report â€“ ${escapeHtml(session.date || "-")}</title>
   <style>
     body { font-family: Arial, sans-serif; font-size: 11px; color: #1c2320; margin: 0; padding: 24px; }
     h1 { font-size: 18px; margin: 0 0 4px; }
@@ -2711,11 +3505,11 @@ function exportCountReportPdf() {
   </body></html>`;
 
   const win = window.open("", "_blank", "width=1000,height=750");
-  if (!win) { showToast("Pop-up blocked — allow pop-ups to export PDF.", 3500, "warning"); return; }
+  if (!win) { showToast("Pop-up blocked â€” allow pop-ups to export PDF.", 3500, "warning"); return; }
   win.document.write(html);
   win.document.close();
   setTimeout(() => win.print(), 500);
-  showToast("Print dialog opened — use 'Save as PDF'.", 3200, "success");
+  showToast("Print dialog opened â€” use 'Save as PDF'.", 3200, "success");
 }
 
 async function exportCountReportExcel() {
@@ -2731,7 +3525,7 @@ async function exportCountReportExcel() {
 
   // Input log sheet
   const inputData = [
-    ["Physical Count — Input Log", "", "", `Date: ${session.date || "-"}`, `Vendor: ${vendorLabel}`, `Category: ${session.category || "All"}`],
+    ["Physical Count â€” Input Log", "", "", `Date: ${session.date || "-"}`, `Vendor: ${vendorLabel}`, `Category: ${session.category || "All"}`],
     [],
     ["Code", "Item", "Vendor", "Category", "Qty Before", "Counted", "Variance", "Mode", "Time"],
     ...[...entries].reverse().map((entry) => {
@@ -2748,7 +3542,7 @@ async function exportCountReportExcel() {
   const latestByCode = new Map();
   entries.forEach((entry) => latestByCode.set(codeKey(entry.code), entry));
   const compData = [
-    ["Physical Count — Comparison", "", "", `Date: ${session.date || "-"}`, `Vendor: ${vendorLabel}`, `Category: ${session.category || "All"}`],
+    ["Physical Count â€” Comparison", "", "", `Date: ${session.date || "-"}`, `Vendor: ${vendorLabel}`, `Category: ${session.category || "All"}`],
     [],
     ["Code", "Item", "Vendor", "Category", "Qty Before", "Qty After", "Qty Diff", "Cost Diff", "Status"],
     ...allItems.map((item) => {
@@ -2765,7 +3559,7 @@ async function exportCountReportExcel() {
   xlsx.utils.book_append_sheet(wb, wsComp, "Comparison");
 
   xlsx.writeFile(wb, `PhysicalCount_${session.date || "report"}.xlsx`);
-  showToast(`Count report exported — ${entries.length} entries, ${allItems.length} items in scope`, 3200, "success");
+  showToast(`Count report exported â€” ${entries.length} entries, ${allItems.length} items in scope`, 3200, "success");
 }
 
 function renderCountReportRows(session, mode = state.countReportMode || "input") {
@@ -3008,13 +3802,16 @@ function renderActiveTab() {
   hideHoverTooltip();
   const activeTab = document.querySelector(".tab-button.active")?.dataset.tab || "dashboard";
   if (els.inventoryQuickTools) {
-    els.inventoryQuickTools.hidden = activeTab !== "inventory";
+    els.inventoryQuickTools.hidden = !["inventory", "ordering"].includes(activeTab);
   }
+  renderSharedQuickTools(activeTab);
   if (activeTab === "dashboard") {
     renderTrend();
     renderBars();
   } else if (activeTab === "inventory") {
     renderInventory();
+  } else if (activeTab === "newitems") {
+    renderNewItems();
   } else if (activeTab === "counts") {
     renderCountsWorkspace();
   } else if (activeTab === "reports") {
@@ -3028,6 +3825,7 @@ function renderActiveTab() {
   } else if (activeTab === "parents") {
     renderParents();
   }
+  repairMojibakeText(document.body);
   refreshDetailDrawer();
 }
 
@@ -3122,6 +3920,7 @@ function render() {
   syncStickyHeights();
   queueActiveTabRender();
   applyRoleRestrictions();
+  repairMojibakeText(document.body);
 }
 
 function buildSkuRows(options = {}) {
@@ -3494,7 +4293,7 @@ function renderDrillDown(groupValue = "", groupKey = "department", sourceRows = 
   if (!target) return;
   const metric = els.segmentMetric.value;
   const rows = groupValue ? sourceRows.filter((sku) => sku[groupKey] === groupValue) : sourceRows;
-  // Drill one level deeper: if grouped by deptâ†’show categories; by categoryâ†’show items; by vendorâ†’show items
+  // Drill one level deeper: if grouped by deptÃ¢â€ â€™show categories; by categoryÃ¢â€ â€™show items; by vendorÃ¢â€ â€™show items
   const subKey = groupKey === "department" ? "category" : "product";
   const subGroups = groupKey === "department"
     ? groupBy(rows, "category", metric).slice(0, 8)
@@ -3503,7 +4302,7 @@ function renderDrillDown(groupValue = "", groupKey = "department", sourceRows = 
   target.innerHTML = `
     <div class="drill-heading">
       <strong>${groupValue ? escapeHtml(groupValue) : `Click a ${groupKey}`}</strong>
-      <span>${groupKey === "department" ? "â†’ categories â†’ items" : "â†’ top items"}</span>
+      <span>${groupKey === "department" ? "Ã¢â€ â€™ categories Ã¢â€ â€™ items" : "Ã¢â€ â€™ top items"}</span>
     </div>
     ${subGroups.map((sub) => {
       // Top 8 items within that sub-group, sorted by metric descending (not random)
@@ -3619,11 +4418,11 @@ function renderCompareCards() {
   if (!rows.length) { target.innerHTML = `<p class="muted">No sales data for the selected period.</p>`; return; }
 
   const periodLabel = { "30": "30 days", "60": "60 days", "90": "90 days", "182": "6 months", "365": "12 months", ytd: "YTD", custom: "current range" }[periodVal];
-  const fmtChg = (v) => v == null ? "â€”" : (v >= 0 ? `â–² +${v.toFixed(1)}%` : `â–¼ ${v.toFixed(1)}%`);
+  const fmtChg = (v) => v == null ? "Ã¢â‚¬â€" : (v >= 0 ? `Ã¢â€“Â² +${v.toFixed(1)}%` : `Ã¢â€“Â¼ ${v.toFixed(1)}%`);
   const chgCls = (v) => v == null ? "" : v >= 0 ? "compare-up" : "compare-down";
 
   target.innerHTML = `
-    <p class="compare-period-label">Current ${periodLabel} vs prior same-length period Â· grouped by ${groupKey}</p>
+    <p class="compare-period-label">Current ${periodLabel} vs prior same-length period Ã‚Â· grouped by ${groupKey}</p>
     <div class="compare-card-grid">
       ${rows.slice(0, 16).map((r) => `
         <div class="compare-card">
@@ -3648,26 +4447,56 @@ function renderCompareCards() {
 
 function renderOrderColumnPicker() {
   const panel = document.querySelector("#orderColumnPickerPanel");
-  if (!panel || panel.dataset.built) return;
-  panel.dataset.built = "1";
-  const sortedColumns = [...orderColumns].sort((a, b) => compareDisplayValue(a.label, b.label));
-  panel.innerHTML = `<div class="column-picker-grid">${sortedColumns.map((c) => `
-    <label class="column-choice">
-      <input type="checkbox" data-order-col="${c.key}" ${state.orderVisibleColumns[c.key] ? "checked" : ""} />
-      <span>${c.label}</span>
-    </label>`).join("")}</div>`;
+  if (!panel) return;
+  const orderedColumns = state.orderColumnOrder
+    .map((key) => orderColumns.find((column) => column.key === key))
+    .filter(Boolean);
+  panel.innerHTML = `<div class="column-picker-grid order-column-grid">${orderedColumns.map((c, index) => `
+    <div class="column-choice">
+      <label>
+        <input type="checkbox" data-order-col="${c.key}" ${state.orderVisibleColumns[c.key] ? "checked" : ""} />
+        <span>${c.label}</span>
+      </label>
+    </div>`).join("")}</div>`;
   panel.querySelectorAll("[data-order-col]").forEach((cb) => {
     cb.addEventListener("change", () => {
       state.orderVisibleColumns[cb.dataset.orderCol] = cb.checked;
       localStorage.setItem("posOrderColumns:v1", JSON.stringify(state.orderVisibleColumns));
-      // Rebuild without re-opening picker
-      delete document.querySelector("#orderColumnPickerPanel")?.dataset.built;
       renderOrders();
+      document.querySelector("#orderColumnPicker")?.setAttribute("open", "open");
     });
   });
 }
 
+function moveOrderColumn(from, to) {
+  if (!from || !to || from === to) return;
+  const order = state.orderColumnOrder.filter((key) => key !== from);
+  order.splice(order.indexOf(to), 0, from);
+  state.orderColumnOrder = order;
+  state.orderArrangeSource = "";
+  localStorage.setItem("posOrderColumnOrder:v1", JSON.stringify(state.orderColumnOrder));
+  renderOrders();
+}
+
+function moveOrderColumnRelative(key, direction = 1) {
+  const order = [...(state.orderColumnOrder || [])];
+  const index = order.indexOf(key);
+  if (index < 0) return;
+  const nextIndex = Math.max(0, Math.min(order.length - 1, index + direction));
+  if (nextIndex === index) return;
+  const [column] = order.splice(index, 1);
+  order.splice(nextIndex, 0, column);
+  state.orderColumnOrder = order;
+  localStorage.setItem("posOrderColumnOrder:v1", JSON.stringify(state.orderColumnOrder));
+  renderOrders();
+}
+
 function renderOrders() {
+  const arrangeButton = document.querySelector("#orderArrangeColumnsButton");
+  if (arrangeButton) {
+    arrangeButton.classList.toggle("active", state.orderArrangeColumns);
+    arrangeButton.textContent = state.orderArrangeColumns ? "Lock columns" : "Arrange columns";
+  }
   const orderRows = buildInventoryRows()
     .map(applyOrderOverride)
     .filter((item) => {
@@ -3682,6 +4511,7 @@ function renderOrders() {
       }
       return true;
     });
+  state._lastRenderedOrderRows = orderRows.map((item) => ({ ...item }));
   state.orderVendorQuickFilter = "";
   const vendorOrderStats = new Map();
   orderRows.forEach((item) => {
@@ -3700,19 +4530,25 @@ function renderOrders() {
 
   // Today's ordering alert
   const today = new Date().toLocaleDateString("en-US", { weekday: "long" }).toLowerCase();
-  const todayVendors = state.vendorRules.filter((r) => r.status === "Active" && (r.orderDays || []).includes(today));
+  const pendingVendors = pendingVendorNames();
+  const dismissedVendors = new Set((state.orderDismissedVendors || []).map((vendor) => String(vendor || "").toUpperCase()).filter(Boolean));
+  const todayVendors = state.vendorRules.filter((r) => {
+    if (r.status !== "Active" || !(r.orderDays || []).includes(today)) return false;
+    if (pendingVendors.has((r.vendor || "").toUpperCase())) return false;
+    if (dismissedVendors.has((r.vendor || "").toUpperCase())) return false;
+    const vendorStats = vendorOrderStats.get((r.vendor || "").toUpperCase()) || { total: 0, count: 0 };
+    return vendorStats.count > 0 && (!r.minOrder || vendorStats.total >= r.minOrder);
+  }).sort((a, b) => compareDisplayValue(a.vendor, b.vendor));
   // Write alert to the dedicated banner, not into orderCards (so it persists)
   const banner = document.querySelector("#orderAlertBanner");
   if (banner) {
     let alertHtml = "";
     if (todayVendors.length) {
       alertHtml += `<div class="order-day-alert">
-        📅 <b>Order today:</b>
+        ðŸ“… <b>Order today:</b>
         ${todayVendors.map((r) => {
-          const vendorStats = vendorOrderStats.get((r.vendor || "").toUpperCase()) || { total: 0, count: 0 };
-          const minAlerts2 = !!r.minOrder && vendorStats.total < r.minOrder;
           const isPending = state.pendingOrders?.some((po) => po.vendor === r.vendor && !po.cleared);
-          return `<button type="button" class="order-vendor-chip-btn${minAlerts2?" order-min-warn":""}${isPending?" order-pending-chip":""}" data-vendor-order="${escapeHtml(r.vendor)}">${escapeHtml(r.vendor)}${minAlerts2?` ⚠ min`:""}${isPending?" 🕐":""}</button>`;
+          return `<span class="order-vendor-chip-wrap"><button type="button" class="order-vendor-chip-btn${isPending?" order-pending-chip":""}" data-vendor-order="${escapeHtml(r.vendor)}">${escapeHtml(r.vendor)}${isPending?" ðŸ•":""}</button><button type="button" class="order-vendor-chip-dismiss" data-dismiss-order-vendor="${escapeHtml(r.vendor)}" title="Dismiss ${escapeHtml(r.vendor)}">×</button></span>`;
         }).join("")}
         <button type="button" id="submitAllPoButton" class="count-submit-btn" style="margin-left:auto">Submit All PO</button>
       </div>`;
@@ -3722,6 +4558,13 @@ function renderOrders() {
     banner.querySelectorAll(".order-vendor-chip-btn").forEach((btn) => {
       btn.addEventListener("click", () => openVendorAnalysisPanel(btn.dataset.vendorOrder));
     });
+    banner.querySelectorAll("[data-dismiss-order-vendor]").forEach((btn) => {
+      btn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        dismissOrderVendor(btn.dataset.dismissOrderVendor || "");
+        renderOrders();
+      });
+    });
     document.querySelector("#submitAllPoButton")?.addEventListener("click", () => submitAllPo());
   }
 
@@ -3730,13 +4573,66 @@ function renderOrders() {
     vendorBar.querySelector(".order-vendor-actions")?.remove();
     vendorBar.querySelector(".order-vendor-chips")?.remove();
     closeOrderVendorMenu();
+    if (state.orderSubmissionVendors?.length) {
+      const pillsHtml = `
+        <div class="order-vendor-actions">
+          <button type="button" class="count-submit-btn order-vendor-submit-all" id="orderingSubmitCurrentButton">Submit PO</button>
+          <button type="button" class="count-submit-btn order-vendor-submit-all" id="orderingSubmitAllButton">Submit All PO</button>
+        </div>
+        <div class="order-vendor-chips">
+          <button type="button" class="order-vendor-pill${state.orderSubmissionActiveVendor ? "" : " active"}" data-order-submission-vendor="">All sent</button>
+          ${state.orderSubmissionVendors.map((vendor) => `<button type="button" class="order-vendor-pill${state.orderSubmissionActiveVendor.toUpperCase() === vendor.toUpperCase() ? " active" : ""}" data-order-submission-vendor="${escapeHtml(vendor)}">${escapeHtml(vendor)}</button><button type="button" class="order-vendor-pill-remove" data-order-remove-vendor="${escapeHtml(vendor)}" title="Clear ${escapeHtml(vendor)} order">×</button>`).join("")}
+        </div>`;
+      vendorBar.insertAdjacentHTML("beforeend", pillsHtml);
+      vendorBar.querySelectorAll("[data-order-submission-vendor]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const vendorName = btn.dataset.orderSubmissionVendor || "";
+          state.orderSubmissionActiveVendor = vendorName;
+          renderOrders();
+          if (vendorName) openVendorAnalysisPanel(vendorName);
+        });
+      });
+      vendorBar.querySelector("#orderingSubmitCurrentButton")?.addEventListener("click", () => {
+        const vendorName = state.orderSubmissionActiveVendor || state.orderSubmissionVendors[0];
+        if (!vendorName) return;
+        openVendorAnalysisPanel(vendorName);
+      });
+      vendorBar.querySelector("#orderingSubmitAllButton")?.addEventListener("click", () => {
+        if (!state.orderSubmissionVendors?.length) return;
+        if (!confirm(`Submit all ${state.orderSubmissionVendors.length} sent vendor PO${state.orderSubmissionVendors.length === 1 ? "" : "s"}?`)) return;
+        state.orderSubmissionVendors.forEach((vendor) => submitVendorPo(vendor));
+      });
+      vendorBar.querySelectorAll("[data-order-remove-vendor]").forEach((btn) => {
+        btn.addEventListener("click", () => removeSubmittedVendor(btn.dataset.orderRemoveVendor || ""));
+      });
+    }
   }
   // Render column picker
   renderOrderColumnPicker();
 
-  const visibleCols = orderColumns.filter((c) => state.orderVisibleColumns[c.key]);
+  const visibleCols = state.orderColumnOrder
+    .map((key) => orderColumns.find((column) => column.key === key))
+    .filter((column) => column && state.orderVisibleColumns[column.key]);
   const sortKey = state.orderSort?.key || "recommendedOrder";
   const sortDir = state.orderSort?.dir || "desc";
+  const widthByColumn = {
+    status: "6rem",
+    pending: "2rem",
+    code: "7.2rem",
+    product: "24rem",
+    vendor: "6.2rem",
+    plu: "5.4rem",
+    velocity: "4.2rem",
+    units: "4.1rem",
+    stock: "4.2rem",
+    reorderMin: "3.6rem",
+    reorderMax: "3.6rem",
+    recommendedOrder: "5.3rem",
+    caseOrder: "4.8rem",
+    caseSize: "4.6rem",
+    unitCost: "4.8rem",
+    totalCost: "6.4rem",
+  };
 
   // Sort orders
   const sorted = [...orderRows].sort((a, b) => {
@@ -3751,15 +4647,17 @@ function renderOrders() {
     return;
   }
 
+  const colgroupHtml = visibleCols.map((c) => `<col style="width:${widthByColumn[c.key] || "6rem"}">`).join("");
   const headerHtml = visibleCols.map((c) => {
     const isActive = c.key === sortKey;
-    const arrow = isActive ? (sortDir === "asc" ? " ↑" : " ↓") : "";
-    return `<th class="order-sortable-th${isActive ? " sort-active" : ""}" data-order-sort="${c.key}">${c.label}${arrow}</th>`;
+    const arrow = isActive ? (sortDir === "asc" ? " â†‘" : " â†“") : "";
+    return `<th class="order-sortable-th${isActive ? " sort-active" : ""}${state.orderArrangeColumns ? " arrange-column-active" : ""}" data-order-sort="${c.key}" data-order-col-header="${c.key}" draggable="${state.orderArrangeColumns ? "true" : "false"}"><span class="order-arrange-label">${c.label}${state.orderArrangeColumns ? "" : arrow}</span></th>`;
   }).join("");
 
   els.orderCards.innerHTML = `
     <div class="table-wrap order-table-wrap" style="overflow-x:auto;max-height:none">
-      <table class="order-table" style="table-layout:auto;min-width:max-content">
+      <table class="order-table order-table--fixed">
+        <colgroup><col style="width:2rem">${colgroupHtml}</colgroup>
         <thead>
           <tr>
             <th class="checkbox-col"><input type="checkbox" id="selectAllOrdering" title="Select all"></th>
@@ -3771,9 +4669,9 @@ function renderOrders() {
             const isPend = isPendingOrder(sku.code);
             const cellMap = {
               status:           `<td>${stateBadgeHtml(sku)}</td>`,
-              pending:          `<td style="text-align:center;width:2rem">${isPend ? `<button type="button" class="pending-clear-btn" data-code="${escapeHtml(sku.code)}" title="Click to clear pending">&#x1F550;</button>` : ""}</td>`,
+              pending:          `<td class="pending-col">${isPend ? `<button type="button" class="pending-clear-btn pending-inline-btn" data-code="${escapeHtml(sku.code)}" title="Click to clear pending"><span class="pending-icon">&#x1F550;</span></button>` : ""}</td>`,
               code:             `<td class="copy-code" data-copy-code="${escapeHtml(sku.code)}" style="color:#2470c4;font-weight:700;cursor:pointer">${escapeHtml(sku.code)}</td>`,
-              product:          `<td class="sku-name">${escapeHtml(sku.product)}</td>`,
+              product:          `<td class="sku-name" title="${escapeHtml(sku.product)}">${escapeHtml(sku.product)}</td>`,
               vendor:           `<td>${escapeHtml(sku.vendor || "-")}</td>`,
               plu:              `<td>${escapeHtml(sku.plu || "-")}</td>`,
               velocity:         `<td class="num">${formatVelocity(sku.velocity || 0)}</td>`,
@@ -3798,11 +4696,34 @@ function renderOrders() {
 
   // Wire sortable headers
   els.orderCards.querySelectorAll(".order-sortable-th").forEach((th) => {
-    th.style.cursor = "pointer";
+    th.style.cursor = state.orderArrangeColumns ? "grab" : "pointer";
+    th.addEventListener("dragstart", (event) => {
+      if (!state.orderArrangeColumns) return;
+      event.dataTransfer.setData("text/plain", th.dataset.orderColHeader);
+      th.classList.add("arrange-column-selected");
+    });
+    th.addEventListener("dragend", () => {
+      th.classList.remove("arrange-column-selected");
+    });
+    th.addEventListener("dragover", (event) => {
+      if (state.orderArrangeColumns) event.preventDefault();
+    });
+    th.addEventListener("drop", (event) => {
+      if (!state.orderArrangeColumns) return;
+      event.preventDefault();
+      moveOrderColumn(event.dataTransfer.getData("text/plain"), th.dataset.orderColHeader);
+    });
     th.addEventListener("click", () => {
+      if (state.orderArrangeColumns) return;
       const key = th.dataset.orderSort;
       state.orderSort = { key, dir: state.orderSort?.key === key && state.orderSort?.dir === "asc" ? "desc" : "asc" };
       renderOrders();
+    });
+  });
+  els.orderCards.querySelectorAll("[data-order-shift]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      moveOrderColumnRelative(button.dataset.orderShift || "", Number(button.dataset.orderShiftDir || 0));
     });
   });
   // Wire checkboxes
@@ -3822,7 +4743,7 @@ function renderOrders() {
       });
     });
   }
-  // Wire editable Rec Order inputs — stopPropagation prevents opening detail drawer
+  // Wire editable Rec Order inputs â€” stopPropagation prevents opening detail drawer
   els.orderCards.querySelectorAll(".order-rec-input").forEach((input) => {
     input.addEventListener("click", (e) => e.stopPropagation());
     input.addEventListener("focus", () => input.select?.());
@@ -3907,7 +4828,7 @@ function renderInventory() {
     return;
   }
 
-  // Chunked rendering — build DOM in batches via requestAnimationFrame so the
+  // Chunked rendering â€” build DOM in batches via requestAnimationFrame so the
   // browser stays responsive. Tooltip HTML is deferred until mouseover.
   const CHUNK = 80;
   const visible = rows.slice(0, 1200);
@@ -4029,12 +4950,26 @@ function stateBadgeHtml(item) {
   return `<span class="state-badge ${cls}">${escapeHtml(item.state || "-")}</span>`;
 }
 
+function inventoryStateSelectHtml(item) {
+  const current = normalizeItemState(item.state || "");
+  const stateClass = current ? `state-select-${current.toLowerCase().replace(/\s+/g, "")}` : "";
+  const options = allowedItemStates()
+    .map((value) => `<option value="${escapeHtml(value)}"${value === current ? " selected" : ""}>${escapeHtml(value || "Blank")}</option>`)
+    .join("");
+  return `<select class="inventory-edit-select inventory-edit-select--state ${stateClass}" data-item-field="state" data-code="${escapeHtml(item.code)}" data-prev-value="${escapeHtml(current)}">${options}</select>`;
+}
+
+function inventoryCaseSizeInputHtml(item) {
+  return `<input type="number" class="inventory-edit-input mini-input" data-item-field="caseSize" data-code="${escapeHtml(item.code)}" data-prev-value="${escapeHtml(item.caseSize || 1)}" value="${escapeHtml(Math.max(1, Math.round(toNumber(item.caseSize) || 1)))}" min="1" step="1" />`;
+}
+
 function inventoryCellHtml(key, item) {
   const override = state.reorderOverrides[item.code] || {};
   const minOverridden = override.min != null;
   const maxOverridden = override.max != null;
+  const anyOverride = minOverridden || maxOverridden;
   const values = {
-    pending: `<td data-col="pending" class="num pending-col">${isPendingOrder(item.code) ? `<button type="button" class="pending-clear-btn pending-inline-btn" data-code="${escapeHtml(item.code)}" title="PO pending - click to clear">&#x1F550;</button>` : ""}</td>`,
+    pending: `<td data-col="pending" class="num pending-col">${isPendingOrder(item.code) ? `<button type="button" class="pending-clear-btn pending-inline-btn" data-code="${escapeHtml(item.code)}" title="PO pending - click to clear"><span class="pending-icon">&#x1F550;</span></button>` : ""}</td>`,
     code: `<td data-col="code" class="copy-code" data-copy-code="${escapeHtml(item.code)}" title="Click code to copy">${escapeHtml(item.code)}</td>`,
     product: `<td data-col="product" class="sku-name">${escapeHtml(item.product)}</td>`,
     plu: `<td data-col="plu">${escapeHtml(item.plu || "-")}</td>`,
@@ -4044,7 +4979,7 @@ function inventoryCellHtml(key, item) {
     containerAttr: `<td data-col="containerAttr">${escapeHtml(item.containerAttr || "-")}</td>`,
     category: `<td data-col="category">${escapeHtml(item.category || "-")}</td>`,
     vendor: `<td data-col="vendor">${escapeHtml(item.vendor || "-")}</td>`,
-    state: `<td data-col="state">${stateBadgeHtml(item)}</td>`,
+    state: `<td data-col="state" class="inventory-edit-cell">${inventoryStateSelectHtml(item)}</td>`,
     addDate: `<td data-col="addDate">${escapeHtml(item.addDate || "-")}</td>`,
     stock: `<td data-col="stock" class="num stock-col stock-clickable" title="Click to adjust stock">${number.format(item.stock)}</td>`,
     units: `<td data-col="units" class="num sold-col">${number.format(item.units)}</td>`,
@@ -4052,16 +4987,17 @@ function inventoryCellHtml(key, item) {
     unitCost: `<td data-col="unitCost" class="num">${currency.format(item.unitCost)}</td>`,
     price: `<td data-col="price" class="num">${currency.format(item.price)}</td>`,
     inventoryCost: `<td data-col="inventoryCost" class="num">${currency.format(item.inventoryCost)}</td>`,
-    caseSize: `<td data-col="caseSize" class="num">${number.format(item.caseSize || 1)}</td>`,
+    caseSize: `<td data-col="caseSize" class="num inventory-edit-cell">${inventoryCaseSizeInputHtml(item)}</td>`,
     reorderMin: `<td data-col="reorderMin" class="num order-col ${minOverridden ? "override-cell" : ""}">
-      ${minOverridden ? `<button class="reset-override" data-code="${escapeHtml(item.code)}" data-field="min" title="Reset to auto (${number.format(item.dynamicMin)})">ðŸ”’</button>` : ""}
       <input class="mini-input ${minOverridden ? "overridden" : ""}" data-code="${escapeHtml(item.code)}" data-reorder-field="min"
-        value="${escapeHtml(item.reorderMin)}" placeholder="${number.format(item.dynamicMin)}" title="${minOverridden ? `Auto: ${number.format(item.dynamicMin)} â€” manually set` : `Auto: SVÃ—Safety = ${number.format(item.dynamicMin)}`}" />
+        value="${escapeHtml(item.reorderMin)}" placeholder="${number.format(item.dynamicMin)}" title="${minOverridden ? `Auto: ${number.format(item.dynamicMin)} - manual override` : `Auto: SV x Safety = ${number.format(item.dynamicMin)}`}" />
     </td>`,
     reorderMax: `<td data-col="reorderMax" class="num order-col ${maxOverridden ? "override-cell" : ""}">
-      ${maxOverridden ? `<button class="reset-override" data-code="${escapeHtml(item.code)}" data-field="max" title="Reset to auto (${number.format(item.dynamicMax)})">ðŸ”’</button>` : ""}
-      <input class="mini-input ${maxOverridden ? "overridden" : ""}" data-code="${escapeHtml(item.code)}" data-reorder-field="max"
-        value="${escapeHtml(item.reorderMax)}" placeholder="${number.format(item.dynamicMax)}" title="${maxOverridden ? `Auto: ${number.format(item.dynamicMax)} â€” manually set` : `Auto: Min+(SVÃ—DOI) = ${number.format(item.dynamicMax)}`}" />
+      <div class="minmax-cell">
+        <input class="mini-input ${maxOverridden ? "overridden" : ""}" data-code="${escapeHtml(item.code)}" data-reorder-field="max"
+          value="${escapeHtml(item.reorderMax)}" placeholder="${number.format(item.dynamicMax)}" title="${maxOverridden ? `Auto: ${number.format(item.dynamicMax)} - manual override` : `Auto: Min + (SV x DOI) = ${number.format(item.dynamicMax)}`}" />
+        ${anyOverride ? `<button class="reset-override" data-code="${escapeHtml(item.code)}" data-field="all" title="Clear manual min/max overrides"><span aria-hidden="true">&#128465;</span></button>` : ""}
+      </div>
     </td>`,
     needs: (() => {
       const needed = item.recommendedOrder || 0;
@@ -4142,11 +5078,18 @@ function buildInventoryRows(options = {}) {
       const excel = findExcelFor(inventory.code ? inventory : { code });
       const sales = salesByCode.get(codeKey(code)) || {};
       const itemCode = inventory.code || code;
+      const meta = itemMetaFor(itemCode);
       const override = state.reorderOverrides[itemCode] || state.reorderOverrides[code] || {};
       const isOverridden = override.min != null || override.max != null;
       const velocity = sales.velocity || excel.saleVelocity || 0;
-      const caseSize = excel.caseSize || sales.caseSize || 1;
-      const itemState = (excel.state || "").toLowerCase();
+      const caseSize = meta.caseSizeManual
+        ? (toNumber(meta.caseSize) || 1)
+        : (excel.caseSize || toNumber(meta.caseSize) || toNumber(inventory.caseSize) || sales.caseSize || 1);
+      const displayState = meta.stateManual
+        ? meta.state
+        : (normalizeItemState(excel.state) || normalizeItemState(meta.state) || normalizeItemState(inventory.state) || "");
+      const stateLabel = normalizeItemState(displayState || "Active") || "Active";
+      const itemState = stateLabel.toLowerCase();
       const isOrderable = !["discontinued", "disabled"].includes(itemState);
       // Use vendor-specific safety/doi if a rule exists for this vendor
       const vendorName = (inventory.vendor || excel.vendor || sales.vendor || "").toUpperCase();
@@ -4165,11 +5108,11 @@ function buildInventoryRows(options = {}) {
         plu: inventory.plu || excel.plu || sales.plu || "",
         itemNumber: inventory.itemNumber || excel.itemNumber || sales.itemNumber || "",
         color: inventory.color || sales.color || "",
-        state: excel.state || "",
+        state: stateLabel,
         itemState,
         isOrderable,
         isOverridden,
-        addDate: excel.addDate || inventory.date || "",
+        addDate: cleanCell(meta.addDate || excel.addDate || inventory.addDate || meta.firstSeenDate || ""),
         snapshotDate: inventory.date || "",
         stock,
         units: sales.units || 0,
@@ -4211,7 +5154,7 @@ function buildInventoryRows(options = {}) {
   }
 
   return state._inventoryCache.filter((item) => {
-    // Force Order is treated as Active — always include it when filtering by Active
+    // Force Order is treated as Active â€” always include it when filtering by Active
     if (stateFilter) {
       const itemState = item.state || "";
       if (stateFilter === "Active") {
@@ -4339,9 +5282,14 @@ function updateFilterOptions() {
 }
 
 function updateInventoryStateFilter() {
-  fillSelect(els.inventoryStateFilter, unique([...state.excelItems.values()].map((item) => item.state)));
-  if (![...els.inventoryStateFilter.options].some((option) => option.value === els.inventoryStateFilter.value)) {
-    els.inventoryStateFilter.value = "";
+  fillSelect(els.inventoryStateFilter, allowedItemStates());
+  const options = [...els.inventoryStateFilter.options].map((option) => option.value);
+  if (options.includes("Active") && (!els.inventoryStateFilter.value || els.inventoryStateFilter.value === "All")) {
+    els.inventoryStateFilter.value = "Active";
+    return;
+  }
+  if (!options.includes(els.inventoryStateFilter.value)) {
+    els.inventoryStateFilter.value = options.includes("Active") ? "Active" : "";
   }
 }
 
@@ -4399,7 +5347,7 @@ function downloadCsv(fileName, rows) {
   URL.revokeObjectURL(url);
 }
 
-// â”€â”€ PO Export helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Ã¢â€â‚¬Ã¢â€â‚¬ PO Export helpers Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
 function buildPoRows() {
   return currentOrderRows()
@@ -4417,7 +5365,7 @@ function buildPoRows() {
       totalCost:        orderLineCost(item),
       currentStock:     item.stock || 0,
       svPerDay:         Number(item.velocity || 0).toFixed(2),
-      daysSupply:       Number.isFinite(item.daysSupply) ? Math.round(item.daysSupply) : "∞",
+      daysSupply:       Number.isFinite(item.daysSupply) ? Math.round(item.daysSupply) : "âˆž",
       reorderMin:       item.reorderMin || 0,
       reorderMax:       item.reorderMax || 0,
       isOverridden:     item.isOverridden ? "Yes" : "No",
@@ -4455,7 +5403,7 @@ async function exportPoExcel() {
   const vendors = [...new Set(rows.map((r) => r.vendor))];
   const wb = xlsx.utils.book_new();
 
-  // Summary sheet â€” all items
+  // Summary sheet Ã¢â‚¬â€ all items
   const summaryData = [
     ["PO Summary", "", "", "", "", "", `Generated: ${new Date().toLocaleDateString()}`],
     [],
@@ -4472,7 +5420,7 @@ async function exportPoExcel() {
   vendors.forEach((vendor) => {
     const vRows = rows.filter((r) => r.vendor === vendor);
     const vData = [
-      [`Purchase Order â€” ${vendor}`, "", `Date: ${new Date().toLocaleDateString()}`],
+      [`Purchase Order Ã¢â‚¬â€ ${vendor}`, "", `Date: ${new Date().toLocaleDateString()}`],
       [],
     ["Code", "Product", "PLU", "Item #", "Case", "Order Qty", "Case Order", "Unit Cost", "Total Cost", "Stock", "SV/Day", "Override"],
     ...vRows.map((r) => [r.code, r.product, r.plu, r.itemNumber, r.caseSize, r.orderQty, r.caseOrderQty, r.unitCost, r.totalCost, r.currentStock, r.svPerDay, r.isOverridden]),
@@ -4481,17 +5429,24 @@ async function exportPoExcel() {
     ];
     const ws = xlsx.utils.aoa_to_sheet(vData);
     ws["!cols"] = [12,34,10,12,6,9,10,10,8,8,8].map((w) => ({ wch: w }));
-    // Safe sheet name â€” Excel limits to 31 chars, no special chars
+    // Safe sheet name Ã¢â‚¬â€ Excel limits to 31 chars, no special chars
     const sheetName = vendor.replace(/[\\/*?:[\]]/g, "").slice(0, 31) || "Vendor";
     xlsx.utils.book_append_sheet(wb, ws, sheetName);
   });
 
   xlsx.writeFile(wb, `PO_${new Date().toISOString().slice(0, 10)}.xlsx`);
-  showToast(`PO exported â€” ${rows.length} items across ${vendors.length} vendor(s)`);
+  showToast(`PO exported Ã¢â‚¬â€ ${rows.length} items across ${vendors.length} vendor(s)`);
 }
 
 function exportPoPdf() {
-  const rows = buildPoRows();
+  const today = new Date().toLocaleDateString("en-US", { weekday: "long" }).toLowerCase();
+  const pendingVendors = pendingVendorNames();
+  const dismissedVendors = new Set((state.orderDismissedVendors || []).map((vendor) => String(vendor || "").toUpperCase()).filter(Boolean));
+  const allowedVendors = state.vendorRules
+    .filter((r) => r.status === "Active" && (r.orderDays || []).includes(today))
+    .map((r) => String(r.vendor || "").toUpperCase())
+    .filter((vendor) => vendor && !pendingVendors.has(vendor) && !dismissedVendors.has(vendor));
+  const rows = buildPoRows().filter((row) => allowedVendors.includes(String(row.vendor || "").toUpperCase()));
   if (!rows.length) { showToast("No items to order."); return; }
 
   const vendors = [...new Set(rows.map((r) => r.vendor))];
@@ -4517,7 +5472,7 @@ function exportPoPdf() {
     @media print { body { padding: 8px; } h2 { break-before: auto; } }
   </style></head><body>
   <h1>Purchase Order</h1>
-  <div class="meta">Generated ${dateStr} &nbsp;Â·&nbsp; ${rows.length} items &nbsp;Â·&nbsp; ${vendors.length} vendor(s)</div>`;
+  <div class="meta">Generated ${dateStr} &nbsp;Ã‚Â·&nbsp; ${rows.length} items &nbsp;Ã‚Â·&nbsp; ${vendors.length} vendor(s)</div>`;
 
   vendors.forEach((vendor) => {
     const vRows = rows.filter((r) => r.vendor === vendor);
@@ -4532,7 +5487,7 @@ function exportPoPdf() {
       </tr></thead><tbody>
       ${vRows.map((r) => `<tr>
         <td>${escapeHtml(r.code)}</td>
-        <td>${escapeHtml(r.product)}${r.isOverridden === "Yes" ? ' <span class="lock override" title="Manual override">ðŸ”’</span>' : ""}</td>
+        <td>${escapeHtml(r.product)}${r.isOverridden === "Yes" ? ' <span class="lock override" title="Manual override">Manual</span>' : ""}</td>
         <td>${escapeHtml(r.plu)}</td>
         <td class="num">${r.caseSize}</td>
         <td class="num">${r.currentStock}</td>
@@ -4552,7 +5507,7 @@ function exportPoPdf() {
   </body></html>`;
 
   const win = window.open("", "_blank", "width=900,height=700");
-  if (!win) { showToast("Pop-up blocked — allow pop-ups first.", 3000, "warning"); return; }
+  if (!win) { showToast("Pop-up blocked â€” allow pop-ups first.", 3000, "warning"); return; }
   win.document.write(html);
   win.document.close();
   setTimeout(() => win.print(), 400);
@@ -4604,10 +5559,8 @@ function clearFilters() {
   els.categoryFilter.value = "";
   els.vendorFilter.value = "";
   els.colorFilter.value = "";
-  els.startDate.value = state.dates[0] || "";
-  els.endDate.value = state.dates[state.dates.length - 1] || "";
-  els.inventoryStateFilter.value = "";
-  state.activePresetDays = "all";
+  els.inventoryStateFilter.value = "Active";
+  applyDatePreset(90);
   render();
 }
 
@@ -4624,11 +5577,23 @@ function refreshDetailDrawer() {
   if (item) showDetail(item);
 }
 
+function saveManualMultiBarcodes(code, aliases = []) {
+  const key = rawCodeKey(code);
+  if (!key) return;
+  const cleanAliases = [...new Set((aliases || []).map(normalizeCode).filter(Boolean).filter((alias) => rawCodeKey(alias) !== key))];
+  state.manualMultiBarcodes = state.manualMultiBarcodes || {};
+  if (cleanAliases.length) state.manualMultiBarcodes[key] = cleanAliases;
+  else delete state.manualMultiBarcodes[key];
+  rebuildMultiBarcodeLookup();
+}
+
 function showDetail(item) {
   if (!item) return;
   state._activeDetailCode = item.code;
   const sales = buildSkuRows({ ignoreQuery: true, ignoreFilters: true }).find((sku) => codeKey(sku.code) === codeKey(item.code)) || item;
   const windows = salesWindowsFor(item.code);
+  const activeDetailTab = state.detailDrawerTab || "fields";
+  const aliases = multiAliasesForCode(item.code);
   const fields = [
     ["code", "Code", "ids", `<b class="copy-code" title="Click to copy">${escapeHtml(item.code)}</b>`],
     ["plu", "PLU", "ids", `<b>${escapeHtml(item.plu || sales.plu || "-")}</b>`],
@@ -4672,17 +5637,79 @@ function showDetail(item) {
     <button class="sort-details-button" type="button">Sort details</button>
     <p class="eyebrow">Item detail</p>
     <h2>${escapeHtml(item.product || sales.product)}</h2>
-    <details class="detail-picker">
-      <summary>Detail fields</summary>
-      <div class="detail-filter">${fields.map(([key, label]) => `
-        <label><input type="checkbox" ${visibleFields.has(key) ? "checked" : ""} data-detail-filter="${key}" />${label}</label>`).join("")}</div>
-    </details>
-    <div class="detail-grid">
-      ${sortedFields.map(([key, label, section, value]) => `<span draggable="false" data-detail-key="${key}" data-detail-section="${section}" style="${visibleFields.has(key) ? "" : "display:none;"}">${label} ${value}</span>`).join("")}
-    </div>`;
+    <div class="detail-tab-row">
+      <button type="button" class="detail-tab${activeDetailTab === "fields" ? " active" : ""}" data-detail-tab="fields">Fields</button>
+      <button type="button" class="detail-tab${activeDetailTab === "multi" ? " active" : ""}" data-detail-tab="multi">Multi</button>
+    </div>
+    <section class="detail-panel"${activeDetailTab === "fields" ? "" : " hidden"}>
+      <details class="detail-picker">
+        <summary>Detail fields</summary>
+        <div class="detail-filter">${fields.map(([key, label]) => `
+          <label><input type="checkbox" ${visibleFields.has(key) ? "checked" : ""} data-detail-filter="${key}" />${label}</label>`).join("")}</div>
+      </details>
+      <div class="detail-grid">
+        ${sortedFields.map(([key, label, section, value]) => `<span draggable="false" data-detail-key="${key}" data-detail-section="${section}" style="${visibleFields.has(key) ? "" : "display:none;"}">${label} ${value}</span>`).join("")}
+      </div>
+    </section>
+    <section class="detail-panel detail-multi-panel"${activeDetailTab === "multi" ? "" : " hidden"}>
+      <div class="detail-multi-tools">
+        <button type="button" class="secondary-button" data-open-multi-upload>Load Multi Excel</button>
+        <span class="muted">${escapeHtml(state.multiBarcodeFileName || "No multi barcode workbook loaded")}</span>
+      </div>
+      <div class="detail-multi-primary"><b>Primary code</b> ${escapeHtml(item.code)}</div>
+      <div class="detail-multi-grid">
+        ${Array.from({ length: 16 }, (_, index) => {
+          const value = aliases[index] || "";
+          const slot = index + 2;
+          return `
+            <label class="detail-multi-field">
+              <span>Barcode #${slot}</span>
+              <input type="text" value="${escapeHtml(value)}" data-multi-slot="${index}" />
+            </label>`;
+        }).join("")}
+      </div>
+      <div class="detail-multi-actions">
+        <button type="button" class="count-submit-btn" data-save-multi>Save Multi</button>
+        <button type="button" class="secondary-button" data-clear-multi>Clear Multi</button>
+      </div>
+    </section>`;
+  const readMultiDraftValues = () => [...els.detailDrawer.querySelectorAll("[data-multi-slot]")].map((input) => normalizeCode(input.value));
+  const multiDraftChanged = () => JSON.stringify(readMultiDraftValues()) !== JSON.stringify(aliases.map((value) => normalizeCode(value)));
+  const persistMultiDraft = () => {
+    const nextAliases = readMultiDraftValues();
+    saveManualMultiBarcodes(item.code, nextAliases);
+    showToast(`Saved multi barcodes for ${item.code}`, 2200, "success");
+  };
+  const confirmMultiDraftBeforeLeave = () => {
+    if (state.detailDrawerTab !== "multi" || !multiDraftChanged()) return true;
+    if (confirm("Save multi barcode changes for this item?")) {
+      persistMultiDraft();
+    }
+    return true;
+  };
   els.detailDrawer.querySelector(".drawer-close").addEventListener("click", () => {
+    if (!confirmMultiDraftBeforeLeave()) return;
     els.detailDrawer.hidden = true;
     state._activeDetailCode = "";
+  });
+  els.detailDrawer.querySelectorAll("[data-detail-tab]").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (!confirmMultiDraftBeforeLeave()) return;
+      state.detailDrawerTab = button.dataset.detailTab || "fields";
+      showDetail(item);
+    });
+  });
+  els.detailDrawer.querySelector("[data-open-multi-upload]")?.addEventListener("click", () => els.multiBarcodeInput?.click());
+  els.detailDrawer.querySelector("[data-save-multi]")?.addEventListener("click", () => {
+    if (!confirm("Save multi barcode changes for this item?")) return;
+    persistMultiDraft();
+    refreshDetailDrawer();
+  });
+  els.detailDrawer.querySelector("[data-clear-multi]")?.addEventListener("click", () => {
+    if (!confirm("Clear all multi barcode entries for this item?")) return;
+    saveManualMultiBarcodes(item.code, []);
+    showToast(`Cleared manual multi barcodes for ${item.code}`, 2200, "success");
+    refreshDetailDrawer();
   });
   els.detailDrawer.querySelector(".copy-code").addEventListener("click", (event) => copyText(item.code, event.currentTarget));
   els.detailDrawer.querySelectorAll("[data-detail-filter]").forEach((input) => {
@@ -4839,7 +5866,7 @@ function isHairCategory(item) {
 // Hair-specific: extract length token (10,12,14,16,18,20,22,24,26,28,30) from subType
 // Returns { length: "14", remainder: "1B" } or null
 function extractHairLength(subType) {
-  // Match standalone length numbers 8â€“30 (even), possibly prefixed with space or parenthesis
+  // Match standalone length numbers 8Ã¢â‚¬â€œ30 (even), possibly prefixed with space or parenthesis
   const match = subType.match(/(?:^|\s|\()(\b(?:8|10|12|14|16|18|20|22|24|26|28|30)\b)(?:["']?\s*(?:INCH|IN\b|")?)/i);
   if (!match) return null;
   const len = match[1];
@@ -5267,7 +6294,7 @@ function showToast(message, duration = 2800, tone = "info") {
   toast._timer = setTimeout(() => toast.classList.remove("visible"), duration);
 }
 
-// Date preset helpers â€” sets start/end inputs and re-renders
+// Date preset helpers Ã¢â‚¬â€ sets start/end inputs and re-renders
 function applyDatePreset(days) {
   if (!state.dates.length) return;
   // Data is always 1 day delayed (prior day import), so anchor end to yesterday
@@ -5298,7 +6325,7 @@ function applyDatePreset(days) {
   render();
 }
 
-// Navigate date range by period — arrows follow the active preset button
+// Navigate date range by period â€” arrows follow the active preset button
 function shiftDateRange(direction) {
   const preset = state.activePresetDays;
   // Determine shift size from active preset
@@ -5364,7 +6391,7 @@ function renderDatePresets() {
     document.getElementById("datePresetPrev")?.addEventListener("click", () => shiftDateRange(-1));
     document.getElementById("datePresetNext")?.addEventListener("click", () => shiftDateRange(1));
 
-    // Click date label → open calendar popup
+    // Click date label â†’ open calendar popup
     document.getElementById("dateRangeLabel")?.addEventListener("click", (e) => {
       e.stopPropagation();
       let popup = document.getElementById("datePickerPopup");
@@ -5408,8 +6435,8 @@ function renderDatePresets() {
   if (lbl) {
     const s = els.startDate.value;
     const e = els.endDate.value;
-    const fmt = (iso) => { if (!iso) return "—"; const [y,m,d] = iso.split("-"); return `${m}/${d}/${y}`; };
-    lbl.textContent = (s && e && s !== e) ? `${fmt(s)} – ${fmt(e)}` : fmt(s || e);
+    const fmt = (iso) => { if (!iso) return "â€”"; const [y,m,d] = iso.split("-"); return `${m}/${d}/${y}`; };
+    lbl.textContent = (s && e && s !== e) ? `${fmt(s)} â€“ ${fmt(e)}` : fmt(s || e);
   }
 }
 
@@ -5559,11 +6586,16 @@ function normalizeCode(value) {
   return cleanCell(value).replace(/^=/, "").replace(/^"|"$/g, "");
 }
 
-function codeKey(value) {
+function rawCodeKey(value) {
   const code = normalizeCode(value);
   if (!code) return "";
-  if (/^\d+$/.test(code)) return code.replace(/^0+/, "") || "0";
-  return code.toUpperCase();
+  return /^\d+$/.test(code) ? (code.replace(/^0+/, "") || "0") : code.toUpperCase();
+}
+
+function codeKey(value) {
+  const rawKey = rawCodeKey(value);
+  if (!rawKey) return "";
+  return state.multiBarcodeMap?.[rawKey] || rawKey;
 }
 
 function matchesSearchQuery(item, query) {
@@ -5629,7 +6661,7 @@ function fileSummary() {
   const inventoryDays = state.inventories.size;
   const excelItems = state.excelItems.size;
   if (!salesDays && !inventoryDays && !excelItems) return "No files loaded";
-  return `${salesDays} sales days Â· ${inventoryDays} inventory snapshots Â· ${number.format(excelItems)} Excel items`;
+  return `${salesDays} sales days Ã‚Â· ${inventoryDays} inventory snapshots Ã‚Â· ${number.format(excelItems)} Excel items`;
 }
 
 function coverageSummary() {
@@ -5638,6 +6670,273 @@ function coverageSummary() {
   const salesText = state.dates.length ? `Sales ${state.dates[0]} through ${state.dates[state.dates.length - 1]}` : "No sales days loaded";
   const inventoryText = inventoryDates.length ? `current inventory ${inventoryDates[inventoryDates.length - 1]}` : "no inventory snapshot";
   return `${salesText}; ${inventoryText}`;
+}
+
+function saveUploadLogs() {
+  localStorage.setItem("posDashboardUploadLogs:v1", JSON.stringify((state.uploadLogs || []).slice(0, 250)));
+}
+
+function logUploadedFile({ filename, type, status }) {
+  state.uploadLogs = state.uploadLogs || [];
+  state.uploadLogs.unshift({
+    recordedAt: new Date().toISOString(),
+    filename: filename || "-",
+    type: type || "File",
+    status: status || "Success",
+  });
+  state.uploadLogs = state.uploadLogs.slice(0, 250);
+  saveUploadLogs();
+}
+
+function renderUploadLogs() {
+  if (!els.uploadLogBody || !els.uploadLogSummary) return;
+  const salesDates = [...new Set(state.dates || [])].sort();
+  const inventoryDates = [...state.inventories.keys()].sort();
+  const knownDates = [...new Set([...salesDates, ...inventoryDates])].sort();
+  const excelLoaded = state.excelItems.size > 0;
+  const inventoryFilter = document.querySelector("#logsInventoryFilter")?.value || "";
+  const salesFilter = document.querySelector("#logsSalesFilter")?.value || "";
+  const dataFilter = document.querySelector("#logsDataFilter")?.value || "";
+  const dayRows = [];
+  if (knownDates.length) {
+    let current = new Date(`${knownDates[0]}T00:00:00`);
+    const end = new Date(`${knownDates[knownDates.length - 1]}T00:00:00`);
+    const loadedSales = new Set(salesDates);
+    const loadedInventory = new Set(inventoryDates);
+    while (current <= end) {
+      const iso = current.toISOString().slice(0, 10);
+      const isSunday = current.getDay() === 0;
+      dayRows.push({
+        iso,
+        inventory: isSunday ? "Closed" : (loadedInventory.has(iso) ? "Loaded" : "Missing"),
+        sales: isSunday ? "Closed" : (loadedSales.has(iso) ? "Loaded" : "Missing"),
+        data: isSunday ? "Closed" : (excelLoaded ? "Loaded" : "Missing"),
+      });
+      current.setDate(current.getDate() + 1);
+    }
+  }
+  const visibleRows = dayRows.filter((row) => {
+    if (inventoryFilter && row.inventory !== inventoryFilter) return false;
+    if (salesFilter && row.sales !== salesFilter) return false;
+    if (dataFilter && row.data !== dataFilter) return false;
+    return true;
+  }).sort((a, b) => String(b.iso).localeCompare(String(a.iso)));
+  const salesCount = dayRows.filter((row) => row.sales === "Loaded").length;
+  const inventoryCount = dayRows.filter((row) => row.inventory === "Loaded").length;
+  const dataCount = excelLoaded ? 1 : 0;
+  const missingDates = dayRows.filter((row) => row.sales === "Missing").map((row) => row.iso);
+  els.uploadLogSummary.innerHTML = `
+    <span><b>${inventoryCount}</b> inventory CSV days loaded</span>
+    <span><b>${salesCount}</b> daily sales days loaded</span>
+    <span><b>${dataCount}</b> data file loaded</span>
+    <span><b>${missingDates.length}</b> sales days missing</span>
+    <span><b>${dayRows.filter((row) => row.sales === "Closed").length}</b> Sundays closed</span>`;
+  if (!visibleRows.length) {
+    els.uploadLogBody.innerHTML = `<tr><td colspan="4" class="empty-cell">No files imported yet.</td></tr>`;
+    return;
+  }
+  const statusCell = (status) => `<span class="logs-status-chip logs-status-${String(status).toLowerCase()}">${escapeHtml(status)}</span>`;
+  els.uploadLogBody.innerHTML = visibleRows.map((entry) => `<tr>
+    <td>${escapeHtml(entry.iso)}</td>
+    <td>${statusCell(entry.inventory)}</td>
+    <td>${statusCell(entry.sales)}</td>
+    <td>${statusCell(entry.data)}</td>
+  </tr>`).join("");
+  repairMojibakeText(document.querySelector("#reportLogsModal") || document.body);
+}
+
+function newItemsRows() {
+  const codes = new Set([
+    ...Object.keys(state.itemMeta || {}),
+    ...state.latestInventory.keys(),
+    ...[...state.excelItems.values()].map((item) => codeKey(item.code)).filter(Boolean),
+  ]);
+  return [...codes].map((key) => {
+    const inventory = state.latestInventory.get(key) || {};
+    const excel = findExcelFor(inventory.code ? inventory : { code: key }) || {};
+    const meta = itemMetaFor(inventory.code || excel.code || key);
+    const cachedSku = state._skuCache?.get?.(key) || {};
+    const item = {
+      code: inventory.code || excel.code || key,
+      product: bestItemName(inventory.product, excel.product, "", inventory.plu, key),
+      vendor: inventory.vendor || excel.vendor || "",
+      state: normalizeItemState(meta.state || excel.state || inventory.state || ""),
+      addDate: cleanCell(meta.addDate || excel.addDate || inventory.addDate || meta.firstSeenDate || ""),
+      category: inventory.category || excel.category || cachedSku.category || "",
+      department: cachedSku.department || "",
+      plu: inventory.plu || excel.plu || "",
+      itemNumber: inventory.itemNumber || excel.itemNumber || "",
+      color: inventory.color || "",
+    };
+    return { ...item, ...parentPartsFor(item) };
+  }).filter((item) => item.addDate);
+}
+
+function renderNewItems() {
+  if (!els.newItemsBody || !els.newItemsMonthFilter || !els.newItemsSummary) return;
+  const rows = newItemsRows().filter((item) => /^\d{4}-\d{2}-\d{2}$/.test(item.addDate));
+  const yearOptions = [...new Set(rows.map((item) => item.addDate.slice(0, 4)))].sort().reverse();
+  fillSelect(els.newItemsYearFilter, yearOptions);
+  if (yearOptions.includes(state.newItemsYear)) els.newItemsYearFilter.value = state.newItemsYear;
+  else state.newItemsYear = els.newItemsYearFilter?.value || yearOptions[0] || "";
+  if (els.newItemsYearFilter) els.newItemsYearFilter.value = state.newItemsYear;
+  const rowsForYear = state.newItemsYear ? rows.filter((item) => item.addDate.startsWith(`${state.newItemsYear}-`)) : rows;
+  const monthNumbers = [...new Set(rowsForYear.map((item) => item.addDate.slice(5, 7)))].sort((a, b) => Number(a) - Number(b));
+  els.newItemsMonthFilter.innerHTML = monthNumbers.map((month) => {
+    const labelDate = new Date(2000, Number(month) - 1, 1);
+    return `<option value="${month}">${labelDate.toLocaleDateString("en-US", { month: "short" })}</option>`;
+  }).join("");
+  const currentMonth = els.newItemsMonthFilter.value;
+  if (monthNumbers.includes(currentMonth || "")) {
+    els.newItemsMonthFilter.value = currentMonth;
+  } else if (monthNumbers.length) {
+    els.newItemsMonthFilter.value = monthNumbers[monthNumbers.length - 1];
+  }
+  const monthFilter = els.newItemsMonthFilter.value || "";
+  const monthRows = rowsForYear.filter((item) => !monthFilter || item.addDate.slice(5, 7) === monthFilter);
+  const vendors = [...new Set(monthRows.map((item) => cleanCell(item.vendor)).filter(Boolean))].sort(compareDisplayValue);
+  const departments = [...new Set(monthRows.map((item) => cleanCell(item.department)).filter(Boolean))].sort(compareDisplayValue);
+  const categories = [...new Set(monthRows.map((item) => cleanCell(item.category)).filter(Boolean))].sort(compareDisplayValue);
+  fillSelect(els.newItemsVendorFilter, vendors);
+  fillSelect(els.newItemsDepartmentFilter, departments);
+  fillSelect(els.newItemsCategoryFilter, categories);
+  if (vendors.includes(state.newItemsVendor)) els.newItemsVendorFilter.value = state.newItemsVendor;
+  if (departments.includes(state.newItemsDepartment)) els.newItemsDepartmentFilter.value = state.newItemsDepartment;
+  if (categories.includes(state.newItemsCategory)) els.newItemsCategoryFilter.value = state.newItemsCategory;
+  if (state.newItemsVendor && !vendors.some((vendor) => vendor.toUpperCase() === state.newItemsVendor.toUpperCase())) state.newItemsVendor = "";
+  if (state.newItemsDepartment && !departments.includes(state.newItemsDepartment)) state.newItemsDepartment = "";
+  if (state.newItemsCategory && !categories.includes(state.newItemsCategory)) state.newItemsCategory = "";
+  const search = normalizeSearchText(state.newItemsSearch || "");
+  const dormantMonths = Number(state.newItemsDormantMonths || 0);
+  const filteredRows = monthRows.filter((item) => {
+    if (state.newItemsVendor && (item.vendor || "").toUpperCase() !== state.newItemsVendor.toUpperCase()) return false;
+    if (state.newItemsDepartment && item.department !== state.newItemsDepartment) return false;
+    if (state.newItemsCategory && item.category !== state.newItemsCategory) return false;
+    if (search) {
+      const haystack = normalizeSearchText([item.parent, item.product, item.subType, item.color, item.vendor, item.category, item.code].join(" "));
+      if (!haystack.includes(search)) return false;
+    }
+    return true;
+  });
+  const groupedRows = [...filteredRows.reduce((map, item) => {
+    const key = `${item.vendor}||${item.department}||${item.category}||${item.parent || item.product}`;
+    const entry = map.get(key) || {
+      vendor: item.vendor,
+      department: item.department || "",
+      category: item.category || "",
+      parent: item.parent || item.product,
+      addDate: item.addDate,
+      variants: new Set(),
+      units: 0,
+      sales: 0,
+      stock: 0,
+      velocity: 0,
+      recommendedOrder: 0,
+      units30: 0,
+      units90: 0,
+      units182: 0,
+      units365: 0,
+    };
+    const windows = salesWindowsFor(item.code);
+    entry.variants.add(item.subType || item.color || item.itemNumber || item.code || item.product);
+    entry.units += toNumber(item.units) || 0;
+    entry.sales += toNumber(item.sales) || 0;
+    entry.stock += toNumber(item.stock) || 0;
+    entry.velocity += toNumber(item.velocity) || 0;
+    entry.recommendedOrder += toNumber(item.recommendedOrder) || 0;
+    entry.units30 += toNumber(windows.find((entry) => entry.label === "30D")?.units) || 0;
+    entry.units90 += toNumber(windows.find((entry) => entry.label === "90D")?.units) || 0;
+    entry.units182 += toNumber(windows.find((entry) => entry.label === "6M")?.units) || 0;
+    entry.units365 += toNumber(windows.find((entry) => entry.label === "365D")?.units) || 0;
+    map.set(key, entry);
+    return map;
+  }, new Map()).values()]
+    .map((entry) => {
+      let badge = "New";
+      if (entry.units365 <= 0) badge = "Discontinue";
+      else if (entry.units182 <= 0) badge = "Slow mover";
+      else if (entry.recommendedOrder > 0) badge = "Reorder";
+      else if (entry.units30 <= 0 && entry.stock > 0) badge = "Watch";
+      return { ...entry, badge };
+    })
+    .filter((entry) => {
+      if (!dormantMonths) return true;
+      if (dormantMonths === 1) return entry.units30 <= 0;
+      if (dormantMonths === 3) return entry.units90 <= 0;
+      if (dormantMonths === 6) return entry.units182 <= 0;
+      if (dormantMonths === 12) return entry.units365 <= 0;
+      return true;
+    });
+  const monthLabel = monthFilter ? new Date(2000, Number(monthFilter) - 1, 1).toLocaleDateString("en-US", { month: "short" }) : "-";
+  els.newItemsSummary.innerHTML = `
+    <span><b>${escapeHtml(monthLabel)}</b> month</span>
+    <span><b>${escapeHtml(state.newItemsYear || "-")}</b> year</span>
+    <span><b>${vendors.length}</b> vendors</span>
+    <span><b>${filteredRows.length}</b> new SKUs</span>
+    <span><b>${groupedRows.length}</b> parent groups</span>`;
+  if (!groupedRows.length) {
+    els.newItemsBody.innerHTML = `<tr><td colspan="10" class="empty-cell">No new items found for that month/filter.</td></tr>`;
+    return;
+  }
+  els.newItemsBody.innerHTML = groupedRows
+    .sort((a, b) => compareDisplayValue(a.vendor, b.vendor) || compareDisplayValue(a.parent, b.parent))
+    .map((item) => {
+      const monthLabel = item.addDate
+        ? new Date(Number(item.addDate.slice(0, 4)), Number(item.addDate.slice(5, 7)) - 1, 1).toLocaleDateString("en-US", { month: "short" })
+        : "-";
+      return `<tr>
+      <td>${escapeHtml(item.vendor || "-")}</td>
+      <td>${escapeHtml(item.department || "-")}</td>
+      <td>${escapeHtml(item.category || "-")}</td>
+      <td class="sku-name"><details class="new-items-parent-details"><summary><b>${escapeHtml(item.parent || "-")}</b></summary><div class="new-items-variant-list">${[...item.variants].sort(compareDisplayValue).map((variant) => `<span>${escapeHtml(variant)}</span>`).join("")}</div></details></td>
+      <td>${number.format(item.variants.size)}</td>
+      <td class="num">${number.format(item.units)}</td>
+      <td class="num">${currency.format(item.sales)}</td>
+      <td class="num">${number.format(item.stock)}</td>
+      <td>${escapeHtml(monthLabel)}</td>
+      <td>${escapeHtml(item.badge)}</td>
+    </tr>`;
+    }).join("");
+}
+
+function renderMultiBarcodes() {
+  if (!els.multiBody || !els.multiSummary) return;
+  const query = normalizeSearchText(state.multiBarcodeSearch || "");
+  const rows = (state.multiBarcodeMasters || []).filter((row) => {
+    if (!query) return true;
+    const haystack = normalizeSearchText([row.masterCode, row.product, row.vendor, row.plu, row.itemNumber, ...(row.aliases || [])].join(" "));
+    return haystack.includes(query);
+  });
+  els.multiSummary.innerHTML = `
+    <span><b>${number.format(rows.length)}</b> master items</span>
+    <span><b>${number.format((state.multiBarcodeMasters || []).reduce((sum, row) => sum + (row.aliases?.length || 0), 0))}</b> alternate barcodes linked</span>
+    <span><b>File</b> ${escapeHtml(state.multiBarcodeFileName || "Not loaded")}</span>`;
+  if (!rows.length) {
+    els.multiBody.innerHTML = `<tr><td colspan="6" class="empty-cell">Load the multi barcode workbook to link alternate barcodes to the master item code.</td></tr>`;
+    return;
+  }
+  els.multiBody.innerHTML = rows.map((row) => `
+    <tr>
+      <td>${escapeHtml(row.masterCode)}</td>
+      <td class="sku-name" title="${escapeHtml(row.product || "")}">${escapeHtml(row.product || "-")}</td>
+      <td>${escapeHtml(row.vendor || "-")}</td>
+      <td>${escapeHtml(row.plu || "-")}</td>
+      <td>${number.format(row.aliases?.length || 0)}</td>
+      <td>${escapeHtml((row.aliases || []).join(", "))}</td>
+    </tr>`).join("");
+}
+
+function resetUiCriteriaOnStartup() {
+  state.tabSearches = { dashboard: "", inventory: "", ordering: "" };
+  localStorage.setItem("posDashboardTabSearches:v1", JSON.stringify(state.tabSearches));
+  if (els.searchInput) els.searchInput.value = "";
+  if (els.parentsSearch) els.parentsSearch.value = "";
+  if (els.departmentFilter) els.departmentFilter.value = "";
+  if (els.categoryFilter) els.categoryFilter.value = "";
+  if (els.vendorFilter) els.vendorFilter.value = "";
+  if (els.colorFilter) els.colorFilter.value = "";
+  if (els.inventoryStateFilter) els.inventoryStateFilter.value = "Active";
+  state.productPoReviewVendor = "";
 }
 
 function escapeHtml(value) {
@@ -5651,6 +6950,41 @@ function escapeHtml(value) {
 
 function escapeRegex(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function repairMojibakeText(root = document.body) {
+  if (!root) return;
+  const replacements = [
+    ["Â·", "·"],
+    ["Ã‚Â·", "·"],
+    ["â†’", "->"],
+    ["âœ“", "Submit"],
+    ["âœ•", "Close"],
+    ["â€“", "-"],
+    ["â€”", "-"],
+    ["Ã¢â‚¬â€", "-"],
+    ["Ã¢â‚¬Â¢", "·"],
+    ["â–¼", "▼"],
+    ["â†‘", "↑"],
+    ["â†“", "↓"],
+    ["âš ï¸", "Alert:"],
+    ["âš ", "min"],
+    ["ðŸ“…", "Order today:"],
+    ["ðŸ•", "Pending"],
+    ["Ã°Å¸â€â€™", "Auto"],
+    ["NULLâ†’0", "NULL -> 0"],
+    ["â†’ 0", "-> 0"],
+  ];
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  nodes.forEach((node) => {
+    let next = node.nodeValue || "";
+    replacements.forEach(([from, to]) => {
+      if (next.includes(from)) next = next.split(from).join(to);
+    });
+    if (next !== node.nodeValue) node.nodeValue = next;
+  });
 }
 
 function csvCell(value, key) {
@@ -5671,6 +7005,20 @@ function openDb() {
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
   });
+}
+
+async function readDbValue(key) {
+  try {
+    const db = await openDb();
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction(DB_STORE, "readonly");
+      const request = tx.objectStore(DB_STORE).get(key);
+      request.onsuccess = () => resolve(request.result ?? null);
+      request.onerror = () => reject(request.error);
+    });
+  } catch (_) {
+    return null;
+  }
 }
 
 async function readPersistedState() {
@@ -5709,12 +7057,14 @@ async function savePersistedState() {
   }
   try {
     const db = await openDb();
-    return await new Promise((resolve, reject) => {
+    await new Promise((resolve, reject) => {
       const tx = db.transaction(DB_STORE, "readwrite");
       tx.objectStore(DB_STORE).put(payload, DB_KEY);
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
     });
+    await persistItemMetaToDb();
+    return;
   } catch (_) {
     return;
   }
@@ -5734,7 +7084,23 @@ async function restorePersistedState() {
     state.excelItems = new Map();
     (saved.excelRows || []).forEach((item) => addExcelIndex(item));
     rebuildExcelIndexes();
+    const dbItemMeta = await readDbValue(DB_ITEM_META_KEY);
+    let legacyItemMeta = {};
+    if (!dbItemMeta) {
+      try {
+        legacyItemMeta = JSON.parse(localStorage.getItem(ITEM_META_STORAGE_KEY) || "{}");
+      } catch (_) {
+        legacyItemMeta = {};
+      }
+    }
+    state.itemMeta = dbItemMeta || saved.itemMeta || legacyItemMeta || {};
+    if (!dbItemMeta && Object.keys(state.itemMeta || {}).length) saveItemMeta();
     state._loadedFileSignatures = new Set(saved.loadedFileSignatures || []);
+    if (els.excelStatus) {
+      els.excelStatus.textContent = saved.excelRows?.length
+        ? `${number.format(saved.excelRows.length)} Excel items loaded from local app data.`
+        : "Excel not loaded.";
+    }
     bumpDataStamp();
     updateFilterOptions();
     updateInventoryStateFilter();
@@ -5998,7 +7364,7 @@ async function restoreSharedDataFromSupabase(options = {}) {
     updateFilterOptions();
     updateInventoryStateFilter();
     setDefaultDates();
-    if (!silent) showToast(`Loaded shared data — ${number.format(productRows.length)} products, ${number.format(salesRows.length)} sales rows`, 3200, "success");
+    if (!silent) showToast(`Loaded shared data â€” ${number.format(productRows.length)} products, ${number.format(salesRows.length)} sales rows`, 3200, "success");
     return true;
   } catch (error) {
     if (!silent) showToast("Supabase shared data could not be loaded.", 3200, "warning");
@@ -6048,9 +7414,13 @@ async function syncSharedDataToSupabase(options = {}) {
 
 async function initApp() {
   mountInventoryQuickTools();
-  await refreshUsersFromSupabase({ silent: true });
+  if (ENABLE_SHARED_SYNC) {
+    refreshUsersFromSupabase({ silent: true }).catch(() => {});
+  }
   await restorePersistedState();
-  render();
+  ensureVendorRulesFromData();
+  resetUiCriteriaOnStartup();
+  switchTab("inventory");
   if (ENABLE_SHARED_SYNC) {
     const restoredShared = await restoreSharedDataFromSupabase({ silent: true, preferCurrentState: true });
     if (restoredShared === "kept-local") {
@@ -6060,20 +7430,19 @@ async function initApp() {
     }
   }
   updateMetricsSummaryMode();
-  if (els.searchInput) {
-    els.searchInput.value = state.tabSearches[activeTabName()] || "";
-  }
-  // Apply 90D default AFTER all data is loaded — override whatever restorePersistedState set
+  // Apply 90D default AFTER all data is loaded â€” override whatever restorePersistedState set
   if (state.dates.length) {
     state.activePresetDays = 90;
     applyDatePreset(90);
+  } else {
+    render();
   }
-  render();
+  renderUploadLogs();
   document.body.dataset.activeTab = activeTabName();
   renderPriceCheckResult(null);
 }
 
-// ── Confirm delete saved session ──────────────────────────────────────────
+// â”€â”€ Confirm delete saved session â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function openConfirmDeleteSession(sessionId) {
   state.pendingDeleteSessionId = sessionId;
   const session = state.countSessions.find((s) => s.id === sessionId);
@@ -6096,7 +7465,7 @@ function confirmDeleteSavedSession() {
   showToast("Saved count deleted.", 2400, "warning");
 }
 
-// ── Continue count from report (re-open the session as active) ─────────────
+// â”€â”€ Continue count from report (re-open the session as active) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function continueCountFromReport() {
   const sessionId = state.countReportOpenId;
   const session = findCountSessionById(sessionId);
@@ -6110,11 +7479,13 @@ function continueCountFromReport() {
   state.pendingDuplicateCount = null;
   persistCountSessions();
   closeCountReport();
+  if (document.querySelector("#reportCountModal")) document.querySelector("#reportCountModal").hidden = true;
+  if (document.querySelector("#sessionHistoryModal")) document.querySelector("#sessionHistoryModal").hidden = true;
   renderCountsWorkspace();
   showToast(`Continuing count: ${countSessionLabel(session)}`, 2800, "success");
 }
 
-// ── Submit & apply count (from report modal) ───────────────────────────────
+// â”€â”€ Submit & apply count (from report modal) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function openConfirmSubmitCount() {
   const sessionId = state.countReportOpenId;
   state.pendingSubmitSessionId = sessionId;
@@ -6126,7 +7497,7 @@ function openConfirmSubmitCount() {
     els.confirmSubmitCountMessage.innerHTML =
       `<b>${entryCount}</b> scanned item${entryCount !== 1 ? "s" : ""} will be updated to physical counts.<br>` +
       (nullCount > 0 ? `<b>${nullCount}</b> unscanned item${nullCount !== 1 ? "s" : ""} in scope will be set to <b>0</b>.<br>` : "") +
-      `<br>A pre-count snapshot will be saved so you can restore if needed.<br><br>⚠️ Are you sure you want to apply?`;
+      `<br>A pre-count snapshot will be saved so you can restore if needed.<br><br>âš ï¸ Are you sure you want to apply?`;
   }
   document.querySelector("#confirmSubmitCountModal").hidden = false;
 }
@@ -6166,7 +7537,7 @@ function restorePreviousCount(sessionId) {
   render();
   renderAdjustLog();
   void syncSharedDataToSupabase({ productsOnly: true, silent: true });
-  showToast(`Restored — ${restored} stock values reverted`, 3200, "success");
+  showToast(`Restored â€” ${restored} stock values reverted`, 3200, "success");
 }
 
 function submitAndApplyCount() {
@@ -6185,7 +7556,7 @@ function submitAndApplyCount() {
   const savedSession = { ...session, preCountSnapshot: snapshot, submittedAt: new Date().toISOString() };
   state.countSessions = state.countSessions.map((s) => s.id === sessionId ? savedSession : s);
 
-  // All items in scope — scanned items get their count, null/unscanned items get 0
+  // All items in scope â€” scanned items get their count, null/unscanned items get 0
   const candidates = currentCountSessionCandidates(session);
   const scopeCodes = new Set(candidates.map((item) => codeKey(item.code)));
   let updated = 0;
@@ -6193,7 +7564,7 @@ function submitAndApplyCount() {
     if (!scopeCodes.has(key) && !scopeCodes.has(codeKey(item.code))) return;
     const entry = latestByCode.get(key) || latestByCode.get(codeKey(item.code));
     const before = item.stock;
-    const after = entry ? Number(entry.countedQty || 0) : 0; // NULL → 0
+    const after = entry ? Number(entry.countedQty || 0) : 0; // NULL â†’ 0
     if (before === after) return;
     item.stock = after;
     state.latestInventory.set(key, item);
@@ -6208,7 +7579,7 @@ function submitAndApplyCount() {
       qtyChange: after - before,
       qtyBefore: before,
       qtyAfter: after,
-      reason: entry ? `Physical count: ${countSessionLabel(session)}` : `NULL → 0: ${countSessionLabel(session)}`,
+      reason: entry ? `Physical count: ${countSessionLabel(session)}` : `NULL â†’ 0: ${countSessionLabel(session)}`,
     });
   });
   localStorage.setItem("posDashboardAdjustLog:v1", JSON.stringify(state.adjustmentLog));
@@ -6220,10 +7591,10 @@ function submitAndApplyCount() {
   renderAdjustLog();
   generateFinalCountExport(session, candidates, latestByCode, snapshot);
   void syncSharedDataToSupabase({ productsOnly: true, silent: true });
-  showToast(`Submitted — ${updated} stock values updated`, 3200, "success");
+  showToast(`Submitted â€” ${updated} stock values updated`, 3200, "success");
 }
 
-// ── Zero negatives ─────────────────────────────────────────────────────────
+// â”€â”€ Zero negatives â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function openConfirmZeroNeg() {
   const negItems = [...state.latestInventory.values()].filter((item) => (item.stock || 0) < 0);
   if (els.confirmZeroNegMessage) {
@@ -6234,14 +7605,39 @@ function openConfirmZeroNeg() {
   document.querySelector("#confirmZeroNegModal").hidden = false;
 }
 
-function applyZeroNegatives() {
+async function downloadZeroedNegativesReport(items) {
+  if (!items?.length) return;
+  const rows = items.map((item) => ({
+    code: item.code,
+    item: item.product,
+    vendor: item.vendor || "",
+    category: item.category || "",
+    qty_before: item.before,
+    qty_after: 0,
+    adjusted_at: new Date().toISOString(),
+    reason: "ZERO NEGATIVES",
+  }));
+  const xlsx = await ensureXlsxReader();
+  if (xlsx) {
+    const wb = xlsx.utils.book_new();
+    const ws = xlsx.utils.json_to_sheet(rows);
+    xlsx.utils.book_append_sheet(wb, ws, "Zeroed Negatives");
+    xlsx.writeFile(wb, `Zeroed_Negatives_${new Date().toISOString().slice(0, 10)}.xlsx`);
+    return;
+  }
+  downloadCsv(`Zeroed_Negatives_${new Date().toISOString().slice(0, 10)}.csv`, rows);
+}
+
+async function applyZeroNegatives() {
   document.querySelector("#confirmZeroNegModal").hidden = true;
   const negItems = [...state.latestInventory.values()].filter((item) => (item.stock || 0) < 0);
   if (!negItems.length) { showToast("No negative stock values found.", 2400); return; }
+  const zeroedRows = [];
   negItems.forEach((item) => {
     const before = item.stock;
     item.stock = 0;
     state.latestInventory.set(codeKey(item.code), item);
+    zeroedRows.push({ ...item, before });
     state.adjustmentLog.unshift({
       recordedAt: new Date().toISOString(),
       code: item.code,
@@ -6260,10 +7656,11 @@ function applyZeroNegatives() {
   render();
   renderAdjustLog();
   void syncSharedDataToSupabase({ productsOnly: true, silent: true });
+  await downloadZeroedNegativesReport(zeroedRows);
   showToast(`${negItems.length} negative stock values set to 0`, 2800, "success");
 }
 
-// ── Stock Adjust Modal (Products tab) ──────────────────────────────────────
+// â”€â”€ Stock Adjust Modal (Products tab) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function openStockAdjustModal(item) {
   state.stockAdjustItem = item;
   state.stockAdjustAction = null;
@@ -6357,20 +7754,47 @@ function finalizeStockAdjust(reason) {
   render();
   renderAdjustLog();
   void syncSharedDataToSupabase({ productsOnly: true, silent: true });
-  showToast(`${state.stockAdjustAction === "add" ? "Added" : state.stockAdjustAction === "remove" ? "Removed" : "Set"} ${number.format(qty)} — ${item.code} now ${number.format(after)}`, 3000, "success");
+  showToast(`${state.stockAdjustAction === "add" ? "Added" : state.stockAdjustAction === "remove" ? "Removed" : "Set"} ${number.format(qty)} â€” ${item.code} now ${number.format(after)}`, 3000, "success");
 }
 
-// ── Adjust log rendering ───────────────────────────────────────────────────
+// â”€â”€ Adjust log rendering â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+function monthKeyForDate(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function renderAdjustMonthFilter() {
+  const select = document.querySelector("#adjustLogMonthFilter");
+  if (!select) return;
+  const current = select.value;
+  const months = [...new Set((state.adjustmentLog || []).map((entry) => monthKeyForDate(entry.recordedAt)).filter(Boolean))].sort().reverse();
+  select.innerHTML = `<option value="">All months</option>${months.map((month) => {
+    const [year, mm] = month.split("-");
+    const start = new Date(Number(year), Number(mm) - 1, 1);
+    const end = new Date(Number(year), Number(mm), 0);
+    return `<option value="${month}">${start.toLocaleDateString("en-US")} - ${end.toLocaleDateString("en-US")}</option>`;
+  }).join("")}`;
+  select.value = months.includes(current) ? current : "";
+}
+
+function filteredAdjustLogEntries() {
+  const month = document.querySelector("#adjustLogMonthFilter")?.value || "";
+  return (state.adjustmentLog || []).filter((entry) => !month || monthKeyForDate(entry.recordedAt) === month);
+}
+
 function renderAdjustLog() {
   if (!els.adjustLogBody) return;
-  if (!state.adjustmentLog.length) {
+  renderAdjustMonthFilter();
+  const entries = filteredAdjustLogEntries();
+  if (!entries.length) {
     els.adjustLogBody.innerHTML = `<tr><td colspan="10" class="empty-cell">No stock adjustments recorded yet.</td></tr>`;
     return;
   }
 
-  // Separate normal vs. auto-generated (NULL→0 and RESTORE) entries
-  const normalEntries = state.adjustmentLog.filter((e) => !["NULL → 0", "RESTORE", "ZERO NEGATIVES"].some((t) => (e.reason || "").toUpperCase().includes(t) || (e.action || "").toUpperCase().includes(t)));
-  const autoEntries   = state.adjustmentLog.filter((e) =>  ["NULL → 0", "RESTORE", "ZERO NEGATIVES"].some((t) => (e.reason || "").toUpperCase().includes(t) || (e.action || "").toUpperCase().includes(t)));
+  // Separate normal vs. auto-generated (NULLâ†’0 and RESTORE) entries
+  const normalEntries = entries.filter((e) => !["NULL â†’ 0", "RESTORE", "ZERO NEGATIVES"].some((t) => (e.reason || "").toUpperCase().includes(t) || (e.action || "").toUpperCase().includes(t)));
+  const autoEntries   = entries.filter((e) =>  ["NULL â†’ 0", "RESTORE", "ZERO NEGATIVES"].some((t) => (e.reason || "").toUpperCase().includes(t) || (e.action || "").toUpperCase().includes(t)));
 
   function rowHtml(entry) {
     const change = entry.qtyChange || 0;
@@ -6398,7 +7822,7 @@ function renderAdjustLog() {
   const autoHtml = autoEntries.length
     ? `<tr class="auto-entries-toggle-row"><td colspan="10">
         <details class="auto-entries-details">
-          <summary>${autoEntries.length} auto-generated entr${autoEntries.length === 1 ? "y" : "ies"} (NULL→0 / RESTORE / ZERO NEGATIVES)</summary>
+          <summary>${autoEntries.length} auto-generated entr${autoEntries.length === 1 ? "y" : "ies"} (NULLâ†’0 / RESTORE / ZERO NEGATIVES)</summary>
           <table class="count-report-table inner-auto-table">
             <thead><tr><th>Date/Time</th><th>Code</th><th>Item</th><th>Vendor</th><th>Category</th><th>Action</th><th>Change</th><th>Before</th><th>After</th><th>Reason</th></tr></thead>
             <tbody>${autoEntries.map(rowHtml).join("")}</tbody>
@@ -6410,7 +7834,7 @@ function renderAdjustLog() {
   els.adjustLogBody.innerHTML = normalHtml + autoHtml;
 }
 
-// Reason → color map for reports
+// Reason â†’ color map for reports
 function reasonColor_css(reason) {
   const r = (reason || "").toUpperCase();
   if (r.includes("DAMAGED"))           return "#e67e22";
@@ -6427,9 +7851,10 @@ function reasonColor_css(reason) {
 }
 
 async function exportAdjustLogPdf() {
-  if (!state.adjustmentLog.length) { showToast("No adjustment records to export.", 3000, "warning"); return; }
+  const exportRows = filteredAdjustLogEntries();
+  if (!exportRows.length) { showToast("No adjustment records to export.", 3000, "warning"); return; }
   const dateStr = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
-  const rows = state.adjustmentLog.map((entry) => {
+  const rows = exportRows.map((entry) => {
     const change = entry.qtyChange || 0;
     const cls = change > 0 ? "var-up" : change < 0 ? "var-down" : "";
     const changeLabel = change > 0 ? `+${number.format(change)}` : number.format(change);
@@ -6460,18 +7885,19 @@ async function exportAdjustLogPdf() {
     @media print { body { padding: 4px; } }
   </style></head><body>
   <h1>Stock Adjustment Log</h1>
-  <div class="meta">Generated ${dateStr} &nbsp;·&nbsp; ${state.adjustmentLog.length} records</div>
+  <div class="meta">Generated ${dateStr} &nbsp;Â·&nbsp; ${exportRows.length} records</div>
   <table><thead><tr><th>Date/Time</th><th>Code</th><th>Item</th><th>Vendor</th><th>Category</th><th>Action</th><th>Change</th><th>Qty Before</th><th>Qty After</th><th>Reason</th></tr></thead>
   <tbody>${rows}</tbody></table></body></html>`;
   const win = window.open("", "_blank", "width=1100,height=750");
-  if (!win) { showToast("Pop-up blocked — please allow pop-ups.", 3500, "warning"); return; }
+  if (!win) { showToast("Pop-up blocked â€” please allow pop-ups.", 3500, "warning"); return; }
   win.document.write(html);
   win.document.close();
   setTimeout(() => win.print(), 500);
 }
 
 async function exportAdjustLogExcel() {
-  if (!state.adjustmentLog.length) { showToast("No adjustment records to export.", 3000, "warning"); return; }
+  const exportRows = filteredAdjustLogEntries();
+  if (!exportRows.length) { showToast("No adjustment records to export.", 3000, "warning"); return; }
   const xlsx = await ensureXlsxReader();
   if (!xlsx) { showToast("Excel library not available.", 3000, "warning"); return; }
   const wb = xlsx.utils.book_new();
@@ -6479,7 +7905,7 @@ async function exportAdjustLogExcel() {
     ["Stock Adjustment Log", "", "", "", "", "", "", "", "", `Generated: ${new Date().toLocaleDateString()}`],
     [],
     ["Date/Time", "Code", "Item", "Vendor", "Category", "Action", "Qty Change", "Qty Before", "Qty After", "Reason"],
-    ...state.adjustmentLog.map((entry) => [
+    ...exportRows.map((entry) => [
       new Date(entry.recordedAt).toLocaleString(),
       entry.code || "", entry.product || "", entry.vendor || "", entry.category || "",
       entry.action || "", entry.qtyChange || 0, entry.qtyBefore ?? 0, entry.qtyAfter ?? 0, (entry.reason || "").toUpperCase(),
@@ -6489,10 +7915,10 @@ async function exportAdjustLogExcel() {
   ws["!cols"] = [20, 12, 32, 14, 14, 12, 10, 10, 10, 26].map((w) => ({ wch: w }));
   xlsx.utils.book_append_sheet(wb, ws, "Adjustment Log");
   xlsx.writeFile(wb, `StockAdjustments_${new Date().toISOString().slice(0, 10)}.xlsx`);
-  showToast(`Exported ${state.adjustmentLog.length} adjustment records`, 2800, "success");
+  showToast(`Exported ${exportRows.length} adjustment records`, 2800, "success");
 }
 
-// ── Final Count Report (submitted sessions only) ────────────────────────────
+// â”€â”€ Final Count Report (submitted sessions only) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function openFinalCountReport(sessionId) {
   const session = state.countSessions.find((s) => s.id === sessionId);
   if (!session?.preCountSnapshot) {
@@ -6500,7 +7926,7 @@ function openFinalCountReport(sessionId) {
     return;
   }
   state.finalReportSessionId = sessionId;
-  if (els.finalReportTitle) els.finalReportTitle.textContent = `Final Count — ${countSessionLabel(session)}`;
+  if (els.finalReportTitle) els.finalReportTitle.textContent = `Final Count â€” ${countSessionLabel(session)}`;
   if (els.finalReportMeta) {
     els.finalReportMeta.innerHTML = `
       <span><b>Date</b> ${escapeHtml(session.date || "-")}</span>
@@ -6533,7 +7959,7 @@ function renderFinalCountReportRows(session) {
     const variance = qtyEnd - qtyStart;
     const costVar = variance * Number(item.unitCost || 0);
     const vCls = variance > 0 ? "entry-positive" : variance < 0 ? "entry-negative" : "entry-exact";
-    const status = entry ? "Scanned" : "Not scanned (→ 0)";
+    const status = entry ? "Scanned" : "Not scanned (â†’ 0)";
     return `<tr>
       <td>${escapeHtml(item.code)}</td>
       <td>${escapeHtml(item.product)}</td>
@@ -6572,7 +7998,7 @@ function exportFinalCountReportPdf() {
       <td class="num">${number.format(qtyEnd)}</td>
       <td class="num">${variance > 0 ? "+" : ""}${number.format(variance)}</td>
       <td class="num">${currency.format(costVar)}</td>
-      <td>${entry ? "Scanned" : "Not scanned (→ 0)"}</td>
+      <td>${entry ? "Scanned" : "Not scanned (â†’ 0)"}</td>
     </tr>`;
   }).join("");
   const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Final Count Report</title>
@@ -6627,7 +8053,7 @@ async function exportFinalCountReportExcel() {
       const qtyEnd = entry ? Number(entry.countedQty || 0) : 0;
       const variance = qtyEnd - qtyStart;
       const costVar = variance * Number(item.unitCost || 0);
-      return [item.code, item.product, item.vendor || "", item.category || "", qtyStart, qtyEnd, variance, costVar, entry ? "Scanned" : "Not scanned (→ 0)"];
+      return [item.code, item.product, item.vendor || "", item.category || "", qtyStart, qtyEnd, variance, costVar, entry ? "Scanned" : "Not scanned (â†’ 0)"];
     }),
   ];
   const ws = xlsx.utils.aoa_to_sheet(data);
@@ -6635,16 +8061,63 @@ async function exportFinalCountReportExcel() {
   applyXlsxTextToCodeColumns(ws, data, [0]); // code column = index 0
   xlsx.utils.book_append_sheet(wb, ws, "Final Count");
   xlsx.writeFile(wb, `FinalCount_${session.date || "report"}.xlsx`);
-  showToast(`Final count exported — ${candidates.length} items`, 2800, "success");
+  showToast(`Final count exported â€” ${candidates.length} items`, 2800, "success");
 }
 
-// ── Vendor Rules (Vendors tab) ──────────────────────────────────────────────
+// â”€â”€ Vendor Rules (Vendors tab) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function persistVendorRules() {
   localStorage.setItem("posDashboardVendorRules:v1", JSON.stringify(state.vendorRules));
 }
 
 const DAYS_OF_WEEK = ["monday","tuesday","wednesday","thursday","friday","saturday","sunday"];
 const DAY_SHORT = { monday:"Mon",tuesday:"Tue",wednesday:"Wed",thursday:"Thu",friday:"Fri",saturday:"Sat",sunday:"Sun" };
+const DEFAULT_VENDOR_RULE = Object.freeze({
+  status: "Active",
+  safetyDays: 21,
+  daysOfInventory: 7,
+  minOrder: 0,
+  email: "",
+  notes: "",
+  orderDays: [],
+});
+
+function createVendorRule(vendorName, overrides = {}) {
+  return {
+    id: overrides.id || `vr-${Date.now()}-${Math.random().toString(36).slice(2,6)}`,
+    vendor: String(vendorName || "").trim().toUpperCase(),
+    status: overrides.status ?? DEFAULT_VENDOR_RULE.status,
+    safetyDays: overrides.safetyDays ?? DEFAULT_VENDOR_RULE.safetyDays,
+    daysOfInventory: overrides.daysOfInventory ?? DEFAULT_VENDOR_RULE.daysOfInventory,
+    minOrder: overrides.minOrder ?? DEFAULT_VENDOR_RULE.minOrder,
+    email: overrides.email ?? DEFAULT_VENDOR_RULE.email,
+    notes: overrides.notes ?? DEFAULT_VENDOR_RULE.notes,
+    orderDays: [...(overrides.orderDays || DEFAULT_VENDOR_RULE.orderDays)],
+    updatedAt: overrides.updatedAt || new Date().toISOString(),
+  };
+}
+
+function vendorNamesFromLoadedData() {
+  const inventoryRows = [...state.latestInventory.values()];
+  const excelRows = [...state.excelItems.values()];
+  const salesVendors = state.rawSales.map((r) => r.vendor).filter(Boolean);
+  return unique([
+    ...inventoryRows.map((r) => r.vendor),
+    ...excelRows.map((r) => r.vendor),
+    ...salesVendors,
+  ].filter((v) => v && v !== "Unassigned" && v !== "-"));
+}
+
+function ensureVendorRulesFromData() {
+  const allVendors = vendorNamesFromLoadedData();
+  if (!allVendors.length) return 0;
+  const existingNames = new Set(state.vendorRules.map((r) => r.vendor?.toUpperCase()));
+  const newVendors = allVendors.filter((vendor) => !existingNames.has(vendor.toUpperCase()));
+  newVendors.forEach((vendor) => {
+    state.vendorRules.push(createVendorRule(vendor));
+  });
+  if (newVendors.length) persistVendorRules();
+  return newVendors.length;
+}
 
 function renderVendorRules() {
   const body = document.querySelector("#vendorRulesBody");
@@ -6659,7 +8132,7 @@ function renderVendorRules() {
     const todayVendors = state.vendorRules.filter((r) => r.status === "Active" && (r.orderDays || []).includes(today));
     summary.innerHTML = `<span><b>${state.vendorRules.length}</b> vendors configured</span>
       <span><b>${active}</b> active for auto-ordering</span>
-      ${todayVendors.length ? `<span class="vendor-today-alert">⚠️ <b>${todayVendors.length}</b> vendor${todayVendors.length>1?"s":""} to order TODAY: ${todayVendors.map(v=>v.vendor).join(", ")}</span>` : ""}`;
+      ${todayVendors.length ? `<span class="vendor-today-alert">âš ï¸ <b>${todayVendors.length}</b> vendor${todayVendors.length>1?"s":""} to order TODAY: ${todayVendors.map(v=>v.vendor).join(", ")}</span>` : ""}`;
   }
 
   const filtered = statusFilter
@@ -6701,7 +8174,7 @@ function renderVendorRules() {
       </tr>`;
     }).join("");
 
-  // Inline number/text/email inputs — save on blur or Enter
+  // Inline number/text/email inputs â€” save on blur or Enter
   body.querySelectorAll(".vendor-inline-input").forEach((input) => {
     const save = () => {
       const rule = state.vendorRules.find((r) => r.id === input.dataset.ruleId);
@@ -6788,9 +8261,8 @@ function saveVendorRule() {
   const vendor = document.querySelector("#vrVendor").value.trim().toUpperCase();
   if (!vendor) { showToast("Vendor name is required.", 2800, "warning"); return; }
 
-  const rule = {
+  const rule = createVendorRule(vendor, {
     id: state.vendorRuleEditId || `vr-${Date.now()}`,
-    vendor,
     status: document.querySelector("#vrStatus").value,
     safetyDays: toNumber(document.querySelector("#vrSafetyDays").value) || 21,
     daysOfInventory: toNumber(document.querySelector("#vrDaysOfInventory").value) || 7,
@@ -6799,7 +8271,7 @@ function saveVendorRule() {
     notes: document.querySelector("#vrNotes").value.trim(),
     orderDays: [...state.vendorRuleSelectedDays],
     updatedAt: new Date().toISOString(),
-  };
+  });
 
   if (state.vendorRuleEditId) {
     state.vendorRules = state.vendorRules.map((r) => r.id === state.vendorRuleEditId ? rule : r);
@@ -6896,18 +8368,10 @@ function bulkDeleteVendors() {
 }
 
 function preloadVendorsFromInventory() {
-  // Collect all unique vendor names from inventory + sales data
-  const allRows = [...state.latestInventory.values()];
-  const excelRows = [...state.excelItems.values()];
-  const salesVendors = state.rawSales.map((r) => r.vendor).filter(Boolean);
-  const allVendors = unique([
-    ...allRows.map((r) => r.vendor),
-    ...excelRows.map((r) => r.vendor),
-    ...salesVendors,
-  ].filter((v) => v && v !== "Unassigned" && v !== "-"));
+  const allVendors = vendorNamesFromLoadedData();
 
   if (!allVendors.length) {
-    showToast("No inventory or sales data loaded yet — load your CSV files first.", 3500, "warning");
+    showToast("No inventory or sales data loaded yet â€” load your CSV files first.", 3500, "warning");
     return;
   }
 
@@ -6919,20 +8383,7 @@ function preloadVendorsFromInventory() {
     return;
   }
 
-  newVendors.forEach((v) => {
-    state.vendorRules.push({
-      id: `vr-${Date.now()}-${Math.random().toString(36).slice(2,6)}`,
-      vendor: v.toUpperCase(),
-      status: "Disabled",
-      safetyDays: 21,
-      daysOfInventory: 7,
-      minOrder: 0,
-      email: "",
-      notes: "",
-      orderDays: [],
-      updatedAt: new Date().toISOString(),
-    });
-  });
+  newVendors.forEach((v) => state.vendorRules.push(createVendorRule(v)));
 
   persistVendorRules();
   renderVendorRules();
@@ -6948,7 +8399,7 @@ document.querySelectorAll(".vday-btn").forEach((btn) => {
   });
 });
 
-// ── Pending Orders ────────────────────────────────────────────────────────
+// â”€â”€ Pending Orders â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function loadPendingOrders() {
   return JSON.parse(localStorage.getItem("posPendingOrders:v1") || "[]");
 }
@@ -6956,6 +8407,15 @@ function savePendingOrders() {
   localStorage.setItem("posPendingOrders:v1", JSON.stringify(state.pendingOrders));
 }
 if (!state.pendingOrders) state.pendingOrders = loadPendingOrders();
+
+function pendingVendorNames() {
+  return new Set(
+    (state.pendingOrders || [])
+      .filter((po) => !po.cleared)
+      .map((po) => String(po.vendor || "").toUpperCase())
+      .filter(Boolean),
+  );
+}
 
 function isPendingOrder(code) {
   if (!state.pendingOrders?.length) return false;
@@ -7017,13 +8477,27 @@ function openOrderVendorMenu(vendorName, anchor) {
 }
 
 function submitVendorPo(vendorName) {
-  const items = currentOrderRows().filter((item) => (item.vendor||"").toUpperCase() === vendorName.toUpperCase());
+  const draftItems = state.orderSubmissionDrafts?.[String(vendorName || "").toUpperCase()] || [];
+  const items = (draftItems.length ? draftItems : currentOrderRows({ ignoreSubmissionDrafts: true }))
+    .filter((item) => (item.vendor||"").toUpperCase() === vendorName.toUpperCase())
+    .map((item) => applyOrderOverride({ ...item }));
   if (!items.length) { showToast(`No items to order for ${vendorName}.`, 2800, "warning"); return; }
   const clearAt = Date.now() + 10 * 24 * 60 * 60 * 1000; // 10 days
+  const totalCost = items.reduce((sum, item) => sum + orderLineCost(item), 0);
   const po = {
     id: `po-${Date.now()}`,
     vendor: vendorName,
     codes: items.map((item) => codeKey(item.code)),
+    items: items.map((item) => ({
+      code: item.code,
+      product: item.product,
+      vendor: item.vendor,
+      recommendedOrder: item.recommendedOrder,
+      caseOrder: item.caseOrder,
+      caseSize: item.caseSize,
+      totalCost: orderLineCost(item),
+    })),
+    totalCost,
     submittedAt: new Date().toISOString(),
     clearAt,
     cleared: false,
@@ -7040,7 +8514,7 @@ function submitVendorPo(vendorName) {
     qtyChange: 0,
     qtyBefore: 0,
     qtyAfter: 0,
-    reason: currency.format(items.reduce((s, i) => s + orderLineCost(i), 0)) + " total",
+    reason: currency.format(totalCost) + " total",
   });
   localStorage.setItem("posDashboardAdjustLog:v1", JSON.stringify(state.adjustmentLog));
   showToast("PO submitted for " + vendorName + " - " + items.length + " items pending", 3200, "success");
@@ -7049,6 +8523,11 @@ function submitVendorPo(vendorName) {
 }
 
 function submitAllPo() {
+  if (state.orderSubmissionVendors?.length) {
+    if (!confirm(`Submit all ${state.orderSubmissionVendors.length} vendor PO${state.orderSubmissionVendors.length === 1 ? "" : "s"} currently in Ordering?`)) return;
+    state.orderSubmissionVendors.forEach((vendor) => submitVendorPo(vendor));
+    return;
+  }
   const today = new Date().toLocaleDateString("en-US", { weekday: "long" }).toLowerCase();
   const todayVendors = state.vendorRules.filter((r) => r.status === "Active" && (r.orderDays||[]).includes(today));
   if (!todayVendors.length) { showToast("No vendors scheduled to order today.", 3000, "warning"); return; }
@@ -7069,7 +8548,7 @@ function clearExpiredPendingOrders() {
 // Run on load
 clearExpiredPendingOrders();
 
-// ── Vendor Analysis Panel (inline in ordering tab) ────────────────────────
+// â”€â”€ Vendor Analysis Panel (inline in ordering tab) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function exportVendorPoPdf(vendorName, items) {
   const today = new Date().toLocaleDateString("en-US", { year:"numeric", month:"long", day:"numeric" });
   const body = document.querySelector("#vpmBody");
@@ -7110,7 +8589,7 @@ function exportVendorPoPdf(vendorName, items) {
     .grand { font-size:14px; font-weight:700; text-align:right; padding:10px 6px; border-top:2px solid #1c2320; }
     @media print { body { padding:8px; } }
   </style></head><body>
-  <h1>Purchase Order — ${escapeHtml(vendorName)}</h1>
+  <h1>Purchase Order â€” ${escapeHtml(vendorName)}</h1>
   <div class="meta">
     <span><b>Date</b> ${today}</span>
     <span><b>Items</b> ${rows.length}</span>
@@ -7130,30 +8609,72 @@ function exportVendorPoPdf(vendorName, items) {
 document.querySelector("#vpmCloseButton")?.addEventListener("click", () => {
   document.querySelector("#vendorPoModal").hidden = true;
 });
+document.querySelector("#vendorPoModal")?.addEventListener("click", (event) => {
+  if (event.target === document.querySelector("#vendorPoModal")) {
+    document.querySelector("#vendorPoModal").hidden = true;
+  }
+});
 // Also wire Esc in the global keydown handler via the existing modals check
 
 function openVendorAnalysisPanel(vendorName) {
   const modal = document.querySelector("#vendorPoModal");
   if (!modal) return;
-  const items = currentOrderRows().filter((item) => (item.vendor||"").toUpperCase() === vendorName.toUpperCase());
-  const rule = state.vendorRules.find((r) => r.vendor && r.vendor.toUpperCase() === vendorName.toUpperCase());
+  const normalizedVendor = String(vendorName || "").trim();
+  const draftItems = state.orderSubmissionDrafts?.[normalizedVendor.toUpperCase()] || [];
+  const renderedRows = state._lastRenderedOrderRows?.length ? state._lastRenderedOrderRows.map((item) => applyOrderOverride({ ...item })) : [];
+  const baseRows = draftItems.length
+    ? draftItems.map((item) => applyOrderOverride({ ...item }))
+    : (renderedRows.length ? renderedRows : currentOrderRows());
+  const sortMode = state.vendorPoSort || "item-asc";
+  const sortItems = (rows) => rows.sort((a, b) => {
+    if (sortMode === "item-desc") return compareDisplayValue(b.product, a.product);
+    if (sortMode === "code-asc") return compareDisplayValue(a.code, b.code);
+    if (sortMode === "code-desc") return compareDisplayValue(b.code, a.code);
+    if (sortMode === "stock-asc") return (a.stock || 0) - (b.stock || 0);
+    if (sortMode === "stock-desc") return (b.stock || 0) - (a.stock || 0);
+    if (sortMode === "velocity-asc") return (a.velocity || 0) - (b.velocity || 0);
+    if (sortMode === "velocity-desc") return (b.velocity || 0) - (a.velocity || 0);
+    if (sortMode === "min-asc") return (a.reorderMin || 0) - (b.reorderMin || 0);
+    if (sortMode === "min-desc") return (b.reorderMin || 0) - (a.reorderMin || 0);
+    if (sortMode === "max-asc") return (a.reorderMax || 0) - (b.reorderMax || 0);
+    if (sortMode === "max-desc") return (b.reorderMax || 0) - (a.reorderMax || 0);
+    if (sortMode === "rec-asc") return (a.recommendedOrder || 0) - (b.recommendedOrder || 0);
+    if (sortMode === "rec-desc") return (b.recommendedOrder || 0) - (a.recommendedOrder || 0);
+    if (sortMode === "case-asc") return (a.caseOrder || 0) - (b.caseOrder || 0);
+    if (sortMode === "case-desc") return (b.caseOrder || 0) - (a.caseOrder || 0);
+    if (sortMode === "caseSize-asc") return (a.caseSize || 0) - (b.caseSize || 0);
+    if (sortMode === "caseSize-desc") return (b.caseSize || 0) - (a.caseSize || 0);
+    if (sortMode === "unitCost-asc") return (a.unitCost || 0) - (b.unitCost || 0);
+    if (sortMode === "unitCost-desc") return (b.unitCost || 0) - (a.unitCost || 0);
+    if (sortMode === "totalCost-asc") return orderLineCost(a) - orderLineCost(b);
+    if (sortMode === "totalCost-desc") return orderLineCost(b) - orderLineCost(a);
+    return compareDisplayValue(a.product, b.product);
+  });
+  const items = sortItems((normalizedVendor
+    ? baseRows.filter((item) => (item.vendor||"").toUpperCase() === normalizedVendor.toUpperCase())
+    : baseRows.slice()));
+  const rule = normalizedVendor ? state.vendorRules.find((r) => r.vendor && r.vendor.toUpperCase() === normalizedVendor.toUpperCase()) : null;
   const totalCost = items.reduce((s, item) => s + orderLineCost(item), 0);
   const minOk = !rule || !rule.minOrder || totalCost >= rule.minOrder;
-  const isPending = (state.pendingOrders||[]).some((po) => po.vendor === vendorName && !po.cleared);
+  const isPending = normalizedVendor && (state.pendingOrders||[]).some((po) => po.vendor === normalizedVendor && !po.cleared);
 
   const titleEl = document.querySelector("#vpmTitle");
-  if (titleEl) titleEl.textContent = vendorName;
+  if (titleEl) titleEl.textContent = normalizedVendor || "All sent vendors";
   const metaEl = document.querySelector("#vpmMeta");
   if (metaEl) metaEl.innerHTML =
     "<span><b>" + items.length + "</b> items to order</span>" +
     "<span><b>Total</b> " + currency.format(totalCost) + "</span>" +
     (rule && rule.minOrder ? "<span class='" + (minOk ? "" : "order-min-warn-text") + "'><b>Min order</b> " + currency.format(rule.minOrder) + " " + (minOk ? "&#10003;" : "&#9888; below min") + "</span>" : "") +
     (isPending ? "<span class='pending-badge'>&#x1F550; PO pending</span>" : "");
-
   const clearBtn = document.querySelector("#vpmClearPendingButton");
   if (clearBtn) {
     clearBtn.hidden = !isPending;
-    clearBtn.onclick = function() { clearVendorPending(vendorName); modal.hidden = true; };
+    clearBtn.onclick = function() { clearVendorPending(normalizedVendor); modal.hidden = true; };
+  }
+  const cancelBtn = document.querySelector("#vpmCancelButton");
+  if (cancelBtn) {
+    cancelBtn.hidden = true;
+    cancelBtn.onclick = null;
   }
   const syncModalOverrides = function() {
     const body = document.querySelector("#vpmBody");
@@ -7171,18 +8692,19 @@ function openVendorAnalysisPanel(vendorName) {
   if (submitBtn) submitBtn.onclick = function() {
     syncModalOverrides();
     renderOrders();
-    submitVendorPo(vendorName);
+    if (normalizedVendor) submitVendorPo(normalizedVendor);
+    else submitAllPo();
     modal.hidden = true;
   };
   const excelBtn = document.querySelector("#vpmExcelButton");
   if (excelBtn) excelBtn.onclick = function() {
     syncModalOverrides();
-    exportVendorPoExcel(vendorName, currentOrderRows().filter((item) => (item.vendor||"").toUpperCase() === vendorName.toUpperCase()));
+    exportVendorPoExcel(normalizedVendor || "ALL_SENT", items);
   };
   const pdfBtn = document.querySelector("#vpmPdfButton");
   if (pdfBtn) pdfBtn.onclick = function() {
     syncModalOverrides();
-    exportVendorPoPdf(vendorName, currentOrderRows().filter((item) => (item.vendor||"").toUpperCase() === vendorName.toUpperCase()));
+    exportVendorPoPdf(normalizedVendor || "ALL_SENT", items);
   };
 
   const body = document.querySelector("#vpmBody");
@@ -7191,7 +8713,7 @@ function openVendorAnalysisPanel(vendorName) {
       const pend = isPendingOrder(sku.code);
       return "<tr data-vpm-code='" + sku.code + "'>" +
         "<td style='color:#2470c4;font-weight:700;white-space:nowrap'>" + escapeHtml(sku.code) + "</td>" +
-        "<td class='sku-name'>" + escapeHtml(sku.product) + "</td>" +
+        "<td class='sku-name' title='" + escapeHtml(sku.product) + "'>" + escapeHtml(sku.product) + "</td>" +
         "<td class='num " + ((sku.stock||0)<0?"entry-negative":"") + "'>" + number.format(sku.stock||0) + "</td>" +
         "<td class='num'>" + formatVelocity(sku.velocity||0) + "</td>" +
         "<td class='num'>" + number.format(sku.reorderMin||0) + "</td>" +
@@ -7228,10 +8750,19 @@ function openVendorAnalysisPanel(vendorName) {
       });
     });
   }
+  modal.querySelectorAll("[data-vpm-sort]").forEach((th) => {
+    th.style.cursor = "pointer";
+    th.onclick = () => {
+      const base = String(th.dataset.vpmSort || "item-asc").replace(/-(asc|desc)$/, "");
+      const current = state.vendorPoSort || "";
+      state.vendorPoSort = current === `${base}-asc` ? `${base}-desc` : `${base}-asc`;
+      openVendorAnalysisPanel(normalizedVendor);
+    };
+  });
 
   var gt = document.querySelector("#vpmGrandTotal");
   if (gt) gt.textContent = "Grand Total: " + currency.format(totalCost);
-  state._vaVendorName = vendorName;
+  state._vaVendorName = normalizedVendor;
   modal.hidden = false;
 }
 
@@ -7295,7 +8826,7 @@ function clearVendorPending(vendorName) {
   showToast(`Pending cleared for ${vendorName}`, 2400, "success");
 }
 
-// ── Final count export (called after Submit & Apply) ──────────────────────
+// â”€â”€ Final count export (called after Submit & Apply) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function generateFinalCountExport(session, candidates, latestByCode, snapshot) {
   const entries = candidates.map((item) => {
     const key = codeKey(item.code);
@@ -7340,12 +8871,12 @@ async function exportFinalCountToExcel(report) {
   showToast("Final count exported for POS import.", 2800, "success");
 }
 
-// ── Reports tab — load saved final count reports ───────────────────────────
+// â”€â”€ Reports tab â€” load saved final count reports â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 if (!state.finalCountReports) {
   state.finalCountReports = JSON.parse(localStorage.getItem("posFinalCountReports:v1") || "[]");
 }
 
-// ── User/PIN auth system ───────────────────────────────────────────────────
+// â”€â”€ User/PIN auth system â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const AUTH_KEY = "posAuthUsers:v1";
 const SUPABASE_URL = "https://mqkrgieotabpptsbosdh.supabase.co";
 const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_i0n6EMZnW-E40Dx8Od_8mg_eD9GChBy";
@@ -7418,7 +8949,7 @@ async function refreshUsersFromSupabase(options = {}) {
     return loadUsers();
   } catch (error) {
     state.authUsersLoaded = true;
-    if (!silent) showToast("Using saved login users — Supabase sync unavailable.", 3200, "warning");
+    if (!silent) showToast("Using saved login users â€” Supabase sync unavailable.", 3200, "warning");
     return loadUsers();
   }
 }
@@ -7473,7 +9004,7 @@ function isUserRole() {
 }
 if (!state.authRequired) state.authRequired = true;
 
-// ── Render Settings tab ─────────────────────────────────────────────────────
+// â”€â”€ Render Settings tab â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function renderSettings() {
   const panel = document.querySelector("#settingsPanel");
   if (!panel) return;
@@ -7548,7 +9079,7 @@ async function addSettingsUser() {
   }
 }
 
-// ── Lock screen ────────────────────────────────────────────────────────────
+// â”€â”€ Lock screen â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function showLockScreen() {
   const overlay = document.querySelector("#lockScreen");
   if (overlay) {
@@ -7558,6 +9089,7 @@ function showLockScreen() {
   }
   state.currentUser = null;
   state._roleRestrictionApplied = false;
+  resetUiCriteriaOnStartup();
 }
 
 function lockApp(message = "Session locked.") {
@@ -7572,8 +9104,8 @@ function updateMetricsSummaryMode() {
   if (!zone || !bar) return;
   zone.classList.toggle("pinned", !!state.metricsPinned);
   bar.textContent = state.metricsPinned
-    ? "Sales summary — pinned (click to return to hover)"
-    : "Sales summary — hover to expand (click to pin)";
+    ? "Sales summary â€” pinned (click to return to hover)"
+    : "Sales summary â€” hover to expand (click to pin)";
 }
 
 function resetIdleLogoutTimer() {
@@ -7588,24 +9120,22 @@ function tryUnlock(pin) {
   if (!user) {
     const disp = document.querySelector("#lockPinDisplay");
     if (disp) { disp.textContent = "Wrong PIN"; disp.style.color = "#c0392b"; setTimeout(() => { disp.textContent = ""; disp.style.color = ""; }, 1000); }
-    return;
+    return false;
   }
   state.currentUser = user;
   const overlay = document.querySelector("#lockScreen");
   if (overlay) overlay.classList.add("lock-dismissed");
-  requestAnimationFrame(() => {
+  setTimeout(() => {
     applyRoleRestrictions();
     updateMetricsSummaryMode();
     resetIdleLogoutTimer();
-    if (isUserRole()) {
-      const btn = document.querySelector('.tab-button[data-tab="scanmode"]');
-      if (btn) btn.click();
-    }
+    switchTab(isUserRole() ? "scanmode" : "inventory");
     showToast("Welcome, " + user.name + "!", 1200, "success");
-  });
+  }, 0);
+  return true;
 }
 
-// ── Render ordering vendor filter ──────────────────────────────────────────
+// â”€â”€ Render ordering vendor filter â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function getOrderVendorFilter() {
   return document.querySelector("#orderVendorFilterSelect")?.value || state.orderVendorFilter || "Active";
 }
@@ -7618,12 +9148,13 @@ function filterOrderVendors(vendorName) {
   return rule.status === filter;
 }
 
-// ── PO Modal: case order auto-adjusts when rec order changes ──────────────
+// â”€â”€ PO Modal: case order auto-adjusts when rec order changes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function calcCaseOrder(recOrder, caseSize) {
   const orderQty = Math.max(0, toNumber(recOrder) || 0);
   const size = Math.max(1, toNumber(caseSize) || 1);
   if (!orderQty) return 0;
   if (size <= 1) return orderQty;
+  if (orderQty <= size) return 1;
   return Math.max(1, Math.round(orderQty / size));
 }
 
@@ -7648,7 +9179,7 @@ function applyOrderOverride(item) {
 }
 
 
-// ── Reports tab box buttons ─────────────────────────────────────────────────
+// â”€â”€ Reports tab box buttons â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 document.querySelector("#reportBoxAdjust")?.addEventListener("click", () => {
   document.querySelector("#reportAdjustModal").hidden = false;
   renderAdjustLog();
@@ -7670,29 +9201,87 @@ document.querySelectorAll(".report-modal-close").forEach((btn) => {
   });
 });
 
-// ── Report modal Esc + click-outside ────────────────────────────────────────
-["reportAdjustModal","reportPoModal","reportCountModal"].forEach((id) => {
+// â”€â”€ Report modal Esc + click-outside â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+["reportAdjustModal","reportPoModal","reportCountModal","reportLogsModal"].forEach((id) => {
   const el = document.querySelector("#" + id);
   if (!el) return;
   el.addEventListener("click", (e) => { if (e.target === el) el.hidden = true; });
 });
 
-// ── PO history rendering ─────────────────────────────────────────────────────
+// â”€â”€ PO history rendering â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function renderPoHistory() {
   const body = document.querySelector("#poHistoryBody");
   if (!body) return;
   const pos = (state.pendingOrders||[]).filter((po) => po.submittedAt);
-  if (!pos.length) { body.innerHTML = '<tr><td colspan="5" class="empty-cell">No POs submitted yet.</td></tr>'; return; }
+  if (!pos.length) { body.innerHTML = '<tr><td colspan="6" class="empty-cell">No POs submitted yet.</td></tr>'; return; }
   body.innerHTML = pos.sort((a,b) => b.submittedAt.localeCompare(a.submittedAt)).map((po) => `<tr>
-    <td>${new Date(po.submittedAt).toLocaleDateString()}</td>
-    <td><b>${escapeHtml(po.vendor)}</b></td>
+    <td><button type="button" class="text-link-button po-history-open" data-po-id="${escapeHtml(po.id)}">${new Date(po.submittedAt).toLocaleDateString()}</button></td>
+    <td><button type="button" class="text-link-button po-history-open" data-po-id="${escapeHtml(po.id)}"><b>${escapeHtml(po.vendor)}</b></button></td>
     <td>${(po.codes||[]).length}</td>
-    <td>-</td>
+    <td>${currency.format(toNumber(po.totalCost) || (po.items || []).reduce((sum, item) => sum + (toNumber(item.totalCost) || 0), 0))}</td>
     <td>${po.cleared ? '<span class="state-badge state-disabled">Cleared</span>' : '<span class="pending-badge">Pending</span>'}</td>
+    <td><button type="button" class="secondary-button po-history-open" data-po-id="${escapeHtml(po.id)}">Review</button></td>
   </tr>`).join("");
+  body.querySelectorAll(".po-history-open").forEach((button) => {
+    button.addEventListener("click", () => openPoHistoryDetail(button.dataset.poId));
+  });
+  repairMojibakeText(document.querySelector("#reportPoModal") || document.body);
 }
 
-// ── Count report history rendering ──────────────────────────────────────────
+function clearAllPendingPo() {
+  const activePos = (state.pendingOrders || []).filter((po) => !po.cleared);
+  if (!activePos.length) {
+    showToast("No pending purchase orders to clear.", 2400, "warning");
+    return;
+  }
+  if (!confirm(`Clear ${activePos.length} pending PO${activePos.length === 1 ? "" : "s"}?`)) return;
+  state.pendingOrders = (state.pendingOrders || []).map((po) => po.cleared ? po : { ...po, cleared: true, clearedAt: new Date().toISOString() });
+  savePendingOrders();
+  renderPoHistory();
+  renderOrders();
+  showToast("All pending PO statuses cleared.", 2400, "success");
+}
+
+function openPoHistoryDetail(poId) {
+  const po = (state.pendingOrders || []).find((entry) => entry.id === poId);
+  const modal = document.querySelector("#poHistoryDetailModal");
+  const body = document.querySelector("#poHistoryDetailBody");
+  if (!po || !modal || !body) return;
+  const fallbackItems = (po.items && po.items.length)
+    ? po.items
+    : (buildInventoryRows({ ignoreFilters: true, ignoreQuery: true, ignoreStateFilter: true })
+        .map(applyOrderOverride)
+        .filter((item) => (po.codes || []).includes(codeKey(item.code)))
+        .map((item) => ({
+          code: item.code,
+          product: item.product,
+          vendor: item.vendor,
+          recommendedOrder: item.recommendedOrder,
+          caseOrder: item.caseOrder,
+          caseSize: item.caseSize,
+          totalCost: orderLineCost(item),
+        })));
+  const totalCost = toNumber(po.totalCost) || fallbackItems.reduce((sum, item) => sum + (toNumber(item.totalCost) || 0), 0);
+  document.querySelector("#poHistoryDetailTitle").textContent = `${po.vendor} PO`;
+  document.querySelector("#poHistoryDetailMeta").innerHTML = `
+    <span><b>Date</b> ${escapeHtml(new Date(po.submittedAt).toLocaleString())}</span>
+    <span><b>Items</b> ${fallbackItems.length}</span>
+    <span><b>Total</b> ${currency.format(totalCost)}</span>
+    <span><b>Status</b> ${po.cleared ? "Cleared" : "Pending"}</span>`;
+  body.innerHTML = fallbackItems.map((item) => `<tr>
+    <td>${escapeHtml(item.code)}</td>
+    <td class="sku-name">${escapeHtml(item.product)}</td>
+    <td>${escapeHtml(item.vendor || po.vendor)}</td>
+    <td class="num">${number.format(item.recommendedOrder || 0)}</td>
+    <td class="num">${number.format(item.caseOrder || 0)}</td>
+    <td class="num">${number.format(item.caseSize || 1)}</td>
+    <td class="num">${currency.format(item.totalCost || 0)}</td>
+  </tr>`).join("") || `<tr><td colspan="7" class="empty-cell">No stored PO detail for this order.</td></tr>`;
+  modal.hidden = false;
+  repairMojibakeText(modal);
+}
+
+// â”€â”€ Count report history rendering â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function renderCountReportHistory() {
   const body = document.querySelector("#countReportHistoryBody");
   if (!body) return;
@@ -7707,16 +9296,16 @@ function renderCountReportHistory() {
   </tr>`).join("");
 }
 
-// ── Ordering vendor filter ────────────────────────────────────────────────────
+// â”€â”€ Ordering vendor filter â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 document.querySelector("#orderVendorFilterSelect")?.addEventListener("change", () => {
   state.orderVendorFilter = document.querySelector("#orderVendorFilterSelect").value;
   renderOrders();
 });
 
-// ── Report Esc key support ────────────────────────────────────────────────────
+// â”€â”€ Report Esc key support â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
-// ── Lock screen — no lag, visual feedback, keyboard + click ─────────────────
+// â”€â”€ Lock screen â€” no lag, visual feedback, keyboard + click â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 (function() {
   const overlay = document.querySelector("#lockScreen");
   if (!overlay) return;
@@ -7728,14 +9317,13 @@ document.querySelector("#orderVendorFilterSelect")?.addEventListener("change", (
   function draw() {
     const disp = document.querySelector("#lockPinDisplay");
     if (!disp) return;
-    // Show filled green dots as each digit is entered
     const dots = [];
     for (let i = 0; i < 4; i++) {
       dots.push(i < pin.length ? "\u25CF" : "\u25CB");
     }
     disp.textContent = dots.join("  ");
-    disp.style.color = pin.length === 4 ? "var(--green,#16835b)" : "";
-    disp.style.borderColor = pin.length > 0 ? "var(--green,#16835b)" : "";
+    disp.style.color = "var(--green,#16835b)";
+    disp.style.borderColor = "var(--green,#16835b)";
   }
 
   function press(k) {
@@ -7746,15 +9334,15 @@ document.querySelector("#orderVendorFilterSelect")?.addEventListener("change", (
       if (pin.length === 4) {
         const p = pin;
         setTimeout(() => {
+          const unlocked = tryUnlock(p);
           pin = "";
-          draw();
-          tryUnlock(p);
-        }, 40);
+          if (!unlocked) draw();
+        }, 0);
       }
     }
   }
 
-  // Button clicks — mousedown not click to remove any delay
+  // Button clicks â€” mousedown not click to remove any delay
   overlay.addEventListener("mousedown", (e) => {
     const btn = e.target.closest("[data-lock-key]");
     overlay.focus?.();
@@ -7765,7 +9353,7 @@ document.querySelector("#orderVendorFilterSelect")?.addEventListener("change", (
     press(btn.dataset.lockKey);
   });
 
-  // Keyboard — capture phase, fires before other handlers
+  // Keyboard â€” capture phase, fires before other handlers
   document.addEventListener("keydown", (e) => {
     if (overlay.classList.contains("lock-dismissed")) return;
     if (e.key !== "Tab" && e.key !== "F5" && e.key !== "F12") {
@@ -7813,3 +9401,4 @@ initApp();
   }
   setTimeout(() => { poll(); setInterval(poll, 10000); }, 3000);
 })();
+
