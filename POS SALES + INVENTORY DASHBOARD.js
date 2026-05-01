@@ -106,6 +106,9 @@ const ENABLE_SHARED_SYNC = true;
 const pendingInventoryRefreshTimers = new Map();
 let sharedSyncTimer = 0;
 let sharedVendorRulesTimer = 0;
+let appInitPromise = null;
+let appInitDone = false;
+let lastLocalSharedSyncAt = "";
 
 // Increment this whenever raw data changes to bust the SKU cache
 function bumpDataStamp() {
@@ -7969,16 +7972,18 @@ async function restoreSharedProductsOnlyFromSupabase(options = {}) {
 async function updateSharedSyncState(kind = "products") {
   if (!ENABLE_SHARED_SYNC) return false;
   try {
+    const stamp = new Date().toISOString();
     const payload = [{
       id: SYNC_STATE_ROW_ID,
       last_sync_kind: kind,
-      updated_at: new Date().toISOString(),
+      updated_at: stamp,
       latest_inventory_date: latestInventoryDate() || null,
       latest_sales_date: state.dates.at(-1) || null,
       product_count: Math.max(state.latestInventory.size, state.excelItems.size),
       sales_count: state.rawSales.length,
     }];
     await supabaseUpsertRows("sync_state", payload, "id");
+    lastLocalSharedSyncAt = stamp;
     return true;
   } catch (_) {
     return false;
@@ -8141,6 +8146,16 @@ async function initApp() {
   renderUploadLogs();
   document.body.dataset.activeTab = activeTabName();
   renderPriceCheckResult(null);
+  appInitDone = true;
+}
+
+function bootAppIfNeeded() {
+  if (appInitPromise) return appInitPromise;
+  appInitPromise = initApp().catch((error) => {
+    appInitPromise = null;
+    throw error;
+  });
+  return appInitPromise;
 }
 
 // â”€â”€ Confirm delete saved session â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -9839,14 +9854,16 @@ function tryUnlock(pin) {
   }
   state.currentUser = user;
   const overlay = document.querySelector("#lockScreen");
-  if (overlay) overlay.classList.add("lock-dismissed");
-  setTimeout(() => {
+  const disp = document.querySelector("#lockPinDisplay");
+  if (disp) disp.innerHTML = `<span style="font-size:1rem;letter-spacing:0;color:var(--green,#16835b);font-weight:800">Loading...</span>`;
+  Promise.resolve(bootAppIfNeeded()).finally(() => {
+    if (overlay) overlay.classList.add("lock-dismissed");
     applyRoleRestrictions(true);
     updateMetricsSummaryMode();
     resetIdleLogoutTimer();
     switchTab(isUserRole() ? "scanmode" : "inventory");
     showToast("Welcome, " + user.name + "!", 1200, "success");
-  }, 0);
+  });
   return true;
 }
 
@@ -10092,7 +10109,9 @@ document.querySelector("#orderVendorFilterSelect")?.addEventListener("change", (
 ["pointerdown", "keydown", "input", "focusin"].forEach((eventName) => {
   document.addEventListener(eventName, () => resetIdleLogoutTimer(), true);
 });
-initApp();
+if (!state.authRequired || !loadUsers().length) {
+  bootAppIfNeeded();
+}
 
 // Multi-device sync: poll a tiny shared sync_state row so devices can refresh
 // products-only changes quickly without constantly refetching full sales data.
@@ -10110,6 +10129,18 @@ initApp();
       const rows = await resp.json();
       if (!rows.length) return;
       const syncRow = rows[0];
+      if (syncRow.updated_at && syncRow.updated_at === lastLocalSharedSyncAt) {
+        _lastHash = [
+          syncRow.id,
+          syncRow.last_sync_kind,
+          syncRow.updated_at,
+          syncRow.latest_inventory_date,
+          syncRow.latest_sales_date,
+          syncRow.product_count,
+          syncRow.sales_count,
+        ].join("|");
+        return;
+      }
       const hash = [
         syncRow.id,
         syncRow.last_sync_kind,
