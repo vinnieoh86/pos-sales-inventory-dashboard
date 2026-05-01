@@ -7725,7 +7725,8 @@ async function supabaseUpsertRows(tableName, rows, onConflict = "code") {
 
 function productRowForSupabase(item) {
   const excel = findExcelFor(item);
-  const meta = itemMetaFor(item.code || excel.code || "");
+  const normalizedCode = normalizeCode(item.code || excel.code || "");
+  const meta = itemMetaFor(normalizedCode);
   const override = state.reorderOverrides[item.code || excel.code || ""] || {};
   const syncState = normalizeItemState(meta.stateManual ? meta.state : (meta.state || excel.state || item.state || ""));
   const syncCaseSize = meta.caseSizeManual
@@ -7733,7 +7734,7 @@ function productRowForSupabase(item) {
     : Math.max(1, Math.round(toNumber(excel.caseSize || item.caseSize || meta.caseSize) || 1));
   const syncAddDate = normalizeItemDate(meta.addDate || excel.addDate || item.addDate || meta.firstSeenDate || "");
   return {
-    code: item.code || excel.code || "",
+    code: normalizedCode,
     product: item.product || excel.product || "",
     plu: item.plu || excel.plu || "",
     item_number: item.itemNumber || excel.itemNumber || "",
@@ -7754,7 +7755,8 @@ function productRowForSupabase(item) {
 }
 
 function productRowFromExcelForSupabase(item = {}) {
-  const meta = itemMetaFor(item.code || "");
+  const normalizedCode = normalizeCode(item.code || "");
+  const meta = itemMetaFor(normalizedCode);
   const override = state.reorderOverrides[item.code || ""] || {};
   const syncState = normalizeItemState(meta.stateManual ? meta.state : (meta.state || item.state || ""));
   const syncCaseSize = meta.caseSizeManual
@@ -7762,7 +7764,7 @@ function productRowFromExcelForSupabase(item = {}) {
     : Math.max(1, Math.round(toNumber(item.caseSize || meta.caseSize) || 1));
   const syncAddDate = normalizeItemDate(meta.addDate || item.addDate || meta.firstSeenDate || "");
   return {
-    code: item.code || "",
+    code: normalizedCode,
     product: item.product || "",
     plu: item.plu || "",
     item_number: item.itemNumber || "",
@@ -7991,17 +7993,17 @@ async function syncSharedDataToSupabase(options = {}) {
       .filter((item) => item?.code || item?.product || item?.plu || item?.itemNumber)
       .forEach((item) => {
         const row = productRowFromExcelForSupabase(item);
-        const key = codeKey(row.code || row.plu || row.item_number || row.product);
+        const key = codeKey(row.code);
         if (key) productRowMap.set(key, row);
       });
     [...state.latestInventory.values()]
       .filter((item) => item.code || item.product)
       .forEach((item) => {
         const row = productRowForSupabase(item);
-        const key = codeKey(row.code || row.plu || row.item_number || row.product);
+        const key = codeKey(row.code);
         if (key) productRowMap.set(key, row);
       });
-    const productRows = [...productRowMap.values()].filter((row) => row.code || row.product);
+    const productRows = [...productRowMap.values()].filter((row) => cleanCell(row.code));
     if (productRows.length) {
       await supabaseUpsertRows("products", productRows, "code");
     }
