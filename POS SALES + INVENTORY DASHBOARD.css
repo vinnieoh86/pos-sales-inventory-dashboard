@@ -4164,6 +4164,9 @@ body[data-active-tab="scanmode"] .load-strip {
   transition: background 0.1s, transform 0.08s !important;
   aspect-ratio: unset !important;
   min-height: 60px !important;
+  touch-action: manipulation !important;
+  -webkit-tap-highlight-color: transparent !important;
+  user-select: none !important;
 }
 .lock-key:hover, .lock-key:active {
   background: var(--green,#16835b) !important;
@@ -5268,6 +5271,42 @@ body[data-active-tab="multi"] .sticky-pills {
 #inventoryBody td[data-col="reorderMax"] {
   width: 3.85rem !important;
   min-width: 3.85rem !important;
+}
+
+@media (max-width: 820px) {
+  .topbar {
+    gap: 0.45rem !important;
+    padding-inline: 0.55rem !important;
+  }
+  .tab-row {
+    width: 100%;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 0.35rem !important;
+  }
+  .tab-button {
+    min-width: 90px !important;
+    padding: 0.55rem 0.75rem !important;
+    font-size: 0.9rem !important;
+  }
+  .upload-card,
+  .filters-card,
+  .summary-card {
+    padding-inline: 0.65rem !important;
+  }
+  .filters-grid,
+  .inventory-controls-grid,
+  .ordering-toolbar-grid {
+    grid-template-columns: 1fr !important;
+  }
+  .lock-box {
+    width: min(92vw, 360px) !important;
+    padding: 1.25rem 0.95rem 1rem !important;
+  }
+  .lock-key {
+    min-height: 72px !important;
+    font-size: 1.62rem !important;
+  }
 }
 
 #inventory th[data-col="caseSize"],

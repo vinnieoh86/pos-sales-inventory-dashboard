@@ -1580,6 +1580,7 @@ async function loadFiles(fileList) {
   try {
     let selectedInventory = null;
     const previousCodes = new Set([...state.latestInventory.keys()]);
+    const touchedSalesDates = new Set();
     let skippedDuplicates = 0;
     let processedFiles = 0;
     for (const file of files) {
@@ -1601,6 +1602,7 @@ async function loadFiles(fileList) {
       } else {
         state.rawSales = state.rawSales.filter((row) => row.date !== date.iso);
         state.rawSales.push(...rows.map((row) => normalizeSalesRow(row, date)).filter(Boolean));
+        touchedSalesDates.add(date.iso);
         logUploadedFile({ filename: file.name, type: "Daily_Sale", status: "Success" });
       }
       state._loadedFileSignatures.add(signature);
@@ -1636,9 +1638,12 @@ async function loadFiles(fileList) {
     updateFilterOptions();
     setDefaultDates();
     await savePersistedState();
-    await syncSharedDataToSupabase({ silent: true });
+    const syncOk = await syncSharedDataToSupabase({ silent: true, salesDates: [...touchedSalesDates] });
     render();
     renderUploadLogs();
+    if (!syncOk) {
+      showToast("Shared sync did not complete. Check Supabase tables/policies.", 4200, "warning");
+    }
     if (skippedDuplicates) {
       els.fileCount.textContent = `${fileSummary()} - skipped ${skippedDuplicates} duplicate file${skippedDuplicates === 1 ? "" : "s"}`;
     }
@@ -7677,6 +7682,22 @@ async function supabaseDeleteAllRows(tableName) {
   if (!response.ok) throw new Error(`${tableName} delete failed (${response.status})`);
 }
 
+async function supabaseDeleteRowsByValues(tableName, columnName, values) {
+  const uniqueValues = [...new Set((values || []).map((value) => cleanCell(value)).filter(Boolean))];
+  if (!uniqueValues.length) return;
+  const chunkSize = 40;
+  for (let i = 0; i < uniqueValues.length; i += chunkSize) {
+    const chunk = uniqueValues.slice(i, i + chunkSize).map((value) => `"${String(value).replace(/"/g, '\\"')}"`);
+    const url = new URL(supabaseRestUrl(tableName));
+    url.searchParams.set(columnName, `in.(${chunk.join(",")})`);
+    const response = await fetch(url.toString(), {
+      method: "DELETE",
+      headers: supabaseHeaders(),
+    });
+    if (!response.ok) throw new Error(`${tableName} filtered delete failed (${response.status})`);
+  }
+}
+
 async function supabaseInsertRows(tableName, rows) {
   if (!rows.length) return;
   const chunkSize = 500;
@@ -7705,6 +7726,7 @@ async function supabaseUpsertRows(tableName, rows, onConflict = "code") {
 function productRowForSupabase(item) {
   const excel = findExcelFor(item);
   const meta = itemMetaFor(item.code || excel.code || "");
+  const override = state.reorderOverrides[item.code || excel.code || ""] || {};
   const syncState = normalizeItemState(meta.stateManual ? meta.state : (meta.state || excel.state || item.state || ""));
   const syncCaseSize = meta.caseSizeManual
     ? Math.max(1, Math.round(toNumber(meta.caseSize) || 1))
@@ -7725,12 +7747,15 @@ function productRowForSupabase(item) {
     unit_cost: Number(item.unitCost || item.cost || excel.cost || 0),
     case_size: Number(syncCaseSize || 1),
     add_date: syncAddDate || null,
+    reorder_min_override: override.min != null ? Number(override.min) : null,
+    reorder_max_override: override.max != null ? Number(override.max) : null,
     updated_at: new Date().toISOString(),
   };
 }
 
 function productRowFromExcelForSupabase(item = {}) {
   const meta = itemMetaFor(item.code || "");
+  const override = state.reorderOverrides[item.code || ""] || {};
   const syncState = normalizeItemState(meta.stateManual ? meta.state : (meta.state || item.state || ""));
   const syncCaseSize = meta.caseSizeManual
     ? Math.max(1, Math.round(toNumber(meta.caseSize) || 1))
@@ -7751,6 +7776,8 @@ function productRowFromExcelForSupabase(item = {}) {
     unit_cost: Number(item.cost || 0),
     case_size: Number(syncCaseSize || 1),
     add_date: syncAddDate || null,
+    reorder_min_override: override.min != null ? Number(override.min) : null,
+    reorder_max_override: override.max != null ? Number(override.max) : null,
     updated_at: new Date().toISOString(),
   };
 }
@@ -7831,6 +7858,7 @@ function applySharedProductRows(rows) {
     || latestInventoryDate()
     || new Date().toISOString().slice(0, 10);
   const mergedInventory = new Map([...state.latestInventory.entries()]);
+  const nextOverrides = { ...(state.reorderOverrides || {}) };
   rows.forEach((row) => {
     const inventoryItem = hydrateInventoryFromSupabase(row);
     const excelItem = hydrateExcelFromSupabase(row);
@@ -7838,8 +7866,18 @@ function applySharedProductRows(rows) {
     if (!key) return;
     mergedInventory.set(key, inventoryItem);
     addExcelIndex(excelItem);
+    const overrideMin = row.reorder_min_override;
+    const overrideMax = row.reorder_max_override;
+    if (overrideMin != null || overrideMax != null) {
+      nextOverrides[inventoryItem.code || excelItem.code] = {
+        ...(overrideMin != null ? { min: toNumber(overrideMin) } : {}),
+        ...(overrideMax != null ? { max: toNumber(overrideMax) } : {}),
+      };
+    }
   });
   state.latestInventory = mergedInventory;
+  state.reorderOverrides = nextOverrides;
+  localStorage.setItem("posDashboardReorderOverrides:v1", JSON.stringify(state.reorderOverrides));
   state.inventories.set(snapshotDate, [...mergedInventory.values()]);
   rebuildExcelIndexes();
   bumpDataStamp();
@@ -7906,7 +7944,22 @@ async function restoreSharedDataFromSupabase(options = {}) {
     state.excelItems = new Map();
     state.excelByPlu = new Map();
     state.excelByItemNumber = new Map();
+    const nextOverrides = {};
     productRows.map(hydrateExcelFromSupabase).forEach((item) => addExcelIndex(item));
+    productRows.forEach((row) => {
+      const code = normalizeCode(row.code);
+      if (!code) return;
+      const overrideMin = row.reorder_min_override;
+      const overrideMax = row.reorder_max_override;
+      if (overrideMin != null || overrideMax != null) {
+        nextOverrides[code] = {
+          ...(overrideMin != null ? { min: toNumber(overrideMin) } : {}),
+          ...(overrideMax != null ? { max: toNumber(overrideMax) } : {}),
+        };
+      }
+    });
+    state.reorderOverrides = nextOverrides;
+    localStorage.setItem("posDashboardReorderOverrides:v1", JSON.stringify(state.reorderOverrides));
     rebuildExcelIndexes();
 
     const inventoryRows = productRows.map(hydrateInventoryFromSupabase).filter((row) => row.code || row.product);
@@ -7931,7 +7984,7 @@ async function restoreSharedDataFromSupabase(options = {}) {
 
 async function syncSharedDataToSupabase(options = {}) {
   if (!ENABLE_SHARED_SYNC) return false;
-  const { productsOnly = false, silent = false } = options;
+  const { productsOnly = false, silent = false, salesDates = null } = options;
   try {
     const productRowMap = new Map();
     [...state.excelItems.values()]
@@ -7954,10 +8007,14 @@ async function syncSharedDataToSupabase(options = {}) {
     }
 
     if (!productsOnly) {
+      const targetDates = Array.isArray(salesDates) && salesDates.length
+        ? [...new Set(salesDates.map((date) => cleanCell(date)).filter(Boolean))]
+        : [...new Set(state.rawSales.map((row) => cleanCell(row.date)).filter(Boolean))];
       const salesRows = state.rawSales
+        .filter((row) => !targetDates.length || targetDates.includes(cleanCell(row.date)))
         .filter((row) => row.code || row.product)
         .map(salesRowForSupabase);
-      await supabaseDeleteAllRows("daily_sales");
+      await supabaseDeleteRowsByValues("daily_sales", "sales_date", targetDates);
       await supabaseInsertRows("daily_sales", salesRows);
     }
     await updateSharedSyncState(productsOnly ? "products" : "full");
@@ -9884,6 +9941,8 @@ document.querySelector("#orderVendorFilterSelect")?.addEventListener("change", (
   else { overlay.classList.add("lock-dismissed"); return; }
 
   let pin = "";
+  let lastTouchKey = "";
+  let lastTouchAt = 0;
 
   function draw() {
     const disp = document.querySelector("#lockPinDisplay");
@@ -9912,16 +9971,25 @@ document.querySelector("#orderVendorFilterSelect")?.addEventListener("change", (
     }
   }
 
-  // Button clicks â€” mousedown not click to remove any delay
-  overlay.addEventListener("mousedown", (e) => {
+  function handleLockKeyEvent(e) {
     const btn = e.target.closest("[data-lock-key]");
     overlay.focus?.();
     if (!btn) return;
-    e.preventDefault(); e.stopPropagation();
+    e.preventDefault();
+    e.stopPropagation();
+    const key = btn.dataset.lockKey || "";
+    const now = Date.now();
+    if (key && key === lastTouchKey && now - lastTouchAt < 250) return;
+    lastTouchKey = key;
+    lastTouchAt = now;
     btn.classList.add("lock-key--pressed");
-    setTimeout(() => btn.classList.remove("lock-key--pressed"), 150);
-    press(btn.dataset.lockKey);
-  });
+    setTimeout(() => btn.classList.remove("lock-key--pressed"), 120);
+    press(key);
+  }
+
+  overlay.addEventListener("pointerdown", handleLockKeyEvent);
+  overlay.addEventListener("touchstart", handleLockKeyEvent, { passive: false });
+  overlay.addEventListener("click", handleLockKeyEvent);
 
   // Keyboard â€” capture phase, fires before other handlers
   document.addEventListener("keydown", (e) => {
