@@ -88,6 +88,11 @@
         <label class="lead-days-field" title="Hidden legacy field"><input id="leadDays" type="number" min="0" max="0" value="0" tabindex="-1" /></label>
         <label title="Extra days of inventory to stock beyond min">Days of inventory <input id="daysOfInventory" type="number" min="0" max="365" value="7" /></label>
         <button id="clearFiltersButton" class="clear-filters-button" type="button">Clear all</button>
+        <select id="inventoryQuickFilter">
+          <option value="">All items</option>
+          <option value="overrides">Override only</option>
+          <option value="needs">Order needed</option>
+        </select>
         <div id="inventoryQuickTools" class="inventory-quick-tools" hidden></div>
       </section>
       <div class="date-presets sticky-pills" id="datePresets"></div>

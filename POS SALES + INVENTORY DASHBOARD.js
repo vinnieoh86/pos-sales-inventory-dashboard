@@ -102,7 +102,9 @@
 
 const ENABLE_CUSTOM_PARENT_RULES = true;
 const ENABLE_CUSTOM_ATTRIBUTE_RULES = false;
-const ENABLE_SHARED_SYNC = false;
+const ENABLE_SHARED_SYNC = true;
+const pendingInventoryRefreshTimers = new Map();
+let sharedSyncTimer = 0;
 
 // Increment this whenever raw data changes to bust the SKU cache
 function bumpDataStamp() {
@@ -134,6 +136,14 @@ function bumpDataStamp() {
       buildInventoryRows({ ignoreQuery: true, ignoreFilters: true, ignoreStateFilter: true });
     }
   }, 400);
+}
+
+function clearInventorySelection() {
+  if (!state.selectedInventoryCodes?.size) return;
+  state.selectedInventoryCodes.clear();
+  document.querySelectorAll("#inventoryBody .row-checkbox, #selectAllInventory").forEach((node) => {
+    node.checked = false;
+  });
 }
 
 // Debounce helper Ã¢â‚¬â€ delays fast-typing renders
@@ -204,6 +214,7 @@ const els = {
   daysOfInventory: document.querySelector("#daysOfInventory"),
   clearFiltersButton: document.querySelector("#clearFiltersButton"),
   clearFilterButtons: document.querySelectorAll("[data-clear-filter]"),
+  inventoryQuickFilter: document.querySelector("#inventoryQuickFilter"),
   inventoryQuickTools: document.querySelector("#inventoryQuickTools"),
   createPoShortcut: document.querySelector("#createPoShortcut"),
   chooseSalesButton: document.querySelector("#chooseSalesButton"),
@@ -514,6 +525,7 @@ const renderParentsDebounced = debounce(renderParents, 120);
 const syncStickyHeightsDebounced = debounce(syncStickyHeights, 60);
 window.addEventListener("resize", syncStickyHeightsDebounced);
 function renderInventoryControlsLight() {
+  clearInventorySelection();
   syncStickyHeights();
   queueActiveTabRender();
 }
@@ -541,10 +553,10 @@ els.parentsSearch?.addEventListener("input", () => {
 });
 // Selects and date pickers render immediately (single discrete change)
 [els.startDate, els.endDate, els.departmentFilter, els.categoryFilter, els.vendorFilter,
- els.colorFilter, els.segmentMetric, els.segmentGroup, els.sortMode, els.inventoryStateFilter,
+ els.colorFilter, els.segmentMetric, els.segmentGroup, els.sortMode, els.inventoryStateFilter, els.inventoryQuickFilter,
  els.comparePeriod, els.compareGroup].filter(Boolean)
   .forEach((input) => input.addEventListener("input", () => {
-    if ([els.departmentFilter, els.categoryFilter, els.vendorFilter, els.colorFilter, els.inventoryStateFilter].includes(input)) {
+    if ([els.departmentFilter, els.categoryFilter, els.vendorFilter, els.colorFilter, els.inventoryStateFilter, els.inventoryQuickFilter].includes(input)) {
       renderInventoryControlsLight();
       return;
     }
@@ -553,6 +565,7 @@ els.parentsSearch?.addEventListener("input", () => {
 [els.startDate, els.endDate].filter(Boolean).forEach((input) => {
   input.addEventListener("input", () => {
     state.activePresetDays = null;
+    clearInventorySelection();
   });
 });
 
@@ -572,7 +585,7 @@ els.compareToggle?.addEventListener("change", () => {
   });
 });
 
-[els.departmentFilter, els.categoryFilter, els.vendorFilter, els.colorFilter, els.inventoryStateFilter].forEach((select) => {
+[els.departmentFilter, els.categoryFilter, els.vendorFilter, els.colorFilter, els.inventoryStateFilter, els.inventoryQuickFilter].filter(Boolean).forEach((select) => {
   select.addEventListener("keydown", (event) => {
     if (event.key === "Delete") {
       select.value = "";
@@ -1070,6 +1083,8 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     closeDatePickerPopup();
     closeOrderVendorMenu();
+    closeInventoryBulkActionsModal();
+    closeAppConfirmModal();
   }
   const editable = event.target.closest?.(".mini-input, .order-rec-input, [data-item-field]");
   if (!editable) return;
@@ -1080,11 +1095,38 @@ document.addEventListener("keydown", (event) => {
     editable.blur();
     return;
   }
+  if (editable.matches("[data-reorder-field]") && event.key === "Tab" && !event.shiftKey) {
+    if (editable.dataset.reorderField === "min") {
+      event.preventDefault();
+      commitReorderFieldInput(editable, { render: false });
+      moveReorderAcrossRow(editable, "next");
+      return;
+    }
+  }
   if (event.key !== "Enter") return;
   event.preventDefault();
-  if (editable.classList.contains("order-rec-input")) commitOrderRecommendationInput(editable);
-  else if (editable.matches("[data-item-field]")) commitItemFieldInput(editable);
-  else commitReorderFieldInput(editable);
+  if (editable.classList.contains("order-rec-input")) {
+    commitOrderRecommendationInput(editable);
+  } else if (editable.matches("[data-item-field='caseSize']")) {
+    const code = editable.dataset.code;
+    commitItemFieldInput(editable, { render: false });
+    scheduleLightInventoryRefresh(code);
+    requestAnimationFrame(() => focusNextColumnField('[data-item-field="caseSize"]', code, event.shiftKey ? "prev" : "next"));
+    return;
+  } else if (editable.matches("[data-item-field]")) {
+    commitItemFieldInput(editable);
+  } else {
+    const code = editable.dataset.code;
+    const field = editable.dataset.reorderField;
+    commitReorderFieldInput(editable, { render: false });
+    scheduleLightInventoryRefresh(code);
+    requestAnimationFrame(() => focusNextColumnField(`[data-reorder-field="${field}"]`, code, event.shiftKey ? "prev" : "next"));
+    return;
+  }
+  if (editable.matches("[data-reorder-field]")) {
+    moveReorderByColumn(editable, event.shiftKey ? "prev" : "next");
+    return;
+  }
   moveEditableFocus(editable, event.shiftKey ? "prev" : "next");
 });
 
@@ -1107,6 +1149,13 @@ document.addEventListener("click", (event) => {
   ) {
     els.detailDrawer.hidden = true;
     state._activeDetailCode = "";
+  }
+  const activeTab = activeTabName();
+  if (
+    ["inventory", "ordering"].includes(activeTab) &&
+    !event.target.closest("button, input, select, textarea, details, summary, .detail-drawer, .count-modal, tbody tr, thead")
+  ) {
+    setTimeout(() => els.searchInput?.focus(), 0);
   }
   if (
     activeTabName() === "pricecheck" &&
@@ -1148,8 +1197,10 @@ els.inventoryBody?.addEventListener("click", (event) => {
     event.stopPropagation();
     if (cb.checked) state.selectedInventoryCodes.add(cb.dataset.code);
     else state.selectedInventoryCodes.delete(cb.dataset.code);
+    renderInventorySummary(currentInventoryRows());
     return;
   }
+  if (event.target.closest(".checkbox-col")) return;
   const copyButton = event.target.closest(".copy-code");
   if (copyButton) {
     event.stopPropagation();
@@ -1172,7 +1223,7 @@ els.inventoryBody?.addEventListener("click", (event) => {
   if (item) showDetail(item);
 });
 els.inventoryBody?.addEventListener("mousedown", (event) => {
-  if (event.target.closest(".mini-input, .copy-code, .reset-override, [data-item-field]")) {
+  if (event.target.closest(".mini-input, .copy-code, .reset-override, [data-item-field], .checkbox-col, .row-checkbox")) {
     event.stopPropagation();
   }
 });
@@ -1248,6 +1299,7 @@ function commitOrderRecommendationInput(input, options = {}) {
 
 function commitReorderFieldInput(input, options = {}) {
   if (!input) return;
+  if (isUserRole()) return;
   const code = input.dataset.code;
   const field = input.dataset.reorderField;
   const val = input.value.trim();
@@ -1269,7 +1321,7 @@ function commitReorderFieldInput(input, options = {}) {
   input.dataset.lastCommittedValue = val === "" ? "" : input.value;
   localStorage.setItem("posDashboardReorderOverrides:v1", JSON.stringify(state.reorderOverrides));
   bumpDataStamp();
-  if (options.render !== false) refreshAfterInventoryEdit();
+  if (options.render !== false) scheduleLightInventoryRefresh(code);
 }
 
 function revertEditableInput(input) {
@@ -1284,11 +1336,33 @@ function refreshAfterInventoryEdit(options = {}) {
   if (options.refreshStates) updateInventoryStateFilter();
   syncStickyHeights();
   const active = activeTabName();
-  if (active === "inventory") renderInventory();
+  if (active === "inventory" && options.lightInventoryCode) {
+    const nextItem = patchInventoryRow(options.lightInventoryCode);
+    if (nextItem) {
+      const key = codeKey(nextItem.code);
+      const existing = state.inventoryRows || [];
+      const nextRows = existing.map((entry) => codeKey(entry.code) === key ? nextItem : entry);
+      state.inventoryRows = nextRows;
+      state._inventoryRowIndex = new Map(nextRows.map((entry) => [codeKey(entry.code), entry]));
+      renderInventorySummary(nextRows);
+    } else {
+      renderInventorySummary(currentInventoryRows());
+    }
+  }
+  else if (active === "inventory") renderInventory();
   else if (active === "ordering") renderOrders();
   else if (active === "newitems") renderNewItems();
   else queueActiveTabRender();
   refreshDetailDrawer();
+}
+
+function scheduleLightInventoryRefresh(code, options = {}) {
+  const key = codeKey(code || "");
+  clearTimeout(pendingInventoryRefreshTimers.get(key));
+  pendingInventoryRefreshTimers.set(key, setTimeout(() => {
+    pendingInventoryRefreshTimers.delete(key);
+    refreshAfterInventoryEdit({ lightInventoryCode: code, ...options });
+  }, 120));
 }
 
 function moveEditableFocus(current, direction = "next") {
@@ -1311,11 +1385,71 @@ function moveEditableFocus(current, direction = "next") {
   }
 }
 
+function moveItemFieldByColumn(current, direction = "next") {
+  if (!current?.matches?.("[data-item-field]")) return;
+  const field = current.dataset.itemField || "";
+  const selector = `[data-item-field="${field}"]`;
+  const inputs = [...document.querySelectorAll(selector)].filter((node) => !node.disabled && node.offsetParent !== null);
+  const index = inputs.indexOf(current);
+  if (index < 0) return;
+  const next = direction === "prev"
+    ? inputs[Math.max(index - 1, 0)]
+    : inputs[Math.min(index + 1, inputs.length - 1)];
+  if (next && next !== current) {
+    next.focus();
+    next.select?.();
+  }
+}
+
+function focusNextColumnField(selector, currentCode, direction = "next") {
+  const inputs = [...document.querySelectorAll(selector)].filter((node) => !node.disabled && node.offsetParent !== null);
+  const index = inputs.findIndex((node) => codeKey(node.dataset.code || "") === codeKey(currentCode));
+  if (index < 0) return;
+  const next = direction === "prev"
+    ? inputs[Math.max(index - 1, 0)]
+    : inputs[Math.min(index + 1, inputs.length - 1)];
+  if (next && next !== inputs[index]) {
+    next.focus();
+    next.select?.();
+  }
+}
+
+function moveReorderByColumn(current, direction = "next") {
+  if (!current?.matches?.("[data-reorder-field]")) return;
+  const field = current.dataset.reorderField || "min";
+  const selector = `[data-reorder-field="${field}"]`;
+  const inputs = [...document.querySelectorAll(selector)].filter((node) => !node.disabled && node.offsetParent !== null);
+  const index = inputs.indexOf(current);
+  if (index < 0) return;
+  const next = direction === "prev"
+    ? inputs[Math.max(index - 1, 0)]
+    : inputs[Math.min(index + 1, inputs.length - 1)];
+  if (next && next !== current) {
+    next.focus();
+    next.select?.();
+  }
+}
+
+function moveReorderAcrossRow(current, direction = "next") {
+  const row = current?.closest?.("tr");
+  if (!row) return;
+  const field = current.dataset.reorderField || "min";
+  const targetField = direction === "prev"
+    ? (field === "max" ? "min" : "min")
+    : (field === "min" ? "max" : "max");
+  const next = row.querySelector(`[data-reorder-field="${targetField}"]`);
+  if (next && next !== current) {
+    next.focus();
+    next.select?.();
+  }
+}
+
 function commitItemFieldInput(input, options = {}) {
   if (!input) return;
   const code = input.dataset.code;
   const field = input.dataset.itemField;
   if (!code || !field) return;
+  if (isUserRole()) return;
   if (field === "caseSize") {
     const nextValue = Math.max(1, Math.round(toNumber(input.value) || 1));
     if (input.dataset.lastCommittedValue === String(nextValue)) {
@@ -1338,7 +1472,7 @@ function commitItemFieldInput(input, options = {}) {
     setItemMeta(code, { state: nextValue, stateManual: true });
   }
   bumpDataStamp();
-  if (options.render !== false) refreshAfterInventoryEdit({ refreshStates: field === "state" });
+  if (options.render !== false) scheduleLightInventoryRefresh(code, { refreshStates: field === "state" });
 }
 
 document.addEventListener("input", (event) => {
@@ -1679,6 +1813,7 @@ function saveItemMeta() {
     // Ignore localStorage quota issues; IndexedDB is the source of truth.
   }
   scheduleItemMetaPersist();
+  scheduleSharedProductSync();
 }
 
 let itemMetaPersistTimer = 0;
@@ -1702,6 +1837,14 @@ async function persistItemMetaToDb() {
   } catch (error) {
     console.warn("Could not persist item metadata", error);
   }
+}
+
+function scheduleSharedProductSync() {
+  if (!ENABLE_SHARED_SYNC) return;
+  clearTimeout(sharedSyncTimer);
+  sharedSyncTimer = setTimeout(() => {
+    syncSharedDataToSupabase({ productsOnly: true, silent: true }).catch(() => {});
+  }, 900);
 }
 
 function allowedItemStates() {
@@ -2039,9 +2182,11 @@ function syncStickyHeights() {
   const commandBar = document.querySelector(".command-bar");
   const metrics = document.querySelector(".metrics");
   const filters = document.querySelector(".sticky-filters");
+  const pills = document.querySelector("#datePresets");
   if (commandBar) root.style.setProperty("--command-bar-height", `${commandBar.offsetHeight}px`);
   if (metrics) root.style.setProperty("--metrics-height", `${metrics.offsetHeight}px`);
   if (filters) root.style.setProperty("--filters-height", `${filters.offsetHeight}px`);
+  if (pills) root.style.setProperty("--date-pills-height", `${pills.offsetHeight}px`);
 }
 
 function mountInventoryQuickTools() {
@@ -2071,30 +2216,38 @@ function renderSharedQuickTools(tab = activeTabName()) {
   const isOrdering = tab === "ordering";
   const isInventory = tab === "inventory";
 
+  els.inventoryQuickTools.hidden = !(isOrdering || isInventory);
   els.inventoryQuickTools.classList.toggle("inventory-quick-tools--ordering", isOrdering);
   els.inventoryQuickTools.classList.toggle("inventory-quick-tools--inventory", isInventory);
-  if (orderActions) orderActions.hidden = isOrdering;
-  if (formulaNote) formulaNote.hidden = isOrdering;
+  if (orderActions) {
+    orderActions.hidden = true;
+    orderActions.style.display = "none";
+  }
+  if (formulaNote) {
+    formulaNote.hidden = true;
+    formulaNote.style.display = "none";
+  }
 
   if (isOrdering) {
-    row.replaceChildren(
+    row.replaceChildren(...[
+      els.inventoryStateFilter,
       orderArrangeButton,
       orderColumnPicker,
       exportPoExcelButton,
       exportPoPdfButton,
       downloadOrderButton,
-    );
+    ].filter(Boolean));
     return;
   }
 
   if (isInventory) {
-    row.replaceChildren(
+    row.replaceChildren(...[
       els.inventoryStateFilter,
       els.arrangeColumnsButton,
       inventoryColumnPicker,
       els.downloadInventory,
       els.createPoShortcut,
-    );
+    ].filter(Boolean));
     return;
   }
 
@@ -3760,6 +3913,10 @@ function renderCountEntryRows(prependOnly = false) {
     .join("");
 }
 
+function currentAuditUser() {
+  return cleanCell(state.currentUser?.name || "") || "System";
+}
+
 function updateCountSummaryStrip() {
   if (!state.activeCountSession || !els.countSummaryStrip) return;
   const entries = state.activeCountSession.entries || [];
@@ -3829,9 +3986,9 @@ function renderActiveTab() {
   refreshDetailDrawer();
 }
 
-function applyRoleRestrictions() {
+function applyRoleRestrictions(force = false) {
   const userMode = isUserRole();
-  if (state._lastRoleRestrictionMode === userMode && state._roleRestrictionApplied) return;
+  if (!force && state._lastRoleRestrictionMode === userMode && state._roleRestrictionApplied) return;
   state._lastRoleRestrictionMode = userMode;
   state._roleRestrictionApplied = true;
   // Hide admin-only elements for basic users
@@ -3845,18 +4002,20 @@ function applyRoleRestrictions() {
   adminOnly.forEach((sel) => {
     document.querySelectorAll(sel).forEach((el) => { el.style.display = userMode ? "none" : ""; });
   });
+  const metricsZone = document.querySelector("#metricsHoverZone");
+  if (metricsZone) metricsZone.style.display = userMode ? "none" : "";
   // Hide cost columns for user role
   if (userMode) {
     document.querySelectorAll("#inventory th[data-col='unitCost'], #inventoryBody td[data-col='unitCost'], #inventory th[data-col='inventoryCost'], #inventoryBody td[data-col='inventoryCost']").forEach((el) => { el.style.display = "none"; });
+    document.querySelectorAll(".order-table th[data-order-sort='unitCost'], .order-table td[data-col='unitCost'], .order-table th[data-order-sort='totalCost'], .order-table td[data-col='totalCost']").forEach((el) => { el.style.display = "none"; });
     // Hide metrics strip cost info
     document.querySelectorAll("#costSold, #grossProfit").forEach((el) => {
       const article = el?.closest("article");
       if (article) article.style.display = "none";
     });
-    const inventorySummary = document.querySelector("#inventorySummary");
-    if (inventorySummary) inventorySummary.style.display = "none";
     // Hide summary strip cost items
     document.querySelectorAll(".inventory-summary .cost-item, [data-cost-summary]").forEach((el) => { el.style.display = "none"; });
+    document.querySelectorAll("[data-units-summary]").forEach((el) => { el.style.display = "none"; });
     // Only show products and inventory tabs
     document.querySelectorAll(".tab-button").forEach((btn) => {
       const tab = btn.dataset.tab;
@@ -3867,9 +4026,15 @@ function applyRoleRestrictions() {
       if (!["inventory","counts","scanmode"].includes(tab)) btn.style.display = "none";
     });
   } else {
+    document.querySelectorAll("#inventory th[data-col='unitCost'], #inventoryBody td[data-col='unitCost'], #inventory th[data-col='inventoryCost'], #inventoryBody td[data-col='inventoryCost']").forEach((el) => { el.style.display = ""; });
+    document.querySelectorAll(".order-table th[data-order-sort='unitCost'], .order-table td[data-col='unitCost'], .order-table th[data-order-sort='totalCost'], .order-table td[data-col='totalCost']").forEach((el) => { el.style.display = ""; });
+    document.querySelectorAll("#costSold, #grossProfit").forEach((el) => {
+      const article = el?.closest("article");
+      if (article) article.style.display = "";
+    });
+    document.querySelectorAll(".inventory-summary .cost-item, [data-cost-summary]").forEach((el) => { el.style.display = ""; });
+    document.querySelectorAll("[data-units-summary]").forEach((el) => { el.style.display = ""; });
     document.querySelectorAll(".tab-button").forEach((btn) => { btn.style.display = ""; });
-    const metricsZone = document.querySelector("#metricsHoverZone");
-    if (metricsZone) metricsZone.style.display = "";
   }
 }
 
@@ -4492,6 +4657,7 @@ function moveOrderColumnRelative(key, direction = 1) {
 }
 
 function renderOrders() {
+  renderSharedQuickTools("ordering");
   const arrangeButton = document.querySelector("#orderArrangeColumnsButton");
   if (arrangeButton) {
     arrangeButton.classList.toggle("active", state.orderArrangeColumns);
@@ -4539,6 +4705,7 @@ function renderOrders() {
     const vendorStats = vendorOrderStats.get((r.vendor || "").toUpperCase()) || { total: 0, count: 0 };
     return vendorStats.count > 0 && (!r.minOrder || vendorStats.total >= r.minOrder);
   }).sort((a, b) => compareDisplayValue(a.vendor, b.vendor));
+  state._todayOrderVendors = todayVendors.map((rule) => cleanCell(rule.vendor)).filter(Boolean);
   // Write alert to the dedicated banner, not into orderCards (so it persists)
   const banner = document.querySelector("#orderAlertBanner");
   if (banner) {
@@ -4607,6 +4774,7 @@ function renderOrders() {
       });
     }
   }
+  applyRoleRestrictions(true);
   // Render column picker
   renderOrderColumnPicker();
 
@@ -4674,9 +4842,9 @@ function renderOrders() {
               product:          `<td class="sku-name" title="${escapeHtml(sku.product)}">${escapeHtml(sku.product)}</td>`,
               vendor:           `<td>${escapeHtml(sku.vendor || "-")}</td>`,
               plu:              `<td>${escapeHtml(sku.plu || "-")}</td>`,
-              velocity:         `<td class="num">${formatVelocity(sku.velocity || 0)}</td>`,
-              units:            `<td class="num">${number.format(sku.units || 0)}</td>`,
-              stock:            `<td class="num ${(sku.stock||0) < 0 ? "entry-negative" : ""}">${number.format(sku.stock || 0)}</td>`,
+              velocity:         `<td class="num order-velocity-col">${formatVelocity(sku.velocity || 0)}</td>`,
+              units:            `<td class="num order-sold-col">${number.format(sku.units || 0)}</td>`,
+              stock:            `<td class="num order-stock-col ${(sku.stock||0) < 0 ? "entry-negative" : ""}">${number.format(sku.stock || 0)}</td>`,
               reorderMin:       `<td class="num">${number.format(sku.reorderMin || 0)}</td>`,
               reorderMax:       `<td class="num">${number.format(sku.reorderMax || 0)}</td>`,
               recommendedOrder: `<td class="num order-highlight"><input type="number" class="order-rec-input mini-input" data-code="${escapeHtml(sku.code)}" value="${sku.recommendedOrder || sku.qtyNeeded || 0}" min="0" style="width:3.8rem;text-align:center;font-weight:700" /></td>`,
@@ -4817,6 +4985,7 @@ function renderTable() {
 }
 
 function renderInventory() {
+  renderSharedQuickTools("inventory");
   const rows = currentInventoryRows();
   const renderToken = (state._inventoryRenderToken || 0) + 1;
   state._inventoryRenderToken = renderToken;
@@ -4840,25 +5009,7 @@ function renderInventory() {
     const end = Math.min(offset + CHUNK, visible.length);
     for (let i = offset; i < end; i++) {
       const item = visible[i];
-      const tr = document.createElement("tr");
-      tr.dataset.itemCode = item.code;
-      tr.dataset.tooltipDeferred = "1"; // tooltip built on first hover, not upfront
-      const isChecked = state.selectedInventoryCodes.has(item.code);
-      const cbTd = document.createElement("td");
-      cbTd.className = "checkbox-col";
-      const cbInput = document.createElement("input");
-      cbInput.type = "checkbox";
-      cbInput.className = "row-checkbox";
-      cbInput.dataset.code = item.code;
-      cbInput.checked = isChecked;
-      cbInput.addEventListener("change", () => {
-        if (cbInput.checked) state.selectedInventoryCodes.add(item.code);
-        else state.selectedInventoryCodes.delete(item.code);
-      });
-      cbTd.append(cbInput);
-      tr.append(cbTd);
-      tr.insertAdjacentHTML("beforeend", state.columnOrder.map((key) => inventoryCellHtml(key, item)).join(""));
-      fragment.append(tr);
+      fragment.append(buildInventoryRowNode(item));
     }
     els.inventoryBody.append(fragment);
     offset = end;
@@ -4866,21 +5017,7 @@ function renderInventory() {
       requestAnimationFrame(renderChunk);
     } else {
       if (renderToken !== state._inventoryRenderToken) return;
-      els.inventoryBody.querySelectorAll(".pending-clear-btn").forEach((btn) => {
-        btn.addEventListener("click", (event) => {
-          event.stopPropagation();
-          const code = btn.dataset.code;
-          state.pendingOrders = (state.pendingOrders || []).map((po) => {
-            if (po.cleared) return po;
-            const newCodes = (po.codes || []).filter((c) => c !== codeKey(code));
-            return { ...po, codes: newCodes };
-          });
-          savePendingOrders();
-          renderInventory();
-          renderOrders();
-          showToast("Pending cleared for " + code, 2000, "success");
-        });
-      });
+      els.inventoryBody.querySelectorAll("tr[data-item-code]").forEach((entry) => wireInventoryRowInteractions(entry));
       applyColumnVisibility();
       syncInventoryHeaderOffset();
     }
@@ -4911,6 +5048,7 @@ function renderInventoryHeader() {
       if (e.target.checked) state.selectedInventoryCodes.add(c.dataset.code);
       else state.selectedInventoryCodes.delete(c.dataset.code);
     });
+    renderInventorySummary(currentInventoryRows());
   });
   row.querySelectorAll("[data-sort]").forEach((header) => {
     header.addEventListener("click", () => {
@@ -4956,11 +5094,11 @@ function inventoryStateSelectHtml(item) {
   const options = allowedItemStates()
     .map((value) => `<option value="${escapeHtml(value)}"${value === current ? " selected" : ""}>${escapeHtml(value || "Blank")}</option>`)
     .join("");
-  return `<select class="inventory-edit-select inventory-edit-select--state ${stateClass}" data-item-field="state" data-code="${escapeHtml(item.code)}" data-prev-value="${escapeHtml(current)}">${options}</select>`;
+  return `<select class="inventory-edit-select inventory-edit-select--state ${stateClass}" data-item-field="state" data-code="${escapeHtml(item.code)}" data-prev-value="${escapeHtml(current)}" ${isUserRole() ? "disabled" : ""}>${options}</select>`;
 }
 
 function inventoryCaseSizeInputHtml(item) {
-  return `<input type="number" class="inventory-edit-input mini-input" data-item-field="caseSize" data-code="${escapeHtml(item.code)}" data-prev-value="${escapeHtml(item.caseSize || 1)}" value="${escapeHtml(Math.max(1, Math.round(toNumber(item.caseSize) || 1)))}" min="1" step="1" />`;
+  return `<input type="number" class="inventory-edit-input mini-input" data-item-field="caseSize" data-code="${escapeHtml(item.code)}" data-prev-value="${escapeHtml(item.caseSize || 1)}" value="${escapeHtml(Math.max(1, Math.round(toNumber(item.caseSize) || 1)))}" min="1" step="1" ${isUserRole() ? "disabled" : ""} />`;
 }
 
 function inventoryCellHtml(key, item) {
@@ -4970,7 +5108,7 @@ function inventoryCellHtml(key, item) {
   const anyOverride = minOverridden || maxOverridden;
   const values = {
     pending: `<td data-col="pending" class="num pending-col">${isPendingOrder(item.code) ? `<button type="button" class="pending-clear-btn pending-inline-btn" data-code="${escapeHtml(item.code)}" title="PO pending - click to clear"><span class="pending-icon">&#x1F550;</span></button>` : ""}</td>`,
-    code: `<td data-col="code" class="copy-code" data-copy-code="${escapeHtml(item.code)}" title="Click code to copy">${escapeHtml(item.code)}</td>`,
+    code: `<td data-col="code" class="copy-code full-code-cell" data-copy-code="${escapeHtml(item.code)}" title="Click code to copy">${escapeHtml(item.code)}</td>`,
     product: `<td data-col="product" class="sku-name">${escapeHtml(item.product)}</td>`,
     plu: `<td data-col="plu">${escapeHtml(item.plu || "-")}</td>`,
     itemNumber: `<td data-col="itemNumber">${escapeHtml(item.itemNumber || "-")}</td>`,
@@ -4980,7 +5118,7 @@ function inventoryCellHtml(key, item) {
     category: `<td data-col="category">${escapeHtml(item.category || "-")}</td>`,
     vendor: `<td data-col="vendor">${escapeHtml(item.vendor || "-")}</td>`,
     state: `<td data-col="state" class="inventory-edit-cell">${inventoryStateSelectHtml(item)}</td>`,
-    addDate: `<td data-col="addDate">${escapeHtml(item.addDate || "-")}</td>`,
+    addDate: `<td data-col="addDate">${escapeHtml(formatShortDisplayDate(item.addDate))}</td>`,
     stock: `<td data-col="stock" class="num stock-col stock-clickable" title="Click to adjust stock">${number.format(item.stock)}</td>`,
     units: `<td data-col="units" class="num sold-col">${number.format(item.units)}</td>`,
     velocity: `<td data-col="velocity" class="num">${formatVelocity(item.velocity)}</td>`,
@@ -4990,13 +5128,13 @@ function inventoryCellHtml(key, item) {
     caseSize: `<td data-col="caseSize" class="num inventory-edit-cell">${inventoryCaseSizeInputHtml(item)}</td>`,
     reorderMin: `<td data-col="reorderMin" class="num order-col ${minOverridden ? "override-cell" : ""}">
       <input class="mini-input ${minOverridden ? "overridden" : ""}" data-code="${escapeHtml(item.code)}" data-reorder-field="min"
-        value="${escapeHtml(item.reorderMin)}" placeholder="${number.format(item.dynamicMin)}" title="${minOverridden ? `Auto: ${number.format(item.dynamicMin)} - manual override` : `Auto: SV x Safety = ${number.format(item.dynamicMin)}`}" />
+        value="${escapeHtml(item.reorderMin)}" placeholder="${number.format(item.dynamicMin)}" title="${minOverridden ? `Auto: ${number.format(item.dynamicMin)} - manual override` : `Auto: SV x Safety = ${number.format(item.dynamicMin)}`}" ${isUserRole() ? "disabled" : ""} />
     </td>`,
     reorderMax: `<td data-col="reorderMax" class="num order-col ${maxOverridden ? "override-cell" : ""}">
       <div class="minmax-cell">
         <input class="mini-input ${maxOverridden ? "overridden" : ""}" data-code="${escapeHtml(item.code)}" data-reorder-field="max"
-          value="${escapeHtml(item.reorderMax)}" placeholder="${number.format(item.dynamicMax)}" title="${maxOverridden ? `Auto: ${number.format(item.dynamicMax)} - manual override` : `Auto: Min + (SV x DOI) = ${number.format(item.dynamicMax)}`}" />
-        ${anyOverride ? `<button class="reset-override" data-code="${escapeHtml(item.code)}" data-field="all" title="Clear manual min/max overrides"><span aria-hidden="true">&#128465;</span></button>` : ""}
+          value="${escapeHtml(item.reorderMax)}" placeholder="${number.format(item.dynamicMax)}" title="${maxOverridden ? `Auto: ${number.format(item.dynamicMax)} - manual override` : `Auto: Min + (SV x DOI) = ${number.format(item.dynamicMax)}`}" ${isUserRole() ? "disabled" : ""} />
+        ${anyOverride && !isUserRole() ? `<button class="reset-override" data-code="${escapeHtml(item.code)}" data-field="all" title="Clear manual min/max overrides"><span aria-hidden="true">&#128465;</span></button>` : ""}
       </div>
     </td>`,
     needs: (() => {
@@ -5006,6 +5144,68 @@ function inventoryCellHtml(key, item) {
     })(),
   };
   return values[key] || "";
+}
+
+function buildInventoryRowNode(item) {
+  const tr = document.createElement("tr");
+  tr.dataset.itemCode = item.code;
+  tr.dataset.tooltipDeferred = "1";
+  const isChecked = state.selectedInventoryCodes.has(item.code);
+  const cbTd = document.createElement("td");
+  cbTd.className = "checkbox-col";
+  const cbInput = document.createElement("input");
+  cbInput.type = "checkbox";
+  cbInput.className = "row-checkbox";
+  cbInput.dataset.code = item.code;
+  cbInput.checked = isChecked;
+  cbInput.addEventListener("change", () => {
+    if (cbInput.checked) state.selectedInventoryCodes.add(item.code);
+    else state.selectedInventoryCodes.delete(item.code);
+    renderInventorySummary(currentInventoryRows());
+  });
+  cbTd.append(cbInput);
+  tr.append(cbTd);
+  tr.insertAdjacentHTML("beforeend", state.columnOrder.map((key) => inventoryCellHtml(key, item)).join(""));
+  return tr;
+}
+
+function wireInventoryRowInteractions(row) {
+  if (!row) return;
+  row.querySelectorAll(".pending-clear-btn").forEach((btn) => {
+    btn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const code = btn.dataset.code;
+      state.pendingOrders = (state.pendingOrders || []).map((po) => {
+        if (po.cleared) return po;
+        const newCodes = (po.codes || []).filter((c) => c !== codeKey(code));
+        return { ...po, codes: newCodes };
+      });
+      savePendingOrders();
+      patchInventoryRow(code);
+      renderOrders();
+      showToast("Pending cleared for " + code, 2000, "success");
+    });
+  });
+}
+
+function patchInventoryRow(code) {
+  const row = [...(els.inventoryBody?.querySelectorAll("tr[data-item-code]") || [])]
+    .find((entry) => codeKey(entry.dataset.itemCode || "") === codeKey(code));
+  if (!row) {
+    renderInventory();
+    return;
+  }
+  const nextItem = buildInventoryRows().find((entry) => codeKey(entry.code) === codeKey(code));
+  if (!nextItem) {
+    row.remove();
+    return null;
+  }
+  state._inventoryRowIndex.set(codeKey(nextItem.code), nextItem);
+  const nextRow = buildInventoryRowNode(nextItem);
+  row.replaceWith(nextRow);
+  wireInventoryRowInteractions(nextRow);
+  applyColumnVisibility();
+  return nextItem;
 }
 
 function moveColumn(from, to) {
@@ -5031,6 +5231,11 @@ function moveDetailField(from, to) {
 }
 
 function renderInventorySummary(rows) {
+  const selectedKeys = new Set([...(state.selectedInventoryCodes || [])].map((code) => codeKey(code)));
+  const selectedCount = rows.filter((item) => selectedKeys.has(codeKey(item.code))).length;
+  const quickValue = els.inventoryQuickFilter?.value || "";
+  const showOverridesOnly = quickValue.includes("overrides");
+  const showNeedsOnly = quickValue.includes("needs");
   const totals = rows.reduce(
     (sum, item) => ({
       items: sum.items + 1,
@@ -5048,17 +5253,36 @@ function renderInventorySummary(rows) {
   els.inventorySummary.innerHTML = `
     <span><b>${number.format(totals.items)}</b> items showing</span>
     <span><b>${number.format(totals.stock)}</b> stock</span>
-    <span><b>${number.format(totals.sold)}</b> sold</span>
+    <span data-units-summary><b>${number.format(totals.sold)}</b> sold</span>
     <span><b>${formatVelocity(totals.velocity)}</b> avg/day</span>
-    <span><b>${currency.format(totals.unitCost)}</b> cost sum</span>
-    <span><b>${currency.format(totals.inventoryCost)}</b> stock cost</span>
-    <span><b>${escapeHtml(earliestAddDate || "-")}</b> oldest add</span>
-    <span><b>${escapeHtml(latestAdd || "-")}</b> newest add</span>`;
+    <span data-cost-summary><b>${currency.format(totals.unitCost)}</b> cost sum</span>
+    <span data-cost-summary><b>${currency.format(totals.inventoryCost)}</b> stock cost</span>
+    <span><b>${escapeHtml(formatShortDisplayDate(earliestAddDate))}</b> oldest add</span>
+    <span><b>${escapeHtml(formatShortDisplayDate(latestAdd))}</b> newest add</span>
+    <label class="inventory-toggle-chip"><input type="checkbox" id="inventoryQuickOverrides"${showOverridesOnly ? " checked" : ""} />Overrides</label>
+    <label class="inventory-toggle-chip"><input type="checkbox" id="inventoryQuickNeeds"${showNeedsOnly ? " checked" : ""} />Order needed</label>
+    ${selectedCount ? `<button type="button" class="secondary-button inventory-selected-button" id="inventorySelectedActionsButton">Selected (${number.format(selectedCount)})</button>` : ""}`;
+  applyRoleRestrictions(true);
+  document.querySelector("#inventorySelectedActionsButton")?.addEventListener("click", openInventoryBulkActionsModal);
+  const syncQuickChecks = () => {
+    const overrides = !!document.querySelector("#inventoryQuickOverrides")?.checked;
+    const needs = !!document.querySelector("#inventoryQuickNeeds")?.checked;
+    if (els.inventoryQuickFilter) {
+      els.inventoryQuickFilter.value = overrides && needs ? "overrides+needs"
+        : overrides ? "overrides"
+        : needs ? "needs"
+        : "";
+    }
+    renderInventory();
+  };
+  document.querySelector("#inventoryQuickOverrides")?.addEventListener("change", syncQuickChecks);
+  document.querySelector("#inventoryQuickNeeds")?.addEventListener("change", syncQuickChecks);
 }
 
 function buildInventoryRows(options = {}) {
   const query = options.ignoreQuery ? "" : els.searchInput.value.trim().toLowerCase();
   const stateFilter = (options.ignoreFilters || options.ignoreStateFilter) ? "" : els.inventoryStateFilter.value;
+  const quickFilter = options.ignoreQuickFilter ? "" : (els.inventoryQuickFilter?.value || "");
   const start = els.startDate.value || "0000-00-00";
   const end = els.endDate.value || "9999-99-99";
   const leadDays = 0;
@@ -5170,6 +5394,8 @@ function buildInventoryRows(options = {}) {
       if (els.vendorFilter.value && item.vendor !== els.vendorFilter.value) return false;
       if (els.colorFilter.value && item.color !== els.colorFilter.value && item.subType !== els.colorFilter.value) return false;
     }
+    if (quickFilter === "overrides" && !item.isOverridden) return false;
+    if (quickFilter === "needs" && !(item.recommendedOrder > 0)) return false;
     return true;
   }).sort(compareInventoryRows);
 }
@@ -5547,11 +5773,14 @@ function switchTab(tab) {
     if (tab === "pricecheck") focusPriceCheckSearch();
     if (tab === "scanmode") setTimeout(() => { document.querySelector("#scanModeInput")?.focus(); }, 80);
   }
+  applyRoleRestrictions(true);
+  renderSharedQuickTools(tab);
   queueActiveTabRender();
 }
 
 function clearFilters() {
   state._pinnedAdjustCode = null;
+  state.selectedInventoryCodes.clear();
   els.searchInput.value = "";
   saveActiveTabSearch();
   if (els.parentsSearch) els.parentsSearch.value = "";
@@ -5560,6 +5789,7 @@ function clearFilters() {
   els.vendorFilter.value = "";
   els.colorFilter.value = "";
   els.inventoryStateFilter.value = "Active";
+  if (els.inventoryQuickFilter) els.inventoryQuickFilter.value = "";
   applyDatePreset(90);
   render();
 }
@@ -5590,10 +5820,19 @@ function saveManualMultiBarcodes(code, aliases = []) {
 function showDetail(item) {
   if (!item) return;
   state._activeDetailCode = item.code;
+  const userMode = isUserRole();
   const sales = buildSkuRows({ ignoreQuery: true, ignoreFilters: true }).find((sku) => codeKey(sku.code) === codeKey(item.code)) || item;
   const windows = salesWindowsFor(item.code);
-  const activeDetailTab = state.detailDrawerTab || "fields";
+  const activeDetailTab = userMode && state.detailDrawerTab === "sales" ? "fields" : (state.detailDrawerTab || "fields");
   const aliases = multiAliasesForCode(item.code);
+  const salesHistory = (state.rawSales || [])
+    .filter((row) => codeKey(row.code) === codeKey(item.code))
+    .sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")))
+    .slice(0, 90);
+  const historyRows = (state.adjustmentLog || [])
+    .filter((entry) => codeKey(entry.code) === codeKey(item.code))
+    .sort((a, b) => String(b.recordedAt || "").localeCompare(String(a.recordedAt || "")))
+    .slice(0, 90);
   const fields = [
     ["code", "Code", "ids", `<b class="copy-code" title="Click to copy">${escapeHtml(item.code)}</b>`],
     ["plu", "PLU", "ids", `<b>${escapeHtml(item.plu || sales.plu || "-")}</b>`],
@@ -5604,8 +5843,6 @@ function showDetail(item) {
     ["containerAttr", "Tag", "ids", `<b>${escapeHtml(item.containerAttr || sales.containerAttr || item.otherAttrs || sales.otherAttrs || "-")}</b>`],
     ["qty", "Qty sold in view", "sales", `<b>${number.format(sales.units || item.units || 0)}</b>`],
     ["windows", "Qty windows", "sales", `<b>${windows.map((entry) => `${entry.label}: ${number.format(entry.units)}`).join(" | ")}</b>`],
-    ["sales", "Sold total price", "sales", `<b>${currency.format(sales.sales || 0)}</b>`],
-    ["costSold", "Sold total cost", "sales", `<b>${currency.format(sales.costSold || ((sales.units || item.units || 0) * (item.unitCost || sales.unitCost || 0)))}</b>`],
     ["velocity", "Sales velocity", "sales", `<b>${formatVelocity(sales.velocity || item.velocity || 0)} / day</b>`],
     ["vendor", "Vendor", "inventory", `<b>${escapeHtml(item.vendor || sales.vendor || "-")}</b>`],
     ["category", "Category", "inventory", `<b>${escapeHtml(item.category || sales.category || "-")}</b>`],
@@ -5613,14 +5850,20 @@ function showDetail(item) {
     ["state", "State", "inventory", `<b>${escapeHtml(item.state || sales.state || "-")}</b>`],
     ["addDate", "Add date", "inventory", `<b>${escapeHtml(item.addDate || sales.addDate || "-")}</b>`],
     ["stock", "Stock", "inventory", `<b>${number.format(item.stock ?? sales.stock ?? 0)}</b>`],
-    ["unitCost", "Cost", "inventory", `<b>${currency.format(item.unitCost || sales.unitCost || 0)}</b>`],
     ["price", "Price", "inventory", `<b>${currency.format(item.price || sales.price || 0)}</b>`],
-    ["inventoryCost", "Stock cost total", "inventory", `<b>${currency.format(item.inventoryCost || sales.inventoryCost || 0)}</b>`],
     ["caseSize", "Case size", "ordering", `<b>${number.format(item.caseSize || sales.caseSize || 1)}</b>`],
     ["minMax", "Min / Max", "ordering", `<b>${number.format(item.reorderMin || sales.reorderMin || 0)} / ${number.format(item.reorderMax || sales.reorderMax || 0)}</b>`],
     ["recommendedOrder", "Recommended order", "ordering", `<b>${number.format(sales.recommendedOrder || item.recommendedOrder || item.qtyNeeded || 0)}</b>`],
     ["caseOrder", "Case order", "ordering", `<b>${number.format(item.caseOrder || 0)}</b>`],
   ];
+  if (!userMode) {
+    fields.splice(9, 0,
+      ["sales", "Sold total price", "sales", `<b>${currency.format(sales.sales || 0)}</b>`],
+      ["costSold", "Sold total cost", "sales", `<b>${currency.format(sales.costSold || ((sales.units || item.units || 0) * (item.unitCost || sales.unitCost || 0)))}</b>`],
+    );
+    fields.splice(fields.findIndex(([key]) => key === "price"), 0, ["unitCost", "Cost", "inventory", `<b>${currency.format(item.unitCost || sales.unitCost || 0)}</b>`]);
+    fields.splice(fields.findIndex(([key]) => key === "caseSize"), 0, ["inventoryCost", "Stock cost total", "inventory", `<b>${currency.format(item.inventoryCost || sales.inventoryCost || 0)}</b>`]);
+  }
   const fieldKeys = fields.map(([key]) => key);
   const detailOrder = (state.detailOrder || fieldKeys).filter((key) => fieldKeys.includes(key));
   fieldKeys.forEach((key) => {
@@ -5640,6 +5883,8 @@ function showDetail(item) {
     <div class="detail-tab-row">
       <button type="button" class="detail-tab${activeDetailTab === "fields" ? " active" : ""}" data-detail-tab="fields">Fields</button>
       <button type="button" class="detail-tab${activeDetailTab === "multi" ? " active" : ""}" data-detail-tab="multi">Multi</button>
+      ${userMode ? "" : `<button type="button" class="detail-tab${activeDetailTab === "sales" ? " active" : ""}" data-detail-tab="sales">Sales</button>`}
+      <button type="button" class="detail-tab${activeDetailTab === "history" ? " active" : ""}" data-detail-tab="history">History</button>
     </div>
     <section class="detail-panel"${activeDetailTab === "fields" ? "" : " hidden"}>
       <details class="detail-picker">
@@ -5672,9 +5917,44 @@ function showDetail(item) {
         <button type="button" class="count-submit-btn" data-save-multi>Save Multi</button>
         <button type="button" class="secondary-button" data-clear-multi>Clear Multi</button>
       </div>
+    </section>
+    <section class="detail-panel"${!userMode && activeDetailTab === "sales" ? "" : " hidden"}>
+      <div class="summary-strip">
+        <span><b>${number.format(salesHistory.reduce((sum, row) => sum + (row.units || 0), 0))}</b> qty in history</span>
+        <span><b>${currency.format(salesHistory.reduce((sum, row) => sum + (row.sales || 0), 0))}</b> sales</span>
+        <span><b>${number.format(item.stock ?? sales.stock ?? 0)}</b> stock left</span>
+      </div>
+      <div class="table-wrap">
+        <table class="count-report-table inner-auto-table">
+          <thead><tr><th>Date</th><th>Qty</th><th>Sales $</th><th>Vendor</th></tr></thead>
+          <tbody>${salesHistory.length
+            ? salesHistory.map((row) => `<tr><td>${escapeHtml(row.date || "-")}</td><td class="num">${number.format(row.units || 0)}</td><td class="num">${currency.format(row.sales || 0)}</td><td>${escapeHtml(row.vendor || item.vendor || "-")}</td></tr>`).join("")
+            : `<tr><td colspan="4" class="empty-cell">No daily sales history loaded for this item.</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </section>
+    <section class="detail-panel"${activeDetailTab === "history" ? "" : " hidden"}>
+      <div class="summary-strip">
+        <span><b>${number.format(historyRows.length)}</b> stock events</span>
+        <span><b>${escapeHtml(historyRows[0]?.recordedAt ? new Date(historyRows[0].recordedAt).toLocaleString() : "-")}</b> latest</span>
+      </div>
+      <div class="table-wrap">
+        <table class="count-report-table inner-auto-table">
+          <thead><tr><th>Date/Time</th><th>Action</th><th>Change</th><th>Before</th><th>After</th><th>User</th><th>Reason</th></tr></thead>
+          <tbody>${historyRows.length
+            ? historyRows.map((entry) => `<tr><td>${escapeHtml(new Date(entry.recordedAt).toLocaleString())}</td><td>${escapeHtml(entry.action || "-")}</td><td class="num">${number.format(entry.qtyChange || 0)}</td><td class="num">${number.format(entry.qtyBefore || 0)}</td><td class="num">${number.format(entry.qtyAfter || 0)}</td><td>${escapeHtml(entry.user || "System")}</td><td>${escapeHtml(entry.reason || "-")}</td></tr>`).join("")
+            : `<tr><td colspan="7" class="empty-cell">No stock history recorded for this item yet.</td></tr>`}
+          </tbody>
+        </table>
+      </div>
     </section>`;
+  const multiDraftSignature = (values) => JSON.stringify(
+    Array.from({ length: 16 }, (_, index) => normalizeCode(values[index] || ""))
+  );
   const readMultiDraftValues = () => [...els.detailDrawer.querySelectorAll("[data-multi-slot]")].map((input) => normalizeCode(input.value));
-  const multiDraftChanged = () => JSON.stringify(readMultiDraftValues()) !== JSON.stringify(aliases.map((value) => normalizeCode(value)));
+  const initialMultiSignature = multiDraftSignature(aliases);
+  const multiDraftChanged = () => multiDraftSignature(readMultiDraftValues()) !== initialMultiSignature;
   const persistMultiDraft = () => {
     const nextAliases = readMultiDraftValues();
     saveManualMultiBarcodes(item.code, nextAliases);
@@ -6294,9 +6574,199 @@ function showToast(message, duration = 2800, tone = "info") {
   toast._timer = setTimeout(() => toast.classList.remove("visible"), duration);
 }
 
+function closeAppConfirmModal() {
+  document.querySelector("#appConfirmModal")?.remove();
+}
+
+function showAppConfirm({ title = "Confirm", message = "", confirmText = "Confirm", cancelText = "Cancel", onConfirm } = {}) {
+  closeAppConfirmModal();
+  const modal = document.createElement("div");
+  modal.id = "appConfirmModal";
+  modal.className = "count-modal";
+  modal.innerHTML = `
+    <div class="count-modal__scrim" data-close-confirm></div>
+    <div class="count-modal__dialog count-modal__dialog--vendor">
+      <div class="count-modal__header">
+        <div><p class="eyebrow">Confirmation</p><h3>${escapeHtml(title)}</h3></div>
+        <div class="table-tools"><button type="button" class="secondary-button" data-close-confirm>&#x2715;</button></div>
+      </div>
+      <p class="muted">${escapeHtml(message)}</p>
+      <div class="detail-multi-actions">
+        <button type="button" class="secondary-button" data-close-confirm>${escapeHtml(cancelText)}</button>
+        <button type="button" class="count-submit-btn" id="appConfirmAcceptButton">${escapeHtml(confirmText)}</button>
+      </div>
+    </div>`;
+  document.body.append(modal);
+  modal.hidden = false;
+  modal.querySelectorAll("[data-close-confirm]").forEach((node) => node.addEventListener("click", closeAppConfirmModal));
+  modal.querySelector("#appConfirmAcceptButton")?.addEventListener("click", () => {
+    closeAppConfirmModal();
+    onConfirm?.();
+  });
+}
+
+function selectedInventoryItems() {
+  const selectedKeys = new Set([...state.selectedInventoryCodes].map((code) => codeKey(code)));
+  return currentInventoryRows().filter((item) => selectedKeys.has(codeKey(item.code)));
+}
+
+function closeInventoryBulkActionsModal() {
+  document.querySelector("#inventoryBulkActionsModal")?.remove();
+}
+
+async function applyBulkInventoryChange(action, rawValue, options = {}) {
+  if (isUserRole()) {
+    showToast("Bulk changes are admin only.", 2400, "warning");
+    return;
+  }
+  const items = selectedInventoryItems();
+  if (!items.length) {
+    showToast("Select at least one item first.", 2400, "warning");
+    return;
+  }
+  const user = state.currentUser?.name || "System";
+  if (action === "state") {
+    const nextState = normalizeItemState(rawValue);
+    if (!nextState) return;
+    items.forEach((item) => setItemMeta(item.code, { state: nextState, stateManual: true }));
+  } else if (action === "caseSize") {
+    const nextValue = Math.max(1, Math.round(toNumber(rawValue) || 0));
+    if (!nextValue) return;
+    items.forEach((item) => setItemMeta(item.code, { caseSize: nextValue, caseSizeManual: true }));
+  } else if (action === "price" || action === "cost") {
+    const nextValue = Number(toNumber(rawValue) || 0);
+    items.forEach((item) => {
+      const key = codeKey(item.code);
+      const inventory = state.latestInventory.get(key);
+      if (!inventory) return;
+      if (action === "price") inventory.price = nextValue;
+      else inventory.cost = nextValue;
+    });
+  }
+  if (action === "price" || action === "cost" || action === "caseSize" || action === "state") {
+    items.forEach((item) => {
+      state.adjustmentLog.unshift({
+        recordedAt: new Date().toISOString(),
+        code: item.code,
+        product: item.product,
+        vendor: item.vendor || "",
+        category: item.category || "",
+        action: `Bulk ${action}`,
+        qtyChange: 0,
+        qtyBefore: item.stock ?? 0,
+        qtyAfter: item.stock ?? 0,
+        user,
+        reason: `Bulk update (${action})`,
+      });
+    });
+  }
+  await savePersistedState();
+  bumpDataStamp();
+  if (!options.deferRender) {
+    renderInventory();
+    if (activeTabName() === "ordering") renderOrders();
+  }
+  if (!options.keepOpen) closeInventoryBulkActionsModal();
+  showToast(`Updated ${items.length} item${items.length === 1 ? "" : "s"} (${action})`, 2600, "success");
+}
+
+function openInventoryBulkActionsModal() {
+  if (isUserRole()) {
+    showToast("Bulk changes are admin only.", 2400, "warning");
+    return;
+  }
+  const items = selectedInventoryItems();
+  if (!items.length) {
+    showToast("Select at least one item first.", 2400, "warning");
+    return;
+  }
+  closeInventoryBulkActionsModal();
+  const modal = document.createElement("div");
+  modal.id = "inventoryBulkActionsModal";
+  modal.className = "count-modal";
+  modal.innerHTML = `
+    <div class="count-modal__scrim" data-close-bulk></div>
+    <div class="count-modal__dialog inventory-bulk-dialog">
+      <div class="count-modal__header inventory-bulk-header">
+        <div><p class="eyebrow">Bulk actions</p><h3>${number.format(items.length)} selected item${items.length === 1 ? "" : "s"}</h3></div>
+        <div class="table-tools"><button type="button" class="secondary-button inventory-bulk-close" data-close-bulk>&#x2715;</button></div>
+      </div>
+      <div class="detail-multi-grid">
+        <label class="detail-multi-field"><span>Change price</span><input type="number" step="0.01" placeholder="0.00" data-bulk-input="price" /></label>
+        <label class="detail-multi-field"><span>Change cost</span><input type="number" step="0.01" placeholder="0.00" data-bulk-input="cost" /></label>
+        <label class="detail-multi-field"><span>Change case size</span><input type="number" step="1" min="1" data-bulk-input="caseSize" /></label>
+        <label class="detail-multi-field"><span>Change state</span><select data-bulk-input="state"><option value="">No change</option>${allowedItemStates().map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`).join("")}</select></label>
+      </div>
+      <div class="detail-multi-actions">
+        <button type="button" class="count-submit-btn" id="inventoryBulkApplyButton">Apply</button>
+      </div>
+    </div>`;
+  document.body.append(modal);
+  modal.hidden = false;
+  modal.querySelectorAll("[data-close-bulk]").forEach((node) => node.addEventListener("click", closeInventoryBulkActionsModal));
+  const dialog = modal.querySelector(".inventory-bulk-dialog");
+  const header = modal.querySelector(".inventory-bulk-header");
+  let drag = null;
+  header?.addEventListener("mousedown", (event) => {
+    if (event.target.closest("button")) return;
+    const rect = dialog.getBoundingClientRect();
+    drag = { startX: event.clientX, startY: event.clientY, left: rect.left, top: rect.top };
+    dialog.style.position = "fixed";
+    dialog.style.margin = "0";
+    dialog.style.left = `${rect.left}px`;
+    dialog.style.top = `${rect.top}px`;
+  });
+  const moveBulkModal = (event) => {
+    if (!drag) return;
+    dialog.style.left = `${drag.left + (event.clientX - drag.startX)}px`;
+    dialog.style.top = `${drag.top + (event.clientY - drag.startY)}px`;
+  };
+  const stopMoveBulkModal = () => {
+    drag = null;
+  };
+  window.addEventListener("mousemove", moveBulkModal);
+  window.addEventListener("mouseup", stopMoveBulkModal);
+  modal.querySelector("#inventoryBulkApplyButton")?.addEventListener("click", async () => {
+    const price = modal.querySelector('[data-bulk-input="price"]')?.value?.trim();
+    const cost = modal.querySelector('[data-bulk-input="cost"]')?.value?.trim();
+    const caseSize = modal.querySelector('[data-bulk-input="caseSize"]')?.value?.trim();
+    const stateValue = modal.querySelector('[data-bulk-input="state"]')?.value?.trim();
+    const actions = [];
+    if (price !== "") actions.push(["price", price]);
+    if (cost !== "") actions.push(["cost", cost]);
+    if (caseSize !== "") actions.push(["caseSize", caseSize]);
+    if (stateValue) actions.push(["state", stateValue]);
+    if (!actions.length) {
+      showToast("Enter at least one bulk change first.", 2400, "warning");
+      return;
+    }
+    showAppConfirm({
+      title: "Apply Changes",
+      message: `Apply ${actions.length} change${actions.length === 1 ? "" : "s"} to ${items.length} selected item${items.length === 1 ? "" : "s"}?`,
+      confirmText: "Apply all",
+      onConfirm: async () => {
+        for (const [action, value] of actions) {
+          await applyBulkInventoryChange(action, value, { keepOpen: true, deferRender: true });
+        }
+        clearInventorySelection();
+        closeInventoryBulkActionsModal();
+        renderInventory();
+        if (activeTabName() === "ordering") renderOrders();
+      },
+    });
+  });
+  modal.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      modal.querySelector("#inventoryBulkApplyButton")?.click();
+    }
+  });
+}
+
 // Date preset helpers Ã¢â‚¬â€ sets start/end inputs and re-renders
 function applyDatePreset(days) {
   if (!state.dates.length) return;
+  clearInventorySelection();
   // Data is always 1 day delayed (prior day import), so anchor end to yesterday
   const yesterday = new Date();
   yesterday.setDate(yesterday.getDate() - 1);
@@ -6673,7 +7143,7 @@ function coverageSummary() {
 }
 
 function saveUploadLogs() {
-  localStorage.setItem("posDashboardUploadLogs:v1", JSON.stringify((state.uploadLogs || []).slice(0, 250)));
+  localStorage.setItem("posDashboardUploadLogs:v1", JSON.stringify((state.uploadLogs || []).slice(0, 5000)));
 }
 
 function logUploadedFile({ filename, type, status }) {
@@ -6684,16 +7154,51 @@ function logUploadedFile({ filename, type, status }) {
     type: type || "File",
     status: status || "Success",
   });
-  state.uploadLogs = state.uploadLogs.slice(0, 250);
+  state.uploadLogs = state.uploadLogs.slice(0, 5000);
   saveUploadLogs();
+}
+
+function extractDateFromFilename(filename = "") {
+  const raw = String(filename || "");
+  const compact = raw.match(/(?<!\d)(\d{8})(?!\d)/);
+  if (compact) {
+    const token = compact[1];
+    const mm = Number(token.slice(0, 2));
+    const dd = Number(token.slice(2, 4));
+    const yyyy = Number(token.slice(4, 8));
+    if (mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31 && yyyy >= 2000 && yyyy <= 2100) {
+      return `${yyyy}-${String(mm).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
+    }
+  }
+  const iso = raw.match(/(20\d{2})[-_](\d{2})[-_](\d{2})/);
+  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+  return "";
+}
+
+function formatShortDisplayDate(value) {
+  const iso = normalizeItemDate(value);
+  if (!iso) return "-";
+  const match = iso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return iso;
+  const [, yyyy, mm, dd] = match;
+  return `${mm}/${dd}/${yyyy.slice(-2)}`;
 }
 
 function renderUploadLogs() {
   if (!els.uploadLogBody || !els.uploadLogSummary) return;
-  const salesDates = [...new Set(state.dates || [])].sort();
-  const inventoryDates = [...state.inventories.keys()].sort();
+  const recentLogs = (state.uploadLogs || []).slice(0, 5000);
+  const loggedSalesDates = recentLogs
+    .filter((entry) => entry.type === "Daily_Sale" && entry.status === "Success")
+    .map((entry) => extractDateFromFilename(entry.filename))
+    .filter(Boolean);
+  const loggedInventoryDates = recentLogs
+    .filter((entry) => entry.type === "Current_Inventory" && entry.status === "Success")
+    .map((entry) => extractDateFromFilename(entry.filename))
+    .filter(Boolean);
+  const salesDates = [...new Set([...(state.dates || []), ...loggedSalesDates])].sort();
+  const inventoryDates = [...new Set([...state.inventories.keys(), ...loggedInventoryDates])].sort();
   const knownDates = [...new Set([...salesDates, ...inventoryDates])].sort();
-  const excelLoaded = state.excelItems.size > 0;
+  const excelLoaded = recentLogs.some((entry) => entry.type === "Excel_Product" && entry.status === "Success") || state.excelItems.size > 0;
   const inventoryFilter = document.querySelector("#logsInventoryFilter")?.value || "";
   const salesFilter = document.querySelector("#logsSalesFilter")?.value || "";
   const dataFilter = document.querySelector("#logsDataFilter")?.value || "";
@@ -7199,6 +7704,12 @@ async function supabaseUpsertRows(tableName, rows, onConflict = "code") {
 
 function productRowForSupabase(item) {
   const excel = findExcelFor(item);
+  const meta = itemMetaFor(item.code || excel.code || "");
+  const syncState = normalizeItemState(meta.stateManual ? meta.state : (meta.state || excel.state || item.state || ""));
+  const syncCaseSize = meta.caseSizeManual
+    ? Math.max(1, Math.round(toNumber(meta.caseSize) || 1))
+    : Math.max(1, Math.round(toNumber(excel.caseSize || item.caseSize || meta.caseSize) || 1));
+  const syncAddDate = normalizeItemDate(meta.addDate || excel.addDate || item.addDate || meta.firstSeenDate || "");
   return {
     code: item.code || excel.code || "",
     product: item.product || excel.product || "",
@@ -7208,17 +7719,23 @@ function productRowForSupabase(item) {
     category: item.category || excel.category || "",
     department: item.department || excel.department || "",
     color: item.color || excel.color || "",
-    state: excel.state || item.state || "",
+    state: syncState || "",
     stock: Number(item.stock || excel.stock || 0),
     price: Number(item.price || excel.price || 0),
-    unit_cost: Number(item.cost || excel.cost || 0),
-    case_size: Number(excel.caseSize || 1),
-    add_date: excel.addDate || null,
+    unit_cost: Number(item.unitCost || item.cost || excel.cost || 0),
+    case_size: Number(syncCaseSize || 1),
+    add_date: syncAddDate || null,
     updated_at: new Date().toISOString(),
   };
 }
 
 function productRowFromExcelForSupabase(item = {}) {
+  const meta = itemMetaFor(item.code || "");
+  const syncState = normalizeItemState(meta.stateManual ? meta.state : (meta.state || item.state || ""));
+  const syncCaseSize = meta.caseSizeManual
+    ? Math.max(1, Math.round(toNumber(meta.caseSize) || 1))
+    : Math.max(1, Math.round(toNumber(item.caseSize || meta.caseSize) || 1));
+  const syncAddDate = normalizeItemDate(meta.addDate || item.addDate || meta.firstSeenDate || "");
   return {
     code: item.code || "",
     product: item.product || "",
@@ -7228,12 +7745,12 @@ function productRowFromExcelForSupabase(item = {}) {
     category: item.category || "",
     department: item.department || "",
     color: item.color || "",
-    state: item.state || "",
+    state: syncState || "",
     stock: Number(item.stock || 0),
     price: Number(item.price || 0),
     unit_cost: Number(item.cost || 0),
-    case_size: Number(item.caseSize || 1),
-    add_date: item.addDate || null,
+    case_size: Number(syncCaseSize || 1),
+    add_date: syncAddDate || null,
     updated_at: new Date().toISOString(),
   };
 }
@@ -7329,6 +7846,46 @@ function applySharedProductRows(rows) {
   return rows.length;
 }
 
+async function restoreSharedProductsOnlyFromSupabase(options = {}) {
+  if (!ENABLE_SHARED_SYNC) return false;
+  const { silent = false } = options;
+  try {
+    const productRows = await supabaseSelectRows("products", { select: "*" });
+    if (!productRows.length) return false;
+    const beforeHash = [...state.latestInventory.values()].map((item) => `${item.code}:${item.stock}:${item.state}:${item.addDate}:${item.caseSize}`).join("|");
+    applySharedProductRows(productRows);
+    updateFilterOptions();
+    updateInventoryStateFilter();
+    await savePersistedState();
+    const afterHash = [...state.latestInventory.values()].map((item) => `${item.code}:${item.stock}:${item.state}:${item.addDate}:${item.caseSize}`).join("|");
+    if (beforeHash !== afterHash && !state.activeCountSession) renderDebounced();
+    if (!silent) showToast(`Shared product updates loaded (${number.format(productRows.length)} items)`, 2600, "success");
+    return true;
+  } catch (error) {
+    if (!silent) showToast("Shared product refresh failed.", 2600, "warning");
+    return false;
+  }
+}
+
+async function updateSharedSyncState(kind = "products") {
+  if (!ENABLE_SHARED_SYNC) return false;
+  try {
+    const payload = [{
+      id: SYNC_STATE_ROW_ID,
+      last_sync_kind: kind,
+      updated_at: new Date().toISOString(),
+      latest_inventory_date: latestInventoryDate() || null,
+      latest_sales_date: state.dates.at(-1) || null,
+      product_count: Math.max(state.latestInventory.size, state.excelItems.size),
+      sales_count: state.rawSales.length,
+    }];
+    await supabaseUpsertRows("sync_state", payload, "id");
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
 async function restoreSharedDataFromSupabase(options = {}) {
   if (!ENABLE_SHARED_SYNC) return false;
   const { silent = false, preferCurrentState = false } = options;
@@ -7403,6 +7960,7 @@ async function syncSharedDataToSupabase(options = {}) {
       await supabaseDeleteAllRows("daily_sales");
       await supabaseInsertRows("daily_sales", salesRows);
     }
+    await updateSharedSyncState(productsOnly ? "products" : "full");
     await savePersistedState();
     if (!silent) showToast("Shared Supabase data updated.", 2800, "success");
     return true;
@@ -7517,6 +8075,7 @@ function restorePreviousCount(sessionId) {
     restored++;
     state.adjustmentLog.unshift({
       recordedAt: new Date().toISOString(),
+      user: currentAuditUser(),
       code: item.code,
       product: item.product,
       vendor: item.vendor || "",
@@ -7571,6 +8130,7 @@ function submitAndApplyCount() {
     updated++;
     state.adjustmentLog.unshift({
       recordedAt: new Date().toISOString(),
+      user: currentAuditUser(),
       code: item.code,
       product: item.product,
       vendor: item.vendor || "",
@@ -7640,6 +8200,7 @@ async function applyZeroNegatives() {
     zeroedRows.push({ ...item, before });
     state.adjustmentLog.unshift({
       recordedAt: new Date().toISOString(),
+      user: currentAuditUser(),
       code: item.code,
       product: item.product,
       vendor: item.vendor || "",
@@ -7737,6 +8298,7 @@ function finalizeStockAdjust(reason) {
   // Record in log
   state.adjustmentLog.unshift({
     recordedAt: new Date().toISOString(),
+    user: currentAuditUser(),
     code: item.code,
     product: item.product,
     vendor: item.vendor || "",
@@ -8506,6 +9068,7 @@ function submitVendorPo(vendorName) {
   savePendingOrders();
   state.adjustmentLog.unshift({
     recordedAt: new Date().toISOString(),
+    user: currentAuditUser(),
     code: "-",
     product: "PO submitted: " + vendorName + " (" + items.length + " items)",
     vendor: vendorName,
@@ -8524,15 +9087,22 @@ function submitVendorPo(vendorName) {
 
 function submitAllPo() {
   if (state.orderSubmissionVendors?.length) {
-    if (!confirm(`Submit all ${state.orderSubmissionVendors.length} vendor PO${state.orderSubmissionVendors.length === 1 ? "" : "s"} currently in Ordering?`)) return;
-    state.orderSubmissionVendors.forEach((vendor) => submitVendorPo(vendor));
+    showAppConfirm({
+      title: "Submit All PO",
+      message: `Submit all ${state.orderSubmissionVendors.length} vendor PO${state.orderSubmissionVendors.length === 1 ? "" : "s"} currently in Ordering?`,
+      confirmText: "Submit all",
+      onConfirm: () => state.orderSubmissionVendors.forEach((vendor) => submitVendorPo(vendor)),
+    });
     return;
   }
-  const today = new Date().toLocaleDateString("en-US", { weekday: "long" }).toLowerCase();
-  const todayVendors = state.vendorRules.filter((r) => r.status === "Active" && (r.orderDays||[]).includes(today));
-  if (!todayVendors.length) { showToast("No vendors scheduled to order today.", 3000, "warning"); return; }
-  if (!confirm(`Submit POs for all ${todayVendors.length} vendor${todayVendors.length>1?"s":""} scheduled today?`)) return;
-  todayVendors.forEach((r) => submitVendorPo(r.vendor));
+  const todayVendors = [...new Set((state._todayOrderVendors || []).map((vendor) => cleanCell(vendor)).filter(Boolean))];
+  if (!todayVendors.length) { showToast("No vendors currently qualify for ordering today.", 3000, "warning"); return; }
+  showAppConfirm({
+    title: "Submit Today POs",
+    message: `Submit POs for all ${todayVendors.length} vendor${todayVendors.length > 1 ? "s" : ""} shown for today?`,
+    confirmText: "Submit PO",
+    onConfirm: () => todayVendors.forEach((vendor) => submitVendorPo(vendor)),
+  });
 }
 
 function clearExpiredPendingOrders() {
@@ -8880,6 +9450,7 @@ if (!state.finalCountReports) {
 const AUTH_KEY = "posAuthUsers:v1";
 const SUPABASE_URL = "https://mqkrgieotabpptsbosdh.supabase.co";
 const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_i0n6EMZnW-E40Dx8Od_8mg_eD9GChBy";
+const SYNC_STATE_ROW_ID = "pos-dashboard-main";
 if (!state.authUsers) state.authUsers = [];
 if (!state.authUsersLoaded) state.authUsersLoaded = false;
 
@@ -9126,7 +9697,7 @@ function tryUnlock(pin) {
   const overlay = document.querySelector("#lockScreen");
   if (overlay) overlay.classList.add("lock-dismissed");
   setTimeout(() => {
-    applyRoleRestrictions();
+    applyRoleRestrictions(true);
     updateMetricsSummaryMode();
     resetIdleLogoutTimer();
     switchTab(isUserRole() ? "scanmode" : "inventory");
@@ -9319,10 +9890,9 @@ document.querySelector("#orderVendorFilterSelect")?.addEventListener("change", (
     if (!disp) return;
     const dots = [];
     for (let i = 0; i < 4; i++) {
-      dots.push(i < pin.length ? "\u25CF" : "\u25CB");
+      dots.push(`<span class="pin-dot${i < pin.length ? " filled" : ""}"></span>`);
     }
-    disp.textContent = dots.join("  ");
-    disp.style.color = "var(--green,#16835b)";
+    disp.innerHTML = dots.join("");
     disp.style.borderColor = "var(--green,#16835b)";
   }
 
@@ -9369,33 +9939,45 @@ document.querySelector("#orderVendorFilterSelect")?.addEventListener("change", (
 });
 initApp();
 
-// Multi-device sync: poll Supabase every 30s for stock changes from other devices
+// Multi-device sync: poll a tiny shared sync_state row so devices can refresh
+// products-only changes quickly without constantly refetching full sales data.
 (function startSyncPoller() {
   if (!ENABLE_SHARED_SYNC) return;
   let _lastHash = "";
   async function poll() {
     try {
-      const url = new URL(`${SUPABASE_URL}/rest/v1/products`);
-      url.searchParams.set("select", "code,product,plu,item_number,vendor,category,department,color,state,stock,price,unit_cost,case_size,add_date,updated_at");
-      url.searchParams.set("order", "updated_at.desc");
-      url.searchParams.set("limit", "2000");
+      const url = new URL(`${SUPABASE_URL}/rest/v1/sync_state`);
+      url.searchParams.set("select", "id,last_sync_kind,updated_at,latest_inventory_date,latest_sales_date,product_count,sales_count");
+      url.searchParams.set("id", `eq.${SYNC_STATE_ROW_ID}`);
+      url.searchParams.set("limit", "1");
       const resp = await fetch(url.toString(), { headers: supabaseHeaders() });
       if (!resp.ok) return;
       const rows = await resp.json();
       if (!rows.length) return;
-      const hash = rows.map((r) => `${r.code}:${r.stock}:${r.case_size}:${r.state}:${r.updated_at}`).join("|");
+      const syncRow = rows[0];
+      const hash = [
+        syncRow.id,
+        syncRow.last_sync_kind,
+        syncRow.updated_at,
+        syncRow.latest_inventory_date,
+        syncRow.latest_sales_date,
+        syncRow.product_count,
+        syncRow.sales_count,
+      ].join("|");
       if (hash === _lastHash) return;
       _lastHash = hash;
-      const beforeHash = [...state.latestInventory.values()].map((item) => `${item.code}:${item.stock}:${item.state}:${item.addDate}:${item.caseSize}`).join("|");
-      applySharedProductRows(rows);
-      const afterHash = [...state.latestInventory.values()].map((item) => `${item.code}:${item.stock}:${item.state}:${item.addDate}:${item.caseSize}`).join("|");
-      const changed = beforeHash === afterHash ? 0 : 1;
-      if (changed > 0) {
-        updateFilterOptions();
-        updateInventoryStateFilter();
-        await savePersistedState();
-        if (!state.activeCountSession) renderDebounced();
-        showToast(`\u21ba Synced shared inventory updates from another device`, 2400, "success");
+      const isProductsOnly = String(syncRow.last_sync_kind || "").toLowerCase() === "products";
+      const restored = isProductsOnly
+        ? await restoreSharedProductsOnlyFromSupabase({ silent: true })
+        : await restoreSharedDataFromSupabase({ silent: true, preferCurrentState: false });
+      if (restored) {
+        showToast(
+          isProductsOnly
+            ? "\u21ba Synced shared product updates from another device"
+            : "\u21ba Synced shared sales and inventory updates from another device",
+          2400,
+          "success"
+        );
       }
     } catch (_) { /* silent fail on file:// */ }
   }
