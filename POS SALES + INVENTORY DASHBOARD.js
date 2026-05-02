@@ -8351,6 +8351,7 @@ async function restoreSharedDataFromSupabase(options = {}) {
     const mergedProductRows = mergeSharedProductRows(productRows, productMetaRows);
     if (!mergedProductRows.length && !salesRows.length && !vendorRuleRows.length) return false;
     if (preferCurrentState && sharedSnapshotIsOlderThanCurrent(mergedProductRows, salesRows)) {
+      if (vendorRuleRows.length) applySharedVendorRuleRows(vendorRuleRows);
       if (!silent) showToast("Kept newer local data instead of older shared snapshot.", 2800, "success");
       return "kept-local";
     }
@@ -9966,7 +9967,9 @@ if (!state.authUsers) state.authUsers = [];
 if (!state.authUsersLoaded) state.authUsersLoaded = false;
 
 function defaultAuthUsers() {
-  return [{ name: "Admin", pin: "0000", role: "admin", id: "default-admin", active: true }];
+  return ENABLE_SHARED_SYNC
+    ? []
+    : [{ name: "Admin", pin: "0000", role: "admin", id: "default-admin", active: true }];
 }
 
 function normalizeAuthUser(user) {
@@ -10422,7 +10425,7 @@ document.querySelector("#orderVendorFilterSelect")?.addEventListener("change", (
 (function() {
   const overlay = document.querySelector("#lockScreen");
   if (!overlay) return;
-  if (loadUsers().length > 0) overlay.classList.remove("lock-dismissed");
+  if (state.authRequired) overlay.classList.remove("lock-dismissed");
   else { overlay.classList.add("lock-dismissed"); return; }
   ensureAuthUsersLoadedForLock().catch(() => {});
 
@@ -10492,7 +10495,7 @@ document.querySelector("#orderVendorFilterSelect")?.addEventListener("change", (
   document.addEventListener(eventName, () => resetIdleLogoutTimer(), true);
 });
 if (!state.authRequired || !loadUsers().length) {
-  bootAppIfNeeded();
+  if (!state.authRequired) bootAppIfNeeded();
 }
 
 // Multi-device sync: poll a tiny shared sync_state row so devices can refresh
