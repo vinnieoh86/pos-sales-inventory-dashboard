@@ -2760,6 +2760,28 @@ th[data-sort][data-sort-dir="desc"]::after {
   color: var(--ink);
   margin-right: 6px;
 }
+.vendor-import-box {
+  display: grid;
+  gap: 4px;
+  margin: 10px 0 12px;
+  padding: 12px 14px;
+  border: 1.5px dashed #9fd4c0;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #f8fcfa 0%, #eef8f2 100%);
+  color: #1d2d27;
+  cursor: pointer;
+}
+.vendor-import-box strong {
+  font-size: 0.95rem;
+}
+.vendor-import-box small {
+  color: #61726a;
+}
+.vendor-import-box.dragging {
+  border-color: #16835b;
+  background: linear-gradient(180deg, #effaf4 0%, #dff3e8 100%);
+  box-shadow: 0 0 0 3px rgba(22,131,91,0.12);
+}
 
 
 

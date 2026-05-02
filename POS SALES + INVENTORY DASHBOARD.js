@@ -9393,36 +9393,57 @@ async function importVendorRulesFile(file) {
     const workbook = xlsx.read(await file.arrayBuffer(), { type: "array" });
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
     const rows = xlsx.utils.sheet_to_json(sheet, { header: 1, defval: "" });
-    const headerIndex = rows.findIndex((row) => Array.isArray(row) && row.some((cell) => cleanCell(cell).toLowerCase() === "vendor"));
+    const headerIndex = rows.findIndex((row) => {
+      const cells = Array.isArray(row) ? row.map((cell) => cleanCell(cell).toLowerCase()) : [];
+      return cells.includes("vendor") && (
+        cells.includes("status")
+        || cells.includes("safety days")
+        || cells.includes("safety stock days")
+        || cells.includes("days of inventory")
+        || cells.includes("min order $")
+        || cells.includes("min order amount ($)")
+        || cells.includes("order days")
+      );
+    });
     if (headerIndex < 0) {
       showToast("Could not find vendor-rule columns in that file.", 3200, "warning");
       return;
     }
-    const dataRows = rows.slice(headerIndex + 1).filter((row) => cleanCell(row?.[0]));
+    const headers = rows[headerIndex].map((cell) => cleanCell(cell).toLowerCase());
+    const col = (...names) => headers.findIndex((header) => names.includes(header));
+    const vendorCol = col("vendor");
+    const statusCol = col("status");
+    const safetyCol = col("safety days", "safety stock days", "safety stock");
+    const doiCol = col("days of inventory", "days inventory");
+    const minOrderCol = col("min order $", "min order", "minimum order", "min order amount ($)");
+    const orderDaysCol = col("order days");
+    const emailCol = col("email");
+    const notesCol = col("notes");
+    const dataRows = rows.slice(headerIndex + 1).filter((row) => cleanCell(row?.[vendorCol >= 0 ? vendorCol : 0]));
     if (!dataRows.length) {
       showToast("No vendor rules found in that file.", 3200, "warning");
       return;
     }
     const existingByVendor = new Map((state.vendorRules || []).map((rule) => [String(rule.vendor || "").toUpperCase(), rule]));
     const importedRules = dataRows.map((row) => {
-      const vendor = cleanCell(row[0]).toUpperCase();
+      const vendor = cleanCell(row[vendorCol >= 0 ? vendorCol : 0]).toUpperCase();
       const existing = existingByVendor.get(vendor);
-      const orderDays = cleanCell(row[5])
+      const orderDays = cleanCell(row[orderDaysCol >= 0 ? orderDaysCol : 5])
         .split(",")
         .map((value) => cleanCell(value).toLowerCase())
         .filter((value) => DAYS_OF_WEEK.includes(value));
       return createVendorRule(vendor, {
         id: existing?.id,
-        status: cleanCell(row[1]) || existing?.status || "Active",
-        safetyDays: Math.max(0, toNumber(row[2]) || existing?.safetyDays || DEFAULT_VENDOR_RULE.safetyDays),
-        daysOfInventory: Math.max(0, toNumber(row[3]) || existing?.daysOfInventory || DEFAULT_VENDOR_RULE.daysOfInventory),
-        minOrder: Math.max(0, toNumber(row[4]) || existing?.minOrder || DEFAULT_VENDOR_RULE.minOrder),
+        status: cleanCell(row[statusCol >= 0 ? statusCol : 1]) || existing?.status || "Active",
+        safetyDays: Math.max(0, toNumber(row[safetyCol >= 0 ? safetyCol : 2]) || existing?.safetyDays || DEFAULT_VENDOR_RULE.safetyDays),
+        daysOfInventory: Math.max(0, toNumber(row[doiCol >= 0 ? doiCol : 3]) || existing?.daysOfInventory || DEFAULT_VENDOR_RULE.daysOfInventory),
+        minOrder: Math.max(0, toNumber(row[minOrderCol >= 0 ? minOrderCol : 4]) || existing?.minOrder || DEFAULT_VENDOR_RULE.minOrder),
         orderDays: orderDays.length ? orderDays : (existing?.orderDays || []),
-        email: cleanCell(row[6]) || existing?.email || "",
-        notes: cleanCell(row[7]) || existing?.notes || "",
+        email: emailCol >= 0 ? (cleanCell(row[emailCol]) || existing?.email || "") : (existing?.email || ""),
+        notes: notesCol >= 0 ? (cleanCell(row[notesCol]) || existing?.notes || "") : (existing?.notes || ""),
         updatedAt: new Date().toISOString(),
       });
-    });
+    }).filter((rule) => rule.vendor);
     state.vendorRules = importedRules.sort((a, b) => compareDisplayValue(a.vendor, b.vendor));
     persistVendorRules();
     renderVendorRules();
@@ -9461,6 +9482,22 @@ document.querySelector("#vendorRulesImportInput")?.addEventListener("change", as
   await importVendorRulesFile(file);
   event.target.value = "";
 });
+const vendorImportBox = document.querySelector("#vendorImportBox");
+if (vendorImportBox) {
+  ["dragenter", "dragover"].forEach((eventName) => vendorImportBox.addEventListener(eventName, (event) => {
+    event.preventDefault();
+    vendorImportBox.classList.add("dragging");
+  }));
+  ["dragleave", "drop"].forEach((eventName) => vendorImportBox.addEventListener(eventName, (event) => {
+    event.preventDefault();
+    vendorImportBox.classList.remove("dragging");
+  }));
+  vendorImportBox.addEventListener("drop", async (event) => {
+    const file = [...(event.dataTransfer?.files || [])][0];
+    if (file) await importVendorRulesFile(file);
+  });
+  vendorImportBox.addEventListener("click", () => document.querySelector("#vendorRulesImportInput")?.click());
+}
 
 // Select-all vendors
 document.querySelector("#selectAllVendors")?.addEventListener("change", (e) => {
