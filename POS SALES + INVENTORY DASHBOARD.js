@@ -9385,6 +9385,61 @@ async function exportVendorRules() {
   showToast("Vendor rules exported.", 2400, "success");
 }
 
+async function importVendorRulesFile(file) {
+  if (!file) return;
+  const xlsx = await ensureXlsxReader();
+  if (!xlsx) { showToast("Excel library not available.", 3000, "warning"); return; }
+  try {
+    const workbook = xlsx.read(await file.arrayBuffer(), { type: "array" });
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    const rows = xlsx.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+    const headerIndex = rows.findIndex((row) => Array.isArray(row) && row.some((cell) => cleanCell(cell).toLowerCase() === "vendor"));
+    if (headerIndex < 0) {
+      showToast("Could not find vendor-rule columns in that file.", 3200, "warning");
+      return;
+    }
+    const dataRows = rows.slice(headerIndex + 1).filter((row) => cleanCell(row?.[0]));
+    if (!dataRows.length) {
+      showToast("No vendor rules found in that file.", 3200, "warning");
+      return;
+    }
+    const existingByVendor = new Map((state.vendorRules || []).map((rule) => [String(rule.vendor || "").toUpperCase(), rule]));
+    const importedRules = dataRows.map((row) => {
+      const vendor = cleanCell(row[0]).toUpperCase();
+      const existing = existingByVendor.get(vendor);
+      const orderDays = cleanCell(row[5])
+        .split(",")
+        .map((value) => cleanCell(value).toLowerCase())
+        .filter((value) => DAYS_OF_WEEK.includes(value));
+      return createVendorRule(vendor, {
+        id: existing?.id,
+        status: cleanCell(row[1]) || existing?.status || "Active",
+        safetyDays: Math.max(0, toNumber(row[2]) || existing?.safetyDays || DEFAULT_VENDOR_RULE.safetyDays),
+        daysOfInventory: Math.max(0, toNumber(row[3]) || existing?.daysOfInventory || DEFAULT_VENDOR_RULE.daysOfInventory),
+        minOrder: Math.max(0, toNumber(row[4]) || existing?.minOrder || DEFAULT_VENDOR_RULE.minOrder),
+        orderDays: orderDays.length ? orderDays : (existing?.orderDays || []),
+        email: cleanCell(row[6]) || existing?.email || "",
+        notes: cleanCell(row[7]) || existing?.notes || "",
+        updatedAt: new Date().toISOString(),
+      });
+    });
+    state.vendorRules = importedRules.sort((a, b) => compareDisplayValue(a.vendor, b.vendor));
+    persistVendorRules();
+    renderVendorRules();
+    const synced = await syncSharedVendorRulesToSupabase(true);
+    showToast(
+      synced
+        ? `Imported ${number.format(importedRules.length)} vendor rules and synced them.`
+        : `Imported ${number.format(importedRules.length)} vendor rules. Shared sync still needs attention.`,
+      3200,
+      synced ? "success" : "warning"
+    );
+  } catch (error) {
+    console.error("Vendor rule import failed", error);
+    showToast("Vendor rule import failed.", 3200, "warning");
+  }
+}
+
 // Wire new inline date-period buttons in filter bar
 document.querySelectorAll(".date-period-btn").forEach((btn) => {
   btn.addEventListener("click", () => {
@@ -9396,10 +9451,16 @@ document.querySelectorAll(".date-period-btn").forEach((btn) => {
   });
 });
 document.querySelector("#addVendorRuleButton")?.addEventListener("click", () => openVendorRuleModal(null));
+document.querySelector("#importVendorRulesButton")?.addEventListener("click", () => document.querySelector("#vendorRulesImportInput")?.click());
 document.querySelector("#exportVendorRulesButton")?.addEventListener("click", () => exportVendorRules());
 document.querySelector("#vendorRuleSaveButton")?.addEventListener("click", () => saveVendorRule());
 document.querySelector("#preloadVendorsButton")?.addEventListener("click", () => preloadVendorsFromInventory());
 document.querySelector("#vendorStatusFilter")?.addEventListener("change", () => renderVendorRules());
+document.querySelector("#vendorRulesImportInput")?.addEventListener("change", async (event) => {
+  const file = event.target.files?.[0];
+  await importVendorRulesFile(file);
+  event.target.value = "";
+});
 
 // Select-all vendors
 document.querySelector("#selectAllVendors")?.addEventListener("change", (e) => {
