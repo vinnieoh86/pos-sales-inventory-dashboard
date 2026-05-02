@@ -109,6 +109,9 @@ let sharedVendorRulesTimer = 0;
 let appInitPromise = null;
 let appInitDone = false;
 let lastLocalSharedSyncAt = "";
+let pendingSharedProductCodes = new Set();
+let sharedVendorRulesAvailable = true;
+let sharedProductMetaAvailable = true;
 
 // Increment this whenever raw data changes to bust the SKU cache
 function bumpDataStamp() {
@@ -1114,7 +1117,9 @@ document.addEventListener("keydown", (event) => {
   } else if (editable.matches("[data-item-field='caseSize']")) {
     const code = editable.dataset.code;
     commitItemFieldInput(editable, { render: false });
-    scheduleLightInventoryRefresh(code);
+    patchInventoryRowFromCache(code);
+    renderInventorySummary(state.inventoryRows || []);
+    if (activeTabName() === "ordering") renderOrders();
     requestAnimationFrame(() => focusNextColumnField('[data-item-field="caseSize"]', code, event.shiftKey ? "prev" : "next"));
     return;
   } else if (editable.matches("[data-item-field]")) {
@@ -1123,7 +1128,9 @@ document.addEventListener("keydown", (event) => {
     const code = editable.dataset.code;
     const field = editable.dataset.reorderField;
     commitReorderFieldInput(editable, { render: false });
-    scheduleLightInventoryRefresh(code);
+    patchInventoryRowFromCache(code);
+    renderInventorySummary(state.inventoryRows || []);
+    if (activeTabName() === "ordering") renderOrders();
     requestAnimationFrame(() => focusNextColumnField(`[data-reorder-field="${field}"]`, code, event.shiftKey ? "prev" : "next"));
     return;
   }
@@ -1201,7 +1208,7 @@ els.inventoryBody?.addEventListener("click", (event) => {
     event.stopPropagation();
     if (cb.checked) state.selectedInventoryCodes.add(cb.dataset.code);
     else state.selectedInventoryCodes.delete(cb.dataset.code);
-    renderInventorySummary(currentInventoryRows());
+    renderInventorySummary(state.inventoryRows || []);
     return;
   }
   if (event.target.closest(".checkbox-col")) return;
@@ -1324,9 +1331,22 @@ function commitReorderFieldInput(input, options = {}) {
   }
   input.dataset.lastCommittedValue = val === "" ? "" : input.value;
   localStorage.setItem("posDashboardReorderOverrides:v1", JSON.stringify(state.reorderOverrides));
-  scheduleSharedProductSync();
-  bumpDataStamp();
-  if (options.render !== false) scheduleLightInventoryRefresh(code);
+  scheduleSharedProductSync(code);
+  const fastPath = !(
+    (els.inventoryQuickFilter?.value || "").includes("needs") ||
+    (els.inventoryQuickFilter?.value || "").includes("overrides") ||
+    ["reorderMin", "reorderMax", "recommendedOrder", "needs"].includes(state.inventorySort.key)
+  );
+  if (options.render !== false) {
+    if (fastPath) {
+      patchInventoryRowFromCache(code);
+      renderInventorySummary(state.inventoryRows || []);
+      if (activeTabName() === "ordering") renderOrders();
+    } else {
+      bumpDataStamp();
+      scheduleLightInventoryRefresh(code);
+    }
+  }
 }
 
 function sharedProductVisualHash() {
@@ -1476,6 +1496,12 @@ function commitItemFieldInput(input, options = {}) {
     input.dataset.prevValue = String(nextValue);
     input.dataset.lastCommittedValue = String(nextValue);
     setItemMeta(code, { caseSize: nextValue, caseSizeManual: true });
+    if (options.render !== false) {
+      patchInventoryRowFromCache(code);
+      renderInventorySummary(state.inventoryRows || []);
+      if (activeTabName() === "ordering") renderOrders();
+    }
+    return;
   } else if (field === "state") {
     const nextValue = normalizeItemState(input.value);
     if (input.dataset.lastCommittedValue === nextValue) {
@@ -1553,7 +1579,7 @@ document.addEventListener("click", (event) => {
         if (!Object.keys(state.reorderOverrides[code]).length) delete state.reorderOverrides[code];
       }
       localStorage.setItem("posDashboardReorderOverrides:v1", JSON.stringify(state.reorderOverrides));
-      scheduleSharedProductSync();
+      scheduleSharedProductSync(code);
     }
     showToast(`${field === "all" ? "Min / Max" : field === "min" ? "Min" : "Max"} restored to auto for ${code}`);
     bumpDataStamp();
@@ -1699,7 +1725,7 @@ async function loadExcelFile(file) {
     els.excelStatus.textContent = `${number.format(state.excelItems.size)} Excel items imported for ordering fields.`;
     logUploadedFile({ filename: file.name, type: "Excel_Product", status: "Success" });
     await savePersistedState();
-    await syncSharedDataToSupabase({ productsOnly: true, silent: true });
+    await syncSharedMetaSnapshotToSupabase({ silent: true, includeVendorRules: true });
     render();
     renderUploadLogs();
   } catch (error) {
@@ -1835,7 +1861,6 @@ function saveItemMeta() {
     // Ignore localStorage quota issues; IndexedDB is the source of truth.
   }
   scheduleItemMetaPersist();
-  scheduleSharedProductSync();
 }
 
 let itemMetaPersistTimer = 0;
@@ -1861,11 +1886,19 @@ async function persistItemMetaToDb() {
   }
 }
 
-function scheduleSharedProductSync() {
+function scheduleSharedProductSync(code) {
   if (!ENABLE_SHARED_SYNC) return;
+  const normalizedCode = codeKey(code || "");
+  if (normalizedCode) pendingSharedProductCodes.add(normalizedCode);
   clearTimeout(sharedSyncTimer);
   sharedSyncTimer = setTimeout(() => {
-    syncSharedDataToSupabase({ productsOnly: true, silent: true }).catch(() => {});
+    const codes = [...pendingSharedProductCodes];
+    pendingSharedProductCodes.clear();
+    if (codes.length) {
+      syncSharedProductsByCodes(codes, { silent: true }).catch(() => {});
+      return;
+    }
+    syncSharedMetaSnapshotToSupabase({ silent: true, includeVendorRules: false }).catch(() => {});
   }, 900);
 }
 
@@ -1930,6 +1963,7 @@ function setItemMeta(code, patch = {}) {
   state.itemMeta = state.itemMeta || {};
   state.itemMeta[key] = { ...(state.itemMeta[key] || {}), ...patch };
   saveItemMeta();
+  scheduleSharedProductSync(key);
 }
 
 function seedItemMetaFromExcelRows(rows = []) {
@@ -2300,46 +2334,84 @@ function currentInventoryRows() {
   return rows;
 }
 
+function buildPriceCheckEntry(inventory = {}, excel = {}) {
+  const itemCode = inventory.code || excel.code || "";
+  const meta = itemMetaFor(itemCode);
+  const stateLabel = normalizeItemState(meta.stateManual ? meta.state : (inventory.state || excel.state || meta.state || "")) || "Active";
+  return {
+    code: itemCode,
+    product: bestItemName(inventory.product, excel.product, "", inventory.plu, itemCode),
+    department: inventory.department || excel.department || "",
+    category: inventory.category || excel.category || "",
+    vendor: inventory.vendor || excel.vendor || "",
+    plu: inventory.plu || excel.plu || "",
+    itemNumber: inventory.itemNumber || excel.itemNumber || "",
+    color: inventory.color || excel.color || "",
+    state: stateLabel,
+    itemState: stateLabel.toLowerCase(),
+    addDate: cleanCell(meta.addDate || excel.addDate || inventory.addDate || meta.firstSeenDate || ""),
+    snapshotDate: inventory.date || "",
+    stock: Number(inventory.stock ?? excel.stock ?? 0),
+    units: 0,
+    sales: 0,
+    costSold: 0,
+    profit: 0,
+    velocity: 0,
+    unitCost: pickNumber(inventory.cost, excel.cost),
+    price: pickNumber(inventory.price, excel.price),
+    caseSize: toNumber(meta.caseSizeManual ? meta.caseSize : (excel.caseSize || meta.caseSize || inventory.caseSize)) || 1,
+    reorderMin: toNumber(state.reorderOverrides[itemCode]?.min) || 0,
+    reorderMax: toNumber(state.reorderOverrides[itemCode]?.max) || 0,
+    recommendedOrder: 0,
+    caseOrder: 0,
+    inventoryCost: Number(inventory.stock ?? excel.stock ?? 0) * pickNumber(inventory.cost, excel.cost),
+  };
+}
+
+function ensurePriceCheckExactIndex() {
+  if (state._priceCheckExactIndex && state._priceCheckExactIndexStamp === state._dataCacheStamp) return;
+  const exact = new Map();
+  const indexEntry = (entry) => {
+    [entry.code, entry.plu, entry.itemNumber].forEach((value) => {
+      const key = codeKey(value);
+      if (key && !exact.has(key)) exact.set(key, entry);
+    });
+  };
+  [...state.latestInventory.values()].forEach((inventory) => {
+    const entry = buildPriceCheckEntry(inventory, findExcelFor(inventory));
+    if (entry.code || entry.plu || entry.itemNumber) indexEntry(entry);
+  });
+  [...state.excelItems.values()].forEach((excel) => {
+    const probeKey = codeKey(excel.code || excel.plu || excel.itemNumber || "");
+    if (probeKey && exact.has(probeKey)) return;
+    const entry = buildPriceCheckEntry({}, excel);
+    if (entry.code || entry.plu || entry.itemNumber) indexEntry(entry);
+  });
+  state._priceCheckExactIndex = exact;
+  state._priceCheckExactIndexStamp = state._dataCacheStamp;
+}
+
 function priceCheckRows() {
-  const baseRows = buildInventoryRows({ ignoreQuery: true, ignoreFilters: true, ignoreStateFilter: true });
+  if (state._priceCheckRowsCache && state._priceCheckRowsStamp === state._dataCacheStamp) {
+    return state._priceCheckRowsCache;
+  }
   const rowMap = new Map();
-  baseRows.forEach((item) => {
-    const key = codeKey(item.code || item.plu || item.itemNumber || item.product);
-    if (key) rowMap.set(key, item);
+  [...state.latestInventory.values()].forEach((inventory) => {
+    const itemCode = inventory.code || "";
+    const key = codeKey(itemCode || inventory.plu || inventory.itemNumber || inventory.product);
+    if (!key) return;
+    rowMap.set(key, buildPriceCheckEntry(inventory, findExcelFor(inventory)));
   });
   [...state.excelItems.values()].forEach((excel) => {
     const key = codeKey(excel.code || excel.plu || excel.itemNumber || excel.product);
     if (!key || rowMap.has(key)) return;
-    rowMap.set(key, {
-      code: excel.code || "",
-      product: excel.product || "",
-      department: excel.department || "",
-      category: excel.category || "",
-      vendor: excel.vendor || "",
-      plu: excel.plu || "",
-      itemNumber: excel.itemNumber || "",
-      color: excel.color || "",
-      state: excel.state || "",
-      itemState: (excel.state || "").toLowerCase(),
-      addDate: excel.addDate || "",
-      snapshotDate: "",
-      stock: Number(excel.stock || 0),
-      units: 0,
-      sales: 0,
-      costSold: 0,
-      profit: 0,
-      velocity: Number(excel.saleVelocity || 0),
-      unitCost: Number(excel.cost || 0),
-      price: Number(excel.price || 0),
-      caseSize: Number(excel.caseSize || 1),
-      reorderMin: Number(excel.reorderMin || 0),
-      reorderMax: Number(excel.reorderMax || 0),
-      recommendedOrder: 0,
-      caseOrder: 0,
-      inventoryCost: Number(excel.stock || 0) * Number(excel.cost || 0),
-    });
+    rowMap.set(key, buildPriceCheckEntry({}, excel));
   });
-  return [...rowMap.values()];
+  const rows = [...rowMap.values()];
+  state._priceCheckRowsCache = rows;
+  state._priceCheckRowsStamp = state._dataCacheStamp;
+  ensurePriceCheckExactIndex();
+  return rows;
 }
 
 function ensureZxingReader() {
@@ -2426,6 +2498,9 @@ function priceCheckMatches(query, limit = 12) {
   const raw = cleanCell(query);
   if (!raw) return [];
   const keyed = codeKey(raw);
+  ensurePriceCheckExactIndex();
+  const exact = keyed ? state._priceCheckExactIndex?.get(keyed) : null;
+  if (exact) return [exact];
   const rows = priceCheckRows();
   const search = raw.toLowerCase();
   const scored = [];
@@ -3229,7 +3304,7 @@ function saveCountSession() {
   renderCountsWorkspace();
   // Defer the expensive full render until after modal closes
   setTimeout(() => render(), 50);
-  void syncSharedDataToSupabase({ productsOnly: true, silent: true });
+  void syncSharedProductsByCodes([...latestByCode.keys()], { silent: true });
   showToast(`Count saved Â· ${updatedCount} item stock quantities updated`, 3200, "success");
 }
 
@@ -5078,7 +5153,7 @@ function renderInventoryHeader() {
       if (e.target.checked) state.selectedInventoryCodes.add(c.dataset.code);
       else state.selectedInventoryCodes.delete(c.dataset.code);
     });
-    renderInventorySummary(currentInventoryRows());
+    renderInventorySummary(state.inventoryRows || []);
   });
   row.querySelectorAll("[data-sort]").forEach((header) => {
     header.addEventListener("click", () => {
@@ -5191,7 +5266,7 @@ function buildInventoryRowNode(item) {
   cbInput.addEventListener("change", () => {
     if (cbInput.checked) state.selectedInventoryCodes.add(item.code);
     else state.selectedInventoryCodes.delete(item.code);
-    renderInventorySummary(currentInventoryRows());
+    renderInventorySummary(state.inventoryRows || []);
   });
   cbTd.append(cbInput);
   tr.append(cbTd);
@@ -5231,6 +5306,72 @@ function patchInventoryRow(code) {
     return null;
   }
   state._inventoryRowIndex.set(codeKey(nextItem.code), nextItem);
+  const nextRow = buildInventoryRowNode(nextItem);
+  row.replaceWith(nextRow);
+  wireInventoryRowInteractions(nextRow);
+  applyColumnVisibility();
+  return nextItem;
+}
+
+function recomputeInventoryItemForLocalEdit(item) {
+  if (!item) return null;
+  const key = codeKey(item.code);
+  const excel = findExcelFor(item);
+  const meta = itemMetaFor(item.code);
+  const override = state.reorderOverrides[item.code] || state.reorderOverrides[key] || {};
+  const stateLabel = normalizeItemState(meta.stateManual ? meta.state : (excel.state || meta.state || item.state || "")) || item.state || "Active";
+  const caseSize = meta.caseSizeManual
+    ? Math.max(1, Math.round(toNumber(meta.caseSize) || 1))
+    : Math.max(1, Math.round(toNumber(excel.caseSize || meta.caseSize || item.caseSize) || 1));
+  item.state = stateLabel;
+  item.itemState = stateLabel.toLowerCase();
+  item.isOrderable = !["discontinued", "disabled"].includes(item.itemState);
+  item.caseSize = caseSize;
+  item.isOverridden = override.min != null || override.max != null;
+  item.reorderMin = item.isOrderable ? (override.min ?? item.dynamicMin ?? item.reorderMin ?? 0) : 0;
+  item.reorderMax = item.isOrderable ? (override.max ?? item.dynamicMax ?? item.reorderMax ?? 0) : 0;
+  item.recommendedOrder = item.isOrderable ? recommendedOrderQty({
+    stock: item.stock,
+    min: item.reorderMin,
+    max: item.reorderMax,
+    caseSize: item.caseSize,
+  }) : 0;
+  item.caseOrder = calcCaseOrder(item.recommendedOrder, item.caseSize);
+  item.inventoryCost = item.stock * item.unitCost;
+  return item;
+}
+
+function patchCachedInventoryItem(code) {
+  const targetKey = codeKey(code);
+  if (!targetKey) return null;
+  let patched = null;
+  const patchList = (list) => {
+    if (!Array.isArray(list)) return;
+    for (let i = 0; i < list.length; i += 1) {
+      if (codeKey(list[i]?.code) !== targetKey) continue;
+      list[i] = recomputeInventoryItemForLocalEdit({ ...list[i] });
+      patched = list[i];
+    }
+  };
+  patchList(state._inventoryCache);
+  patchList(state.inventoryRows);
+  if (!patched) {
+    const existing = state._inventoryRowIndex?.get?.(targetKey);
+    if (existing) patched = recomputeInventoryItemForLocalEdit({ ...existing });
+  }
+  if (patched) {
+    state._inventoryRowIndex.set(targetKey, patched);
+  }
+  return patched;
+}
+
+function patchInventoryRowFromCache(code) {
+  const key = codeKey(code);
+  const row = [...(els.inventoryBody?.querySelectorAll("tr[data-item-code]") || [])]
+    .find((entry) => codeKey(entry.dataset.itemCode || "") === key);
+  const nextItem = patchCachedInventoryItem(code);
+  if (!nextItem) return null;
+  if (!row) return nextItem;
   const nextRow = buildInventoryRowNode(nextItem);
   row.replaceWith(nextRow);
   wireInventoryRowInteractions(nextRow);
@@ -7862,9 +8003,113 @@ function hydrateVendorRuleFromSupabase(row = {}) {
   });
 }
 
+function buildProductMetaRowsSnapshot() {
+  const productMetaRowMap = new Map();
+  [...state.excelItems.values()]
+    .filter((item) => item?.code || item?.product || item?.plu || item?.itemNumber)
+    .forEach((item) => {
+      const row = productMetaRowForSupabase(item);
+      const key = codeKey(row.code);
+      if (key) productMetaRowMap.set(key, row);
+    });
+  [...state.latestInventory.values()]
+    .filter((item) => item.code || item.product)
+    .forEach((item) => {
+      const row = productMetaRowForSupabase(item);
+      const key = codeKey(row.code);
+      if (key) productMetaRowMap.set(key, row);
+    });
+  return [...productMetaRowMap.values()].filter((row) => cleanCell(row.code));
+}
+
+function applySharedVendorRuleRows(rows = []) {
+  if (!rows?.length) return 0;
+  state.vendorRules = rows
+    .map(hydrateVendorRuleFromSupabase)
+    .filter((rule) => rule.vendor)
+    .sort((a, b) => compareDisplayValue(a.vendor, b.vendor));
+  localStorage.setItem("posDashboardVendorRules:v1", JSON.stringify(state.vendorRules));
+  bumpDataStamp();
+  return state.vendorRules.length;
+}
+
+function productMetaRowForSupabase(source = {}) {
+  const excel = findExcelFor(source);
+  const normalizedCode = normalizeCode(source.code || excel.code || "");
+  const sku = state._skuCache?.get?.(codeKey(normalizedCode)) || {};
+  const meta = itemMetaFor(normalizedCode);
+  const override = state.reorderOverrides[normalizedCode] || state.reorderOverrides[codeKey(normalizedCode)] || {};
+  const stateValue = normalizeItemState(meta.stateManual ? meta.state : (meta.state || source.state || excel.state || sku.state || ""));
+  const caseSize = meta.caseSizeManual
+    ? Math.max(1, Math.round(toNumber(meta.caseSize) || 1))
+    : Math.max(1, Math.round(toNumber(source.caseSize || excel.caseSize || meta.caseSize || sku.caseSize) || 1));
+  const addDate = normalizeItemDate(meta.addDate || source.addDate || excel.addDate || meta.firstSeenDate || "");
+  return {
+    code: normalizedCode,
+    product: source.product || excel.product || sku.product || "",
+    plu: source.plu || excel.plu || sku.plu || "",
+    item_number: source.itemNumber || excel.itemNumber || sku.itemNumber || "",
+    vendor: source.vendor || excel.vendor || sku.vendor || "",
+    category: source.category || excel.category || sku.category || "",
+    department: source.department || excel.department || sku.department || "",
+    color: source.color || excel.color || sku.color || "",
+    state: stateValue || "",
+    stock: Number(source.stock ?? excel.stock ?? sku.stock ?? 0),
+    price: Number(source.price ?? excel.price ?? sku.price ?? 0),
+    unit_cost: Number(source.unitCost ?? source.cost ?? excel.cost ?? sku.unitCost ?? 0),
+    sold_units: Number(source.units ?? sku.units ?? 0),
+    sale_velocity: Number(source.velocity ?? sku.velocity ?? excel.saleVelocity ?? 0),
+    case_size: Number(caseSize || 1),
+    add_date: addDate || null,
+    reorder_min_override: override.min != null ? Number(override.min) : null,
+    reorder_max_override: override.max != null ? Number(override.max) : null,
+    snapshot_date: latestInventoryDate() || null,
+    updated_at: new Date().toISOString(),
+  };
+}
+
+function mergeSharedProductRows(productRows = [], productMetaRows = []) {
+  const merged = new Map();
+  productRows.forEach((row) => {
+    const code = normalizeCode(row.code);
+    if (!code) return;
+    merged.set(codeKey(code), { ...row, code });
+  });
+  productMetaRows.forEach((row) => {
+    const code = normalizeCode(row.code);
+    if (!code) return;
+    const key = codeKey(code);
+    const base = merged.get(key) || { code };
+    merged.set(key, {
+      ...base,
+      code,
+      product: row.product ?? base.product ?? "",
+      plu: row.plu ?? base.plu ?? "",
+      item_number: row.item_number ?? base.item_number ?? "",
+      vendor: row.vendor ?? base.vendor ?? "",
+      category: row.category ?? base.category ?? "",
+      department: row.department ?? base.department ?? "",
+      color: row.color ?? base.color ?? "",
+      state: row.state ?? base.state ?? "",
+      stock: row.stock ?? base.stock ?? 0,
+      price: row.price ?? base.price ?? 0,
+      unit_cost: row.unit_cost ?? base.unit_cost ?? 0,
+      case_size: row.case_size ?? base.case_size ?? 1,
+      add_date: row.add_date ?? base.add_date ?? null,
+      reorder_min_override: row.reorder_min_override ?? base.reorder_min_override ?? null,
+      reorder_max_override: row.reorder_max_override ?? base.reorder_max_override ?? null,
+      updated_at: row.updated_at ?? base.updated_at ?? null,
+      snapshot_date: row.snapshot_date ?? base.snapshot_date ?? null,
+      sold_units: row.sold_units ?? base.sold_units ?? 0,
+      sale_velocity: row.sale_velocity ?? base.sale_velocity ?? 0,
+    });
+  });
+  return [...merged.values()];
+}
+
 function hydrateInventoryFromSupabase(row) {
   return {
-    date: row.updated_at ? String(row.updated_at).slice(0, 10) : new Date().toISOString().slice(0, 10),
+    date: cleanCell(row.snapshot_date) || (row.updated_at ? String(row.updated_at).slice(0, 10) : new Date().toISOString().slice(0, 10)),
     code: normalizeCode(row.code),
     category: cleanCell(row.category),
     product: cleanCell(row.product),
@@ -7898,6 +8143,7 @@ function hydrateExcelFromSupabase(row) {
     case_size: row.case_size,
     stock: row.stock,
     state: row.state,
+    saleVelocity: row.sale_velocity,
   });
 }
 
@@ -7952,19 +8198,37 @@ async function restoreSharedProductsOnlyFromSupabase(options = {}) {
   if (!ENABLE_SHARED_SYNC) return false;
   const { silent = false } = options;
   try {
-    const productRows = await supabaseSelectRows("products", { select: "*" });
-    if (!productRows.length) return false;
+    const [productRows, productMetaRows] = await Promise.all([
+      supabaseSelectRows("products", { select: "*" }),
+      supabaseSelectRowsSafe("product_meta", { select: "*" }),
+    ]);
+    const mergedRows = mergeSharedProductRows(productRows, productMetaRows);
+    if (!mergedRows.length) return false;
     const beforeHash = sharedProductVisualHash();
-    applySharedProductRows(productRows);
+    applySharedProductRows(mergedRows);
     updateFilterOptions();
     updateInventoryStateFilter();
-    await savePersistedState();
     const afterHash = sharedProductVisualHash();
     if (beforeHash !== afterHash && !state.activeCountSession) renderDebounced();
-    if (!silent) showToast(`Shared product updates loaded (${number.format(productRows.length)} items)`, 2600, "success");
+    if (!silent) showToast(`Shared product updates loaded (${number.format(mergedRows.length)} items)`, 2600, "success");
     return true;
   } catch (error) {
     if (!silent) showToast("Shared product refresh failed.", 2600, "warning");
+    return false;
+  }
+}
+
+async function restoreSharedVendorRulesOnlyFromSupabase(options = {}) {
+  if (!ENABLE_SHARED_SYNC || !sharedVendorRulesAvailable) return false;
+  const { silent = false } = options;
+  try {
+    const vendorRuleRows = await supabaseSelectRowsSafe("vendor_rules", { select: "*" });
+    if (!vendorRuleRows.length) return false;
+    applySharedVendorRuleRows(vendorRuleRows);
+    if (!silent) showToast(`Shared vendor rules loaded (${number.format(vendorRuleRows.length)} vendors)`, 2400, "success");
+    return true;
+  } catch (error) {
+    if (!silent) showToast("Shared vendor rules refresh failed.", 2600, "warning");
     return false;
   }
 }
@@ -7991,7 +8255,7 @@ async function updateSharedSyncState(kind = "products") {
 }
 
 async function syncSharedVendorRulesToSupabase(silent = false) {
-  if (!ENABLE_SHARED_SYNC) return false;
+  if (!ENABLE_SHARED_SYNC || !sharedVendorRulesAvailable) return false;
   try {
     const rows = (state.vendorRules || [])
       .map(vendorRuleRowForSupabase)
@@ -8001,7 +8265,75 @@ async function syncSharedVendorRulesToSupabase(silent = false) {
     await updateSharedSyncState("vendor-rules");
     return true;
   } catch (error) {
+    if (String(error?.message || "").includes("(401)") || String(error?.message || "").includes("(403)")) {
+      sharedVendorRulesAvailable = false;
+    }
     if (!silent) showToast("Shared vendor rules sync failed.", 3200, "warning");
+    return false;
+  }
+}
+
+async function syncSharedMetaSnapshotToSupabase(options = {}) {
+  if (!ENABLE_SHARED_SYNC) return false;
+  const { silent = false, includeVendorRules = true } = options;
+  try {
+    const productMetaRows = buildProductMetaRowsSnapshot();
+    if (productMetaRows.length && sharedProductMetaAvailable) {
+      await supabaseUpsertRows("product_meta", productMetaRows, "code");
+    }
+    if (includeVendorRules) {
+      await syncSharedVendorRulesToSupabase(true);
+    }
+    await updateSharedSyncState("product-meta");
+    if (!silent) showToast("Shared product meta updated.", 2200, "success");
+    return true;
+  } catch (error) {
+    if (String(error?.message || "").includes("product_meta")) {
+      sharedProductMetaAvailable = false;
+    }
+    if (!silent) showToast("Shared product meta sync failed.", 2600, "warning");
+    return false;
+  }
+}
+
+function productRowByCodeForSupabase(code) {
+  const normalized = codeKey(code || "");
+  if (!normalized) return null;
+  const inventory = state.latestInventory.get(normalized);
+  if (inventory?.code || inventory?.product) return productRowForSupabase(inventory);
+  const excel = findExcelFor({ code: normalized }) || state.excelItems.get(normalized);
+  if (excel?.code || excel?.product || excel?.plu || excel?.itemNumber) return productRowFromExcelForSupabase(excel);
+  return null;
+}
+
+function productMetaRowByCodeForSupabase(code) {
+  const normalized = codeKey(code || "");
+  if (!normalized) return null;
+  const inventory = state.latestInventory.get(normalized);
+  if (inventory?.code || inventory?.product) return productMetaRowForSupabase(inventory);
+  const excel = findExcelFor({ code: normalized }) || state.excelItems.get(normalized);
+  if (excel?.code || excel?.product || excel?.plu || excel?.itemNumber) return productMetaRowForSupabase(excel);
+  return null;
+}
+
+async function syncSharedProductsByCodes(codes = [], options = {}) {
+  if (!ENABLE_SHARED_SYNC) return false;
+  const { silent = false, updateSyncState = true } = options;
+  try {
+    const uniqueCodes = [...new Set((codes || []).map((code) => codeKey(code)).filter(Boolean))];
+    const productMetaRows = uniqueCodes
+      .map(productMetaRowByCodeForSupabase)
+      .filter((row) => cleanCell(row?.code));
+    if (!productMetaRows.length) return true;
+    await supabaseUpsertRows("product_meta", productMetaRows, "code");
+    if (updateSyncState) await updateSharedSyncState("product-meta");
+    if (!silent) showToast(`Shared ${productMetaRows.length === 1 ? "item" : "items"} synced.`, 2200, "success");
+    return true;
+  } catch (error) {
+    if (String(error?.message || "").includes("product_meta")) {
+      sharedProductMetaAvailable = false;
+    }
+    if (!silent) showToast("Shared product meta sync failed.", 2600, "warning");
     return false;
   }
 }
@@ -8010,13 +8342,15 @@ async function restoreSharedDataFromSupabase(options = {}) {
   if (!ENABLE_SHARED_SYNC) return false;
   const { silent = false, preferCurrentState = false } = options;
   try {
-    const [productRows, salesRows, vendorRuleRows] = await Promise.all([
+    const [productRows, productMetaRows, salesRows, vendorRuleRows] = await Promise.all([
       supabaseSelectRows("products", { select: "*" }),
+      supabaseSelectRowsSafe("product_meta", { select: "*" }),
       supabaseSelectRows("daily_sales", { select: "*", order: "sales_date.asc" }),
       supabaseSelectRowsSafe("vendor_rules", { select: "*" }),
     ]);
-    if (!productRows.length && !salesRows.length) return false;
-    if (preferCurrentState && sharedSnapshotIsOlderThanCurrent(productRows, salesRows)) {
+    const mergedProductRows = mergeSharedProductRows(productRows, productMetaRows);
+    if (!mergedProductRows.length && !salesRows.length && !vendorRuleRows.length) return false;
+    if (preferCurrentState && sharedSnapshotIsOlderThanCurrent(mergedProductRows, salesRows)) {
       if (!silent) showToast("Kept newer local data instead of older shared snapshot.", 2800, "success");
       return "kept-local";
     }
@@ -8028,8 +8362,8 @@ async function restoreSharedDataFromSupabase(options = {}) {
     state.excelByPlu = new Map();
     state.excelByItemNumber = new Map();
     const nextOverrides = {};
-    productRows.map(hydrateExcelFromSupabase).forEach((item) => addExcelIndex(item));
-    productRows.forEach((row) => {
+    mergedProductRows.map(hydrateExcelFromSupabase).forEach((item) => addExcelIndex(item));
+    mergedProductRows.forEach((row) => {
       const code = normalizeCode(row.code);
       if (!code) return;
       const overrideMin = row.reorder_min_override;
@@ -8045,26 +8379,20 @@ async function restoreSharedDataFromSupabase(options = {}) {
     localStorage.setItem("posDashboardReorderOverrides:v1", JSON.stringify(state.reorderOverrides));
     rebuildExcelIndexes();
 
-    const inventoryRows = productRows.map(hydrateInventoryFromSupabase).filter((row) => row.code || row.product);
+    const inventoryRows = mergedProductRows.map(hydrateInventoryFromSupabase).filter((row) => row.code || row.product);
     state.inventories = new Map();
     if (inventoryRows.length) {
       const inventoryDate = inventoryRows.map((row) => row.date).sort().at(-1) || new Date().toISOString().slice(0, 10);
       state.inventories.set(inventoryDate, inventoryRows);
     }
     buildLatestInventory();
-    if (vendorRuleRows.length) {
-      state.vendorRules = vendorRuleRows
-        .map(hydrateVendorRuleFromSupabase)
-        .filter((rule) => rule.vendor)
-        .sort((a, b) => compareDisplayValue(a.vendor, b.vendor));
-      localStorage.setItem("posDashboardVendorRules:v1", JSON.stringify(state.vendorRules));
-    }
+    if (vendorRuleRows.length) applySharedVendorRuleRows(vendorRuleRows);
     state._loadedFileSignatures = new Set(["supabase-shared"]);
     bumpDataStamp();
     updateFilterOptions();
     updateInventoryStateFilter();
     setDefaultDates();
-    if (!silent) showToast(`Loaded shared data â€” ${number.format(productRows.length)} products, ${number.format(salesRows.length)} sales rows`, 3200, "success");
+    if (!silent) showToast(`Loaded shared data â€” ${number.format(mergedProductRows.length)} products, ${number.format(salesRows.length)} sales rows`, 3200, "success");
     return true;
   } catch (error) {
     if (!silent) showToast("Supabase shared data could not be loaded.", 3200, "warning");
@@ -8082,18 +8410,26 @@ async function syncSharedDataToSupabase(options = {}) {
       .forEach((item) => {
         const row = productRowFromExcelForSupabase(item);
         const key = codeKey(row.code);
-        if (key) productRowMap.set(key, row);
+        if (key) {
+          productRowMap.set(key, row);
+        }
       });
     [...state.latestInventory.values()]
       .filter((item) => item.code || item.product)
       .forEach((item) => {
         const row = productRowForSupabase(item);
         const key = codeKey(row.code);
-        if (key) productRowMap.set(key, row);
+        if (key) {
+          productRowMap.set(key, row);
+        }
       });
     const productRows = [...productRowMap.values()].filter((row) => cleanCell(row.code));
+    const productMetaRows = buildProductMetaRowsSnapshot();
     if (productRows.length) {
       await supabaseUpsertRows("products", productRows, "code");
+    }
+    if (productMetaRows.length) {
+      await supabaseUpsertRows("product_meta", productMetaRows, "code");
     }
     await syncSharedVendorRulesToSupabase(true);
 
@@ -8108,8 +8444,8 @@ async function syncSharedDataToSupabase(options = {}) {
       await supabaseDeleteRowsByValues("daily_sales", "sales_date", targetDates);
       await supabaseInsertRows("daily_sales", salesRows);
     }
-    await updateSharedSyncState(productsOnly ? "products" : "full");
-    await savePersistedState();
+    await updateSharedSyncState(productsOnly ? "product-meta" : "full");
+    if (!productsOnly) await savePersistedState();
     if (!silent) showToast("Shared Supabase data updated.", 2800, "success");
     return true;
   } catch (error) {
@@ -8125,18 +8461,13 @@ async function initApp() {
   }
   await restorePersistedState();
   ensureVendorRulesFromData();
-  resetUiCriteriaOnStartup();
-  switchTab("inventory");
-  if (ENABLE_SHARED_SYNC) {
-    const restoredShared = await restoreSharedDataFromSupabase({ silent: true, preferCurrentState: true });
-    if (restoredShared === "kept-local") {
-      await syncSharedDataToSupabase({ silent: true });
-    } else if (restoredShared) {
-      await savePersistedState();
-    }
+  if (ENABLE_SHARED_SYNC && state.vendorRules.length) {
+    syncSharedVendorRulesToSupabase(true).catch(() => {});
   }
+  resetUiCriteriaOnStartup();
+  switchTab(state.currentUser ? (isUserRole() ? "scanmode" : "inventory") : "inventory");
   updateMetricsSummaryMode();
-  // Apply 90D default AFTER all data is loaded â€” override whatever restorePersistedState set
+  // Apply 90D default after local data restore so the shell becomes usable fast.
   if (state.dates.length) {
     state.activePresetDays = 90;
     applyDatePreset(90);
@@ -8147,6 +8478,18 @@ async function initApp() {
   document.body.dataset.activeTab = activeTabName();
   renderPriceCheckResult(null);
   appInitDone = true;
+  if (ENABLE_SHARED_SYNC) {
+    setTimeout(async () => {
+      const restoredShared = await restoreSharedDataFromSupabase({ silent: true, preferCurrentState: true });
+      if (restoredShared === "kept-local") {
+        await syncSharedMetaSnapshotToSupabase({ silent: true, includeVendorRules: true });
+      } else if (restoredShared) {
+        await savePersistedState();
+        queueActiveTabRender();
+        renderUploadLogs();
+      }
+    }, 0);
+  }
 }
 
 function bootAppIfNeeded() {
@@ -8253,7 +8596,7 @@ function restorePreviousCount(sessionId) {
   renderCountsWorkspace();
   render();
   renderAdjustLog();
-  void syncSharedDataToSupabase({ productsOnly: true, silent: true });
+  void syncSharedProductsByCodes(Object.keys(session.preCountSnapshot || {}), { silent: true });
   showToast(`Restored â€” ${restored} stock values reverted`, 3200, "success");
 }
 
@@ -8308,7 +8651,7 @@ function submitAndApplyCount() {
   render();
   renderAdjustLog();
   generateFinalCountExport(session, candidates, latestByCode, snapshot);
-  void syncSharedDataToSupabase({ productsOnly: true, silent: true });
+  void syncSharedProductsByCodes([...scopeCodes], { silent: true });
   showToast(`Submitted â€” ${updated} stock values updated`, 3200, "success");
 }
 
@@ -8374,7 +8717,7 @@ async function applyZeroNegatives() {
   bumpDataStamp();
   render();
   renderAdjustLog();
-  void syncSharedDataToSupabase({ productsOnly: true, silent: true });
+  void syncSharedProductsByCodes(negItems.map((item) => item.code), { silent: true });
   await downloadZeroedNegativesReport(zeroedRows);
   showToast(`${negItems.length} negative stock values set to 0`, 2800, "success");
 }
@@ -8473,7 +8816,7 @@ function finalizeStockAdjust(reason) {
   closeStockAdjustModal();
   render();
   renderAdjustLog();
-  void syncSharedDataToSupabase({ productsOnly: true, silent: true });
+  void syncSharedProductsByCodes([item.code], { silent: true });
   showToast(`${state.stockAdjustAction === "add" ? "Added" : state.stockAdjustAction === "remove" ? "Removed" : "Set"} ${number.format(qty)} â€” ${item.code} now ${number.format(after)}`, 3000, "success");
 }
 
@@ -9855,12 +10198,14 @@ function tryUnlock(pin) {
   state.currentUser = user;
   const overlay = document.querySelector("#lockScreen");
   const disp = document.querySelector("#lockPinDisplay");
-  if (disp) disp.innerHTML = `<span style="font-size:1rem;letter-spacing:0;color:var(--green,#16835b);font-weight:800">Loading...</span>`;
+  if (disp) disp.textContent = "";
+  if (overlay) overlay.classList.add("lock-dismissed");
+  applyRoleRestrictions(true);
+  updateMetricsSummaryMode();
+  resetIdleLogoutTimer();
+  if (appInitDone) switchTab(isUserRole() ? "scanmode" : "inventory");
+  else showToast("Loading your dashboard...", 1600, "success");
   Promise.resolve(bootAppIfNeeded()).finally(() => {
-    if (overlay) overlay.classList.add("lock-dismissed");
-    applyRoleRestrictions(true);
-    updateMetricsSummaryMode();
-    resetIdleLogoutTimer();
     switchTab(isUserRole() ? "scanmode" : "inventory");
     showToast("Welcome, " + user.name + "!", 1200, "success");
   });
@@ -10152,21 +10497,27 @@ if (!state.authRequired || !loadUsers().length) {
       ].join("|");
       if (hash === _lastHash) return;
       _lastHash = hash;
-      const isProductsOnly = String(syncRow.last_sync_kind || "").toLowerCase() === "products";
-      const restored = isProductsOnly
-        ? await restoreSharedProductsOnlyFromSupabase({ silent: true })
-        : await restoreSharedDataFromSupabase({ silent: true, preferCurrentState: false });
+      const syncKind = String(syncRow.last_sync_kind || "").toLowerCase();
+      const isProductsOnly = syncKind === "products" || syncKind === "product-meta";
+      const isVendorRulesOnly = syncKind === "vendor-rules";
+      const restored = isVendorRulesOnly
+        ? await restoreSharedVendorRulesOnlyFromSupabase({ silent: true })
+        : isProductsOnly
+          ? await restoreSharedProductsOnlyFromSupabase({ silent: true })
+          : await restoreSharedDataFromSupabase({ silent: true, preferCurrentState: false });
       if (restored) {
         showToast(
-          isProductsOnly
-            ? "\u21ba Synced shared product updates from another device"
-            : "\u21ba Synced shared sales and inventory updates from another device",
+          isVendorRulesOnly
+            ? "\u21ba Synced shared vendor rules from another device"
+            : isProductsOnly
+              ? "\u21ba Synced shared product meta from another device"
+              : "\u21ba Synced shared sales and inventory updates from another device",
           2400,
           "success"
         );
       }
     } catch (_) { /* silent fail on file:// */ }
   }
-  setTimeout(() => { poll(); setInterval(poll, 10000); }, 3000);
+  setTimeout(() => { poll(); setInterval(poll, 3000); }, 1500);
 })();
 
