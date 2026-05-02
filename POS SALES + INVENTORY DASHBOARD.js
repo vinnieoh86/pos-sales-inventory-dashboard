@@ -8459,36 +8459,45 @@ async function initApp() {
   if (ENABLE_SHARED_SYNC) {
     refreshUsersFromSupabase({ silent: true }).catch(() => {});
   }
-  await restorePersistedState();
-  ensureVendorRulesFromData();
-  if (ENABLE_SHARED_SYNC && state.vendorRules.length) {
-    syncSharedVendorRulesToSupabase(true).catch(() => {});
-  }
   resetUiCriteriaOnStartup();
   switchTab(state.currentUser ? (isUserRole() ? "scanmode" : "inventory") : "inventory");
   updateMetricsSummaryMode();
-  // Apply 90D default after local data restore so the shell becomes usable fast.
-  if (state.dates.length) {
-    state.activePresetDays = 90;
-    applyDatePreset(90);
-  } else {
-    render();
-  }
+  render();
   renderUploadLogs();
   document.body.dataset.activeTab = activeTabName();
   renderPriceCheckResult(null);
   appInitDone = true;
+  try {
+    await restorePersistedState();
+    ensureVendorRulesFromData();
+    if (ENABLE_SHARED_SYNC && state.vendorRules.length) {
+      syncSharedVendorRulesToSupabase(true).catch(() => {});
+    }
+    if (state.dates.length) {
+      state.activePresetDays = 90;
+      applyDatePreset(90);
+    } else {
+      render();
+    }
+    renderUploadLogs();
+  } catch (error) {
+    console.warn("Background local restore failed", error);
+  }
   if (ENABLE_SHARED_SYNC) {
     setTimeout(async () => {
-      const restoredShared = await restoreSharedDataFromSupabase({ silent: true, preferCurrentState: true });
-      if (restoredShared === "kept-local") {
-        await syncSharedMetaSnapshotToSupabase({ silent: true, includeVendorRules: true });
-      } else if (restoredShared) {
-        await savePersistedState();
-        queueActiveTabRender();
-        renderUploadLogs();
+      try {
+        const restoredShared = await restoreSharedDataFromSupabase({ silent: true, preferCurrentState: true });
+        if (restoredShared === "kept-local") {
+          await syncSharedMetaSnapshotToSupabase({ silent: true, includeVendorRules: true });
+        } else if (restoredShared) {
+          await savePersistedState();
+          queueActiveTabRender();
+          renderUploadLogs();
+        }
+      } catch (error) {
+        console.warn("Background shared restore failed", error);
       }
-    }, 0);
+    }, 150);
   }
 }
 
@@ -10188,8 +10197,30 @@ function resetIdleLogoutTimer() {
   state._idleLogoutTimer = setTimeout(() => lockApp("Logged out after 5 minutes of inactivity."), IDLE_TIMEOUT_MS);
 }
 
-function tryUnlock(pin) {
-  const user = verifyPin(pin);
+let authUsersRefreshPromise = null;
+
+function ensureAuthUsersLoadedForLock() {
+  if (!ENABLE_SHARED_SYNC) return Promise.resolve(loadUsers());
+  if (state.authUsersLoaded) return Promise.resolve(loadUsers());
+  if (!authUsersRefreshPromise) {
+    authUsersRefreshPromise = refreshUsersFromSupabase({ silent: true })
+      .catch(() => loadUsers())
+      .finally(() => { authUsersRefreshPromise = null; });
+  }
+  return authUsersRefreshPromise;
+}
+
+async function tryUnlock(pin) {
+  let user = verifyPin(pin);
+  if (!user) {
+    const disp = document.querySelector("#lockPinDisplay");
+    if (disp && ENABLE_SHARED_SYNC && !state.authUsersLoaded) {
+      disp.textContent = "Loading users...";
+      disp.style.color = "";
+    }
+    await ensureAuthUsersLoadedForLock();
+    user = verifyPin(pin);
+  }
   if (!user) {
     const disp = document.querySelector("#lockPinDisplay");
     if (disp) { disp.textContent = "Wrong PIN"; disp.style.color = "#c0392b"; setTimeout(() => { disp.textContent = ""; disp.style.color = ""; }, 1000); }
@@ -10205,10 +10236,15 @@ function tryUnlock(pin) {
   resetIdleLogoutTimer();
   if (appInitDone) switchTab(isUserRole() ? "scanmode" : "inventory");
   else showToast("Loading your dashboard...", 1600, "success");
-  Promise.resolve(bootAppIfNeeded()).finally(() => {
-    switchTab(isUserRole() ? "scanmode" : "inventory");
-    showToast("Welcome, " + user.name + "!", 1200, "success");
-  });
+  Promise.resolve(bootAppIfNeeded())
+    .then(() => {
+      switchTab(isUserRole() ? "scanmode" : "inventory");
+      showToast("Welcome, " + user.name + "!", 1200, "success");
+    })
+    .catch((error) => {
+      console.error("App boot failed after unlock", error);
+      showToast("App loading hit an error. Refresh and try again.", 3200, "warning");
+    });
   return true;
 }
 
@@ -10388,6 +10424,7 @@ document.querySelector("#orderVendorFilterSelect")?.addEventListener("change", (
   if (!overlay) return;
   if (loadUsers().length > 0) overlay.classList.remove("lock-dismissed");
   else { overlay.classList.add("lock-dismissed"); return; }
+  ensureAuthUsersLoadedForLock().catch(() => {});
 
   let pin = "";
   let lastTouchKey = "";
@@ -10411,8 +10448,8 @@ document.querySelector("#orderVendorFilterSelect")?.addEventListener("change", (
       pin += k; draw();
       if (pin.length === 4) {
         const p = pin;
-        setTimeout(() => {
-          const unlocked = tryUnlock(p);
+        setTimeout(async () => {
+          const unlocked = await tryUnlock(p);
           pin = "";
           if (!unlocked) draw();
         }, 0);
