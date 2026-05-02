@@ -8387,7 +8387,14 @@ async function restoreSharedDataFromSupabase(options = {}) {
       state.inventories.set(inventoryDate, inventoryRows);
     }
     buildLatestInventory();
-    if (vendorRuleRows.length) applySharedVendorRuleRows(vendorRuleRows);
+    if (vendorRuleRows.length) {
+      applySharedVendorRuleRows(vendorRuleRows);
+    } else {
+      const seededRules = ensureVendorRulesFromData();
+      if (seededRules && ENABLE_SHARED_SYNC) {
+        syncSharedVendorRulesToSupabase(true).catch(() => {});
+      }
+    }
     state._loadedFileSignatures = new Set(["supabase-shared"]);
     bumpDataStamp();
     updateFilterOptions();
