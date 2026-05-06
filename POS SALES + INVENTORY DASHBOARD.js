@@ -112,6 +112,8 @@ let lastLocalSharedSyncAt = "";
 let pendingSharedProductCodes = new Set();
 let sharedVendorRulesAvailable = true;
 let sharedProductMetaAvailable = true;
+let sharedImportLogsAvailable = true;
+let sharedCountSessionsAvailable = true;
 
 // Increment this whenever raw data changes to bust the SKU cache
 function bumpDataStamp() {
@@ -1253,6 +1255,7 @@ els.inventoryBody?.addEventListener("mousemove", (event) => {
     const item = state._inventoryRowIndex?.get(codeKey(row.dataset.itemCode));
     if (item) {
       const windows = salesWindowsFor(item.code).filter((e) => ["7D","30D","60D","90D","6M","365D"].includes(e.label));
+      const rule = effectiveItemRule(item);
       row.dataset.tooltipHtml = `
         <div class="row-hover-tooltip__title">${escapeHtml(item.product)}</div>
         <div class="row-hover-tooltip__line">Vendor: ${escapeHtml(item.vendor||"-")}</div>
@@ -1260,6 +1263,7 @@ els.inventoryBody?.addEventListener("mousemove", (event) => {
         <div class="row-hover-tooltip__line">Stock: ${number.format(item.stock)}</div>
         <div class="row-hover-tooltip__line">Cost: ${currency.format(item.unitCost)}</div>
         <div class="row-hover-tooltip__line">Price: ${currency.format(item.price)}</div>
+        <div class="row-hover-tooltip__line">Order rule: ${rule.mode === "custom" ? "Custom" : "Vendor"} (${number.format(rule.safetyDays || 0)} / ${number.format(rule.daysOfInventory || 0)})</div>
         <div class="row-hover-tooltip__windows">${windows.map((e)=>`<span>${e.label}: ${number.format(e.units)}</span>`).join('<span class="row-hover-tooltip__sep">|</span>')}</div>`;
     }
   }
@@ -1910,6 +1914,25 @@ function scheduleSharedVendorRulesSync() {
   }, 900);
 }
 
+let sharedImportLogsTimer = 0;
+let sharedCountSessionsTimer = 0;
+
+function scheduleSharedImportLogsSync() {
+  if (!ENABLE_SHARED_SYNC || !sharedImportLogsAvailable) return;
+  clearTimeout(sharedImportLogsTimer);
+  sharedImportLogsTimer = setTimeout(() => {
+    syncSharedImportLogsToSupabase(true).catch(() => {});
+  }, 900);
+}
+
+function scheduleSharedCountSessionsSync() {
+  if (!ENABLE_SHARED_SYNC || !sharedCountSessionsAvailable) return;
+  clearTimeout(sharedCountSessionsTimer);
+  sharedCountSessionsTimer = setTimeout(() => {
+    syncSharedCountSessionsToSupabase(true).catch(() => {});
+  }, 900);
+}
+
 function allowedItemStates() {
   return ["Active", "Force Order", "Disabled", "Discontinued"];
 }
@@ -1955,6 +1978,30 @@ function normalizeItemDate(value) {
 
 function itemMetaFor(code) {
   return state.itemMeta?.[codeKey(code)] || {};
+}
+
+function effectiveItemRule(item = {}) {
+  const code = item.code || item.itemCode || "";
+  const meta = itemMetaFor(code);
+  const vendorName = (item.vendor || "").toUpperCase();
+  const vendorRule = state.vendorRules.find((r) => r.vendor?.toUpperCase() === vendorName && r.status === "Active") || null;
+  const mode = cleanCell(meta.orderingRuleMode).toLowerCase() === "custom" ? "custom" : "vendor";
+  const vendorSafety = Math.max(0, toNumber(vendorRule?.safetyDays) || 0);
+  const vendorDoi = Math.max(0, toNumber(vendorRule?.daysOfInventory) || 0);
+  const customSafety = Math.max(0, toNumber(meta.safetyDaysOverride) || 0);
+  const customDoi = Math.max(0, toNumber(meta.daysOfInventoryOverride) || 0);
+  const safetyDays = mode === "custom" ? customSafety : vendorSafety;
+  const daysOfInventory = mode === "custom" ? customDoi : vendorDoi;
+  return {
+    mode,
+    vendorRule,
+    safetyDays,
+    daysOfInventory,
+    customSafety,
+    customDoi,
+    vendorSafety,
+    vendorDoi,
+  };
 }
 
 function setItemMeta(code, patch = {}) {
@@ -2338,6 +2385,10 @@ function buildPriceCheckEntry(inventory = {}, excel = {}) {
   const itemCode = inventory.code || excel.code || "";
   const meta = itemMetaFor(itemCode);
   const stateLabel = normalizeItemState(meta.stateManual ? meta.state : (inventory.state || excel.state || meta.state || "")) || "Active";
+  const rule = effectiveItemRule({
+    code: itemCode,
+    vendor: inventory.vendor || excel.vendor || "",
+  });
   return {
     code: itemCode,
     product: bestItemName(inventory.product, excel.product, "", inventory.plu, itemCode),
@@ -2365,6 +2416,9 @@ function buildPriceCheckEntry(inventory = {}, excel = {}) {
     recommendedOrder: 0,
     caseOrder: 0,
     inventoryCost: Number(inventory.stock ?? excel.stock ?? 0) * pickNumber(inventory.cost, excel.cost),
+    effectiveSafetyDays: rule.safetyDays,
+    effectiveDaysOfInventory: rule.daysOfInventory,
+    orderingRuleMode: rule.mode,
   };
 }
 
@@ -3148,6 +3202,7 @@ function exportProductReviewPdf() {
 function persistCountSessions() {
   localStorage.setItem("posDashboardCountSessions:v1", JSON.stringify(state.countSessions));
   localStorage.setItem("posDashboardActiveCountSession:v1", JSON.stringify(state.activeCountSession));
+  scheduleSharedCountSessionsSync();
 }
 
 let _persistCountTimer = null;
@@ -3156,6 +3211,7 @@ function persistActiveCountSession() {
   clearTimeout(_persistCountTimer);
   _persistCountTimer = setTimeout(() => {
     localStorage.setItem("posDashboardActiveCountSession:v1", JSON.stringify(state.activeCountSession));
+    scheduleSharedCountSessionsSync();
   }, 300);
 }
 
@@ -5486,11 +5542,12 @@ function buildInventoryRows(options = {}) {
       const stateLabel = normalizeItemState(displayState || "Active") || "Active";
       const itemState = stateLabel.toLowerCase();
       const isOrderable = !["discontinued", "disabled"].includes(itemState);
-      // Use vendor-specific safety/doi if a rule exists for this vendor
-      const vendorName = (inventory.vendor || excel.vendor || sales.vendor || "").toUpperCase();
-      const vendorRule = state.vendorRules.find((r) => r.vendor?.toUpperCase() === vendorName && r.status === "Active");
-      const effectiveSafety = vendorRule ? vendorRule.safetyDays : safetyDays;
-      const effectiveDoi = vendorRule ? vendorRule.daysOfInventory : daysOfInventory;
+      const rule = effectiveItemRule({
+        code: itemCode,
+        vendor: inventory.vendor || excel.vendor || sales.vendor || "",
+      });
+      const effectiveSafety = rule.vendorRule ? rule.safetyDays : safetyDays;
+      const effectiveDoi = rule.vendorRule ? rule.daysOfInventory : daysOfInventory;
       const dynamic = orderingTargets({ velocity, safetyDays: effectiveSafety, daysOfInventory: effectiveDoi });
       const dynamicMaxWithDoi = dynamic.max;
       const stock = hasValue(inventory.stock) ? inventory.stock : excel.stock ?? sales.stock ?? 0;
@@ -5523,6 +5580,9 @@ function buildInventoryRows(options = {}) {
         reorderMin: isOrderable ? (override.min ?? dynamic.min) : 0,
         reorderMax: isOrderable ? (override.max ?? dynamicMaxWithDoi) : 0,
         qtyNeeded: sales.recommendedOrder || 0,
+        effectiveSafetyDays: effectiveSafety,
+        effectiveDaysOfInventory: effectiveDoi,
+        orderingRuleMode: rule.mode,
         saleWindowSum: excel.saleWindowSum || sales.units || 0,
       };
       item.inventoryCost = item.stock * item.unitCost;
@@ -5975,7 +6035,7 @@ function clearSingleFilter(filterId) {
 function refreshDetailDrawer() {
   if (els.detailDrawer.hidden || !state._activeDetailCode) return;
   const item = findCurrentItemByCode(state._activeDetailCode);
-  if (item) showDetail(item);
+  if (item) showDetail(item, { preserveTab: true });
 }
 
 function saveManualMultiBarcodes(code, aliases = []) {
@@ -5988,13 +6048,22 @@ function saveManualMultiBarcodes(code, aliases = []) {
   rebuildMultiBarcodeLookup();
 }
 
-function showDetail(item) {
+function showDetail(item, options = {}) {
   if (!item) return;
+  const preserveTab = options.preserveTab === true;
+  if (!preserveTab || !state._activeDetailCode || codeKey(state._activeDetailCode) !== codeKey(item.code)) {
+    state.detailDrawerTab = "fields";
+  }
   state._activeDetailCode = item.code;
   const userMode = isUserRole();
   const sales = buildSkuRows({ ignoreQuery: true, ignoreFilters: true }).find((sku) => codeKey(sku.code) === codeKey(item.code)) || item;
   const windows = salesWindowsFor(item.code);
   const activeDetailTab = userMode && state.detailDrawerTab === "sales" ? "fields" : (state.detailDrawerTab || "fields");
+  const itemRule = effectiveItemRule({
+    ...item,
+    vendor: item.vendor || sales.vendor || "",
+    code: item.code,
+  });
   const aliases = multiAliasesForCode(item.code);
   const salesHistory = (state.rawSales || [])
     .filter((row) => codeKey(row.code) === codeKey(item.code))
@@ -6063,8 +6132,32 @@ function showDetail(item) {
         <div class="detail-filter">${fields.map(([key, label]) => `
           <label><input type="checkbox" ${visibleFields.has(key) ? "checked" : ""} data-detail-filter="${key}" />${label}</label>`).join("")}</div>
       </details>
+      <div class="summary-strip">
+        <span><b>${itemRule.mode === "custom" ? "Custom rule" : "Vendor rule"}</b> ordering mode</span>
+        <span><b>${number.format(itemRule.safetyDays || 0)}</b> safety days</span>
+        <span><b>${number.format(itemRule.daysOfInventory || 0)}</b> days of inventory</span>
+      </div>
       <div class="detail-grid">
         ${sortedFields.map(([key, label, section, value]) => `<span draggable="false" data-detail-key="${key}" data-detail-section="${section}" style="${visibleFields.has(key) ? "" : "display:none;"}">${label} ${value}</span>`).join("")}
+      </div>
+      <div class="bulk-editor-modal" style="margin-top:16px;padding:16px;display:block;">
+        <h3 style="margin:0 0 10px;">Item ordering override</h3>
+        <div class="summary-strip">
+          <span><b>Vendor default</b> ${number.format(itemRule.vendorSafety || 0)} / ${number.format(itemRule.vendorDoi || 0)}</span>
+          <span><b>Effective</b> ${number.format(itemRule.safetyDays || 0)} / ${number.format(itemRule.daysOfInventory || 0)}</span>
+        </div>
+        <label style="display:flex;align-items:center;gap:8px;margin:12px 0;">
+          <input type="checkbox" data-item-rule-custom ${itemRule.mode === "custom" ? "checked" : ""} />
+          <span>Use custom safety / days-of-inventory for this item</span>
+        </label>
+        <div class="bulk-editor-grid">
+          <label><span>Safety days override</span><input type="number" min="0" step="1" value="${itemRule.mode === "custom" ? escapeHtml(String(itemRule.customSafety || 0)) : ""}" data-item-rule-safety placeholder="${number.format(itemRule.vendorSafety || 0)}" /></label>
+          <label><span>Days of inventory override</span><input type="number" min="0" step="1" value="${itemRule.mode === "custom" ? escapeHtml(String(itemRule.customDoi || 0)) : ""}" data-item-rule-doi placeholder="${number.format(itemRule.vendorDoi || 0)}" /></label>
+        </div>
+        <div class="detail-multi-actions" style="margin-top:12px;">
+          <button type="button" class="count-submit-btn" data-save-item-rule>Save Item Rule</button>
+          <button type="button" class="secondary-button" data-clear-item-rule>Use Vendor Rule</button>
+        </div>
       </div>
     </section>
     <section class="detail-panel detail-multi-panel"${activeDetailTab === "multi" ? "" : " hidden"}>
@@ -6147,7 +6240,7 @@ function showDetail(item) {
     button.addEventListener("click", () => {
       if (!confirmMultiDraftBeforeLeave()) return;
       state.detailDrawerTab = button.dataset.detailTab || "fields";
-      showDetail(item);
+      showDetail(item, { preserveTab: true });
     });
   });
   els.detailDrawer.querySelector("[data-open-multi-upload]")?.addEventListener("click", () => els.multiBarcodeInput?.click());
@@ -6174,6 +6267,45 @@ function showDetail(item) {
         node.style.display = show ? "" : "none";
       });
     });
+  });
+  const itemRuleCustomInput = els.detailDrawer.querySelector("[data-item-rule-custom]");
+  const itemRuleSafetyInput = els.detailDrawer.querySelector("[data-item-rule-safety]");
+  const itemRuleDoiInput = els.detailDrawer.querySelector("[data-item-rule-doi]");
+  const syncItemRuleInputs = () => {
+    const enabled = !!itemRuleCustomInput?.checked;
+    if (itemRuleSafetyInput) itemRuleSafetyInput.disabled = !enabled;
+    if (itemRuleDoiInput) itemRuleDoiInput.disabled = !enabled;
+  };
+  syncItemRuleInputs();
+  itemRuleCustomInput?.addEventListener("change", syncItemRuleInputs);
+  els.detailDrawer.querySelector("[data-save-item-rule]")?.addEventListener("click", () => {
+    const useCustom = !!itemRuleCustomInput?.checked;
+    const safetyValue = Math.max(0, Math.round(toNumber(itemRuleSafetyInput?.value) || 0));
+    const doiValue = Math.max(0, Math.round(toNumber(itemRuleDoiInput?.value) || 0));
+    setItemMeta(item.code, useCustom ? {
+      orderingRuleMode: "custom",
+      safetyDaysOverride: safetyValue,
+      daysOfInventoryOverride: doiValue,
+    } : {
+      orderingRuleMode: "vendor",
+      safetyDaysOverride: null,
+      daysOfInventoryOverride: null,
+    });
+    refreshVisibleInventoryRowByCode(item.code);
+    queueActiveTabRender();
+    showDetail(findCurrentItemByCode(item.code) || item, { preserveTab: true });
+    showToast(`Saved item ordering rule for ${item.code}`, 2400, "success");
+  });
+  els.detailDrawer.querySelector("[data-clear-item-rule]")?.addEventListener("click", () => {
+    setItemMeta(item.code, {
+      orderingRuleMode: "vendor",
+      safetyDaysOverride: null,
+      daysOfInventoryOverride: null,
+    });
+    refreshVisibleInventoryRowByCode(item.code);
+    queueActiveTabRender();
+    showDetail(findCurrentItemByCode(item.code) || item, { preserveTab: true });
+    showToast(`Reverted ${item.code} to vendor ordering rules`, 2400, "success");
   });
   els.detailDrawer.querySelector(".sort-details-button").addEventListener("click", () => {
     els.detailDrawer.classList.toggle("detail-sort-mode");
@@ -6583,7 +6715,9 @@ function recommendedOrderQty({ stock, min, max }) {
   const minQty = Math.max(0, Math.ceil(toNumber(min) || 0));
   const maxQty = Math.max(minQty, Math.ceil(toNumber(max) || 0));
   if (currentStock >= minQty) return 0;
-  return Math.max(0, Math.ceil(maxQty - currentStock));
+  const needed = Math.max(0, Math.ceil(maxQty - currentStock));
+  if (needed <= 0) return 0;
+  return Math.max(2, needed);
 }
 
 function renderColumnPicker() {
@@ -7320,6 +7454,7 @@ function saveUploadLogs() {
 function logUploadedFile({ filename, type, status }) {
   state.uploadLogs = state.uploadLogs || [];
   state.uploadLogs.unshift({
+    id: `upl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     recordedAt: new Date().toISOString(),
     filename: filename || "-",
     type: type || "File",
@@ -7327,6 +7462,7 @@ function logUploadedFile({ filename, type, status }) {
   });
   state.uploadLogs = state.uploadLogs.slice(0, 5000);
   saveUploadLogs();
+  scheduleSharedImportLogsSync();
 }
 
 function extractDateFromFilename(filename = "") {
@@ -7366,10 +7502,17 @@ function renderUploadLogs() {
     .filter((entry) => entry.type === "Current_Inventory" && entry.status === "Success")
     .map((entry) => extractDateFromFilename(entry.filename))
     .filter(Boolean);
+  const loggedExcelDates = recentLogs
+    .filter((entry) => entry.type === "Excel_Product" && entry.status === "Success")
+    .map((entry) => extractDateFromFilename(entry.filename))
+    .filter(Boolean);
   const salesDates = [...new Set([...(state.dates || []), ...loggedSalesDates])].sort();
-  const inventoryDates = [...new Set([...state.inventories.keys(), ...loggedInventoryDates])].sort();
-  const knownDates = [...new Set([...salesDates, ...inventoryDates])].sort();
-  const excelLoaded = recentLogs.some((entry) => entry.type === "Excel_Product" && entry.status === "Success") || state.excelItems.size > 0;
+  const latestInventorySnapshot = [...new Set([...state.inventories.keys(), ...loggedInventoryDates])].sort().at(-1) || "";
+  const latestExcelSnapshot = [...new Set([latestExcelAddDate(), ...loggedExcelDates])].filter(Boolean).sort().at(-1) || "";
+  const inventoryDates = latestInventorySnapshot ? [latestInventorySnapshot] : [];
+  const dataDates = latestExcelSnapshot ? [latestExcelSnapshot] : [];
+  const knownDates = [...new Set([...salesDates, ...inventoryDates, ...dataDates])].sort();
+  const excelLoaded = !!latestExcelSnapshot || state.excelItems.size > 0;
   const inventoryFilter = document.querySelector("#logsInventoryFilter")?.value || "";
   const salesFilter = document.querySelector("#logsSalesFilter")?.value || "";
   const dataFilter = document.querySelector("#logsDataFilter")?.value || "";
@@ -7386,7 +7529,7 @@ function renderUploadLogs() {
         iso,
         inventory: isSunday ? "Closed" : (loadedInventory.has(iso) ? "Loaded" : "Missing"),
         sales: isSunday ? "Closed" : (loadedSales.has(iso) ? "Loaded" : "Missing"),
-        data: isSunday ? "Closed" : (excelLoaded ? "Loaded" : "Missing"),
+        data: isSunday ? "Closed" : (dataDates.includes(iso) ? "Loaded" : "Missing"),
       });
       current.setDate(current.getDate() + 1);
     }
@@ -7989,6 +8132,40 @@ function vendorRuleRowForSupabase(rule = {}) {
   };
 }
 
+function importLogRowForSupabase(entry = {}) {
+  return {
+    id: cleanCell(entry.id) || `upl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    recorded_at: entry.recordedAt || new Date().toISOString(),
+    filename: cleanCell(entry.filename) || "-",
+    type: cleanCell(entry.type) || "File",
+    status: cleanCell(entry.status) || "Success",
+    updated_at: entry.recordedAt || new Date().toISOString(),
+  };
+}
+
+function hydrateImportLogFromSupabase(row = {}) {
+  return {
+    id: cleanCell(row.id) || `upl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    recordedAt: row.recorded_at || row.updated_at || new Date().toISOString(),
+    filename: cleanCell(row.filename) || "-",
+    type: cleanCell(row.type) || "File",
+    status: cleanCell(row.status) || "Success",
+  };
+}
+
+function countSessionRowForSupabase(session = {}, active = false) {
+  return {
+    id: active ? `active:${cleanCell(session.id) || "session"}` : cleanCell(session.id),
+    session_kind: active ? "active" : "saved",
+    session_payload: session,
+    updated_at: session.updatedAt || session.submittedAt || new Date().toISOString(),
+  };
+}
+
+function hydrateCountSessionFromSupabase(row = {}) {
+  return row.session_payload && typeof row.session_payload === "object" ? row.session_payload : null;
+}
+
 function hydrateVendorRuleFromSupabase(row = {}) {
   return createVendorRule(row.vendor || "", {
     id: row.id,
@@ -8030,6 +8207,8 @@ function applySharedVendorRuleRows(rows = []) {
     .sort((a, b) => compareDisplayValue(a.vendor, b.vendor));
   localStorage.setItem("posDashboardVendorRules:v1", JSON.stringify(state.vendorRules));
   bumpDataStamp();
+  renderVendorRules();
+  queueActiveTabRender();
   return state.vendorRules.length;
 }
 
@@ -8061,6 +8240,9 @@ function productMetaRowForSupabase(source = {}) {
     sale_velocity: Number(source.velocity ?? sku.velocity ?? excel.saleVelocity ?? 0),
     case_size: Number(caseSize || 1),
     add_date: addDate || null,
+    ordering_rule_mode: cleanCell(meta.orderingRuleMode) || "vendor",
+    safety_days_override: meta.safetyDaysOverride != null && meta.safetyDaysOverride !== "" ? Number(meta.safetyDaysOverride) : null,
+    days_of_inventory_override: meta.daysOfInventoryOverride != null && meta.daysOfInventoryOverride !== "" ? Number(meta.daysOfInventoryOverride) : null,
     reorder_min_override: override.min != null ? Number(override.min) : null,
     reorder_max_override: override.max != null ? Number(override.max) : null,
     snapshot_date: latestInventoryDate() || null,
@@ -8096,6 +8278,9 @@ function mergeSharedProductRows(productRows = [], productMetaRows = []) {
       unit_cost: row.unit_cost ?? base.unit_cost ?? 0,
       case_size: row.case_size ?? base.case_size ?? 1,
       add_date: row.add_date ?? base.add_date ?? null,
+      ordering_rule_mode: row.ordering_rule_mode ?? base.ordering_rule_mode ?? "vendor",
+      safety_days_override: row.safety_days_override ?? base.safety_days_override ?? null,
+      days_of_inventory_override: row.days_of_inventory_override ?? base.days_of_inventory_override ?? null,
       reorder_min_override: row.reorder_min_override ?? base.reorder_min_override ?? null,
       reorder_max_override: row.reorder_max_override ?? base.reorder_max_override ?? null,
       updated_at: row.updated_at ?? base.updated_at ?? null,
@@ -8169,6 +8354,7 @@ function applySharedProductRows(rows) {
     || new Date().toISOString().slice(0, 10);
   const mergedInventory = new Map([...state.latestInventory.entries()]);
   const nextOverrides = { ...(state.reorderOverrides || {}) };
+  state.itemMeta = state.itemMeta || {};
   rows.forEach((row) => {
     const inventoryItem = hydrateInventoryFromSupabase(row);
     const excelItem = hydrateExcelFromSupabase(row);
@@ -8176,6 +8362,16 @@ function applySharedProductRows(rows) {
     if (!key) return;
     mergedInventory.set(key, inventoryItem);
     addExcelIndex(excelItem);
+    const meta = state.itemMeta[key] || {};
+    state.itemMeta[key] = {
+      ...meta,
+      ...(row.state != null ? { state: cleanCell(row.state), stateManual: true } : {}),
+      ...(row.case_size != null ? { caseSize: Math.max(1, Math.round(toNumber(row.case_size) || 1)), caseSizeManual: true } : {}),
+      ...(row.add_date ? { addDate: normalizeItemDate(row.add_date) } : {}),
+      orderingRuleMode: cleanCell(row.ordering_rule_mode) || meta.orderingRuleMode || "vendor",
+      safetyDaysOverride: row.safety_days_override != null ? Math.max(0, Math.round(toNumber(row.safety_days_override) || 0)) : null,
+      daysOfInventoryOverride: row.days_of_inventory_override != null ? Math.max(0, Math.round(toNumber(row.days_of_inventory_override) || 0)) : null,
+    };
     const overrideMin = row.reorder_min_override;
     const overrideMax = row.reorder_max_override;
     if (overrideMin != null || overrideMax != null) {
@@ -8186,12 +8382,42 @@ function applySharedProductRows(rows) {
     }
   });
   state.latestInventory = mergedInventory;
+  saveItemMeta();
   state.reorderOverrides = nextOverrides;
   localStorage.setItem("posDashboardReorderOverrides:v1", JSON.stringify(state.reorderOverrides));
   state.inventories.set(snapshotDate, [...mergedInventory.values()]);
   rebuildExcelIndexes();
   bumpDataStamp();
   return rows.length;
+}
+
+function applySharedImportLogRows(rows = []) {
+  if (!rows?.length) return 0;
+  state.uploadLogs = rows
+    .map(hydrateImportLogFromSupabase)
+    .filter((entry) => entry.id)
+    .sort((a, b) => String(b.recordedAt || "").localeCompare(String(a.recordedAt || "")));
+  saveUploadLogs();
+  renderUploadLogs();
+  return state.uploadLogs.length;
+}
+
+function applySharedCountSessionRows(rows = []) {
+  if (!rows?.length) return 0;
+  const savedSessions = [];
+  let activeSession = null;
+  rows.forEach((row) => {
+    const session = hydrateCountSessionFromSupabase(row);
+    if (!session) return;
+    if (cleanCell(row.session_kind).toLowerCase() === "active") activeSession = session;
+    else savedSessions.push(session);
+  });
+  state.countSessions = savedSessions.sort((a, b) => String(b.updatedAt || b.submittedAt || "").localeCompare(String(a.updatedAt || a.submittedAt || "")));
+  state.activeCountSession = activeSession;
+  localStorage.setItem("posDashboardCountSessions:v1", JSON.stringify(state.countSessions));
+  localStorage.setItem("posDashboardActiveCountSession:v1", JSON.stringify(state.activeCountSession));
+  queueActiveTabRender();
+  return state.countSessions.length + (state.activeCountSession ? 1 : 0);
 }
 
 async function restoreSharedProductsOnlyFromSupabase(options = {}) {
@@ -8229,6 +8455,36 @@ async function restoreSharedVendorRulesOnlyFromSupabase(options = {}) {
     return true;
   } catch (error) {
     if (!silent) showToast("Shared vendor rules refresh failed.", 2600, "warning");
+    return false;
+  }
+}
+
+async function restoreSharedImportLogsOnlyFromSupabase(options = {}) {
+  if (!ENABLE_SHARED_SYNC || !sharedImportLogsAvailable) return false;
+  const { silent = false } = options;
+  try {
+    const rows = await supabaseSelectRowsSafe("import_logs", { select: "*", order: "recorded_at.desc" });
+    if (!rows.length) return false;
+    applySharedImportLogRows(rows);
+    if (!silent) showToast(`Shared import logs loaded (${number.format(rows.length)} rows)`, 2400, "success");
+    return true;
+  } catch (error) {
+    if (!silent) showToast("Shared import log refresh failed.", 2600, "warning");
+    return false;
+  }
+}
+
+async function restoreSharedCountSessionsOnlyFromSupabase(options = {}) {
+  if (!ENABLE_SHARED_SYNC || !sharedCountSessionsAvailable) return false;
+  const { silent = false } = options;
+  try {
+    const rows = await supabaseSelectRowsSafe("count_sessions", { select: "*" });
+    if (!rows.length) return false;
+    applySharedCountSessionRows(rows);
+    if (!silent) showToast("Shared count sessions loaded.", 2400, "success");
+    return true;
+  } catch (error) {
+    if (!silent) showToast("Shared count session refresh failed.", 2600, "warning");
     return false;
   }
 }
@@ -8284,6 +8540,8 @@ async function syncSharedMetaSnapshotToSupabase(options = {}) {
     if (includeVendorRules) {
       await syncSharedVendorRulesToSupabase(true);
     }
+    await syncSharedImportLogsToSupabase(true);
+    await syncSharedCountSessionsToSupabase(true);
     await updateSharedSyncState("product-meta");
     if (!silent) showToast("Shared product meta updated.", 2200, "success");
     return true;
@@ -8292,6 +8550,43 @@ async function syncSharedMetaSnapshotToSupabase(options = {}) {
       sharedProductMetaAvailable = false;
     }
     if (!silent) showToast("Shared product meta sync failed.", 2600, "warning");
+    return false;
+  }
+}
+
+async function syncSharedImportLogsToSupabase(silent = false) {
+  if (!ENABLE_SHARED_SYNC || !sharedImportLogsAvailable) return false;
+  try {
+    const rows = (state.uploadLogs || []).map(importLogRowForSupabase).filter((row) => row.id);
+    if (!rows.length) return true;
+    await supabaseUpsertRows("import_logs", rows, "id");
+    await updateSharedSyncState("imports");
+    return true;
+  } catch (error) {
+    if (String(error?.message || "").includes("(401)") || String(error?.message || "").includes("(403)")) {
+      sharedImportLogsAvailable = false;
+    }
+    if (!silent) showToast("Shared import log sync failed.", 2600, "warning");
+    return false;
+  }
+}
+
+async function syncSharedCountSessionsToSupabase(silent = false) {
+  if (!ENABLE_SHARED_SYNC || !sharedCountSessionsAvailable) return false;
+  try {
+    const rows = [
+      ...(state.countSessions || []).filter((session) => cleanCell(session?.id)).map((session) => countSessionRowForSupabase(session, false)),
+      ...(state.activeCountSession?.id ? [countSessionRowForSupabase(state.activeCountSession, true)] : []),
+    ];
+    if (!rows.length) return true;
+    await supabaseUpsertRows("count_sessions", rows, "id");
+    await updateSharedSyncState("counts");
+    return true;
+  } catch (error) {
+    if (String(error?.message || "").includes("(401)") || String(error?.message || "").includes("(403)")) {
+      sharedCountSessionsAvailable = false;
+    }
+    if (!silent) showToast("Shared count session sync failed.", 2600, "warning");
     return false;
   }
 }
@@ -8342,16 +8637,20 @@ async function restoreSharedDataFromSupabase(options = {}) {
   if (!ENABLE_SHARED_SYNC) return false;
   const { silent = false, preferCurrentState = false } = options;
   try {
-    const [productRows, productMetaRows, salesRows, vendorRuleRows] = await Promise.all([
+    const [productRows, productMetaRows, salesRows, vendorRuleRows, importLogRows, countSessionRows] = await Promise.all([
       supabaseSelectRows("products", { select: "*" }),
       supabaseSelectRowsSafe("product_meta", { select: "*" }),
       supabaseSelectRows("daily_sales", { select: "*", order: "sales_date.asc" }),
       supabaseSelectRowsSafe("vendor_rules", { select: "*" }),
+      supabaseSelectRowsSafe("import_logs", { select: "*", order: "recorded_at.desc" }),
+      supabaseSelectRowsSafe("count_sessions", { select: "*" }),
     ]);
     const mergedProductRows = mergeSharedProductRows(productRows, productMetaRows);
-    if (!mergedProductRows.length && !salesRows.length && !vendorRuleRows.length) return false;
+    if (!mergedProductRows.length && !salesRows.length && !vendorRuleRows.length && !importLogRows.length && !countSessionRows.length) return false;
     if (preferCurrentState && sharedSnapshotIsOlderThanCurrent(mergedProductRows, salesRows)) {
       if (vendorRuleRows.length) applySharedVendorRuleRows(vendorRuleRows);
+      if (importLogRows.length) applySharedImportLogRows(importLogRows);
+      if (countSessionRows.length) applySharedCountSessionRows(countSessionRows);
       if (!silent) showToast("Kept newer local data instead of older shared snapshot.", 2800, "success");
       return "kept-local";
     }
@@ -8395,6 +8694,8 @@ async function restoreSharedDataFromSupabase(options = {}) {
         syncSharedVendorRulesToSupabase(true).catch(() => {});
       }
     }
+    if (importLogRows.length) applySharedImportLogRows(importLogRows);
+    if (countSessionRows.length) applySharedCountSessionRows(countSessionRows);
     state._loadedFileSignatures = new Set(["supabase-shared"]);
     bumpDataStamp();
     updateFilterOptions();
@@ -8452,6 +8753,8 @@ async function syncSharedDataToSupabase(options = {}) {
       await supabaseDeleteRowsByValues("daily_sales", "sales_date", targetDates);
       await supabaseInsertRows("daily_sales", salesRows);
     }
+    await syncSharedImportLogsToSupabase(true);
+    await syncSharedCountSessionsToSupabase(true);
     await updateSharedSyncState(productsOnly ? "product-meta" : "full");
     if (!productsOnly) await savePersistedState();
     if (!silent) showToast("Shared Supabase data updated.", 2800, "success");
@@ -10645,8 +10948,14 @@ if (!state.authRequired || !loadUsers().length) {
       const syncKind = String(syncRow.last_sync_kind || "").toLowerCase();
       const isProductsOnly = syncKind === "products" || syncKind === "product-meta";
       const isVendorRulesOnly = syncKind === "vendor-rules";
+      const isImportsOnly = syncKind === "imports";
+      const isCountsOnly = syncKind === "counts";
       const restored = isVendorRulesOnly
         ? await restoreSharedVendorRulesOnlyFromSupabase({ silent: true })
+        : isImportsOnly
+          ? await restoreSharedImportLogsOnlyFromSupabase({ silent: true })
+          : isCountsOnly
+            ? await restoreSharedCountSessionsOnlyFromSupabase({ silent: true })
         : isProductsOnly
           ? await restoreSharedProductsOnlyFromSupabase({ silent: true })
           : await restoreSharedDataFromSupabase({ silent: true, preferCurrentState: false });
@@ -10654,6 +10963,10 @@ if (!state.authRequired || !loadUsers().length) {
         showToast(
           isVendorRulesOnly
             ? "\u21ba Synced shared vendor rules from another device"
+            : isImportsOnly
+              ? "\u21ba Synced shared import updates from another device"
+              : isCountsOnly
+                ? "\u21ba Synced shared count updates from another device"
             : isProductsOnly
               ? "\u21ba Synced shared product meta from another device"
               : "\u21ba Synced shared sales and inventory updates from another device",
