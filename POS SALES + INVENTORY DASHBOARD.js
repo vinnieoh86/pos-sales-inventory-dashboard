@@ -1685,7 +1685,7 @@ async function loadFiles(fileList) {
     updateFilterOptions();
     setDefaultDates();
     await savePersistedState();
-    const syncOk = await syncSharedDataToSupabase({ silent: true, salesDates: [...touchedSalesDates] });
+      const syncOk = await syncSharedDataToSupabase({ silent: true });
     render();
     renderUploadLogs();
     if (!syncOk) {
@@ -3360,6 +3360,7 @@ function saveCountSession() {
   renderCountsWorkspace();
   // Defer the expensive full render until after modal closes
   setTimeout(() => render(), 50);
+  void syncSharedCountSessionsToSupabase(true);
   void syncSharedProductsByCodes([...latestByCode.keys()], { silent: true });
   showToast(`Count saved Â· ${updatedCount} item stock quantities updated`, 3200, "success");
 }
@@ -3374,6 +3375,7 @@ function deleteCountSession() {
   state.pendingDuplicateCount = null;
   persistCountSessions();
   renderCountsWorkspace();
+  void syncSharedCountSessionsToSupabase(true);
   showToast(`Deleted unsaved count: ${label}`, 3200, "warning");
 }
 
@@ -7347,6 +7349,12 @@ function cleanCell(value) {
   return String(value ?? "").replace(/^="/, "").replace(/"$/, "").trim();
 }
 
+function stableVendorRuleId(vendor = "") {
+  const normalized = cleanCell(vendor).toUpperCase();
+  if (!normalized) return "";
+  return `vr-${normalized.replace(/[^A-Z0-9]+/g, "-").replace(/^-+|-+$/g, "")}`;
+}
+
 function normalizeSearchText(value) {
   return cleanCell(value).toUpperCase().replace(/[^A-Z0-9]+/g, " ").trim();
 }
@@ -8044,7 +8052,6 @@ function productRowForSupabase(item) {
   const excel = findExcelFor(item);
   const normalizedCode = normalizeCode(item.code || excel.code || "");
   const meta = itemMetaFor(normalizedCode);
-  const override = state.reorderOverrides[item.code || excel.code || ""] || {};
   const syncState = normalizeItemState(meta.stateManual ? meta.state : (meta.state || excel.state || item.state || ""));
   const syncCaseSize = meta.caseSizeManual
     ? Math.max(1, Math.round(toNumber(meta.caseSize) || 1))
@@ -8065,8 +8072,6 @@ function productRowForSupabase(item) {
     unit_cost: Number(item.unitCost || item.cost || excel.cost || 0),
     case_size: Number(syncCaseSize || 1),
     add_date: syncAddDate || null,
-    reorder_min_override: override.min != null ? Number(override.min) : null,
-    reorder_max_override: override.max != null ? Number(override.max) : null,
     updated_at: new Date().toISOString(),
   };
 }
@@ -8074,7 +8079,6 @@ function productRowForSupabase(item) {
 function productRowFromExcelForSupabase(item = {}) {
   const normalizedCode = normalizeCode(item.code || "");
   const meta = itemMetaFor(normalizedCode);
-  const override = state.reorderOverrides[item.code || ""] || {};
   const syncState = normalizeItemState(meta.stateManual ? meta.state : (meta.state || item.state || ""));
   const syncCaseSize = meta.caseSizeManual
     ? Math.max(1, Math.round(toNumber(meta.caseSize) || 1))
@@ -8095,8 +8099,6 @@ function productRowFromExcelForSupabase(item = {}) {
     unit_cost: Number(item.cost || 0),
     case_size: Number(syncCaseSize || 1),
     add_date: syncAddDate || null,
-    reorder_min_override: override.min != null ? Number(override.min) : null,
-    reorder_max_override: override.max != null ? Number(override.max) : null,
     updated_at: new Date().toISOString(),
   };
 }
@@ -8118,9 +8120,10 @@ function salesRowForSupabase(row) {
 }
 
 function vendorRuleRowForSupabase(rule = {}) {
+  const vendorName = cleanCell(rule.vendor || "").toUpperCase();
   return {
-    id: cleanCell(rule.id) || `vr-${Date.now()}`,
-    vendor: cleanCell(rule.vendor || "").toUpperCase(),
+    id: stableVendorRuleId(vendorName) || cleanCell(rule.id) || `vr-${Date.now()}`,
+    vendor: vendorName,
     status: cleanCell(rule.status) || "Active",
     safety_days: Math.max(0, toNumber(rule.safetyDays) || 0),
     days_of_inventory: Math.max(0, toNumber(rule.daysOfInventory) || 0),
@@ -8262,6 +8265,11 @@ function mergeSharedProductRows(productRows = [], productMetaRows = []) {
     if (!code) return;
     const key = codeKey(code);
     const base = merged.get(key) || { code };
+    const hasOrderingRuleMode = Object.prototype.hasOwnProperty.call(row, "ordering_rule_mode");
+    const hasSafetyOverride = Object.prototype.hasOwnProperty.call(row, "safety_days_override");
+    const hasDoiOverride = Object.prototype.hasOwnProperty.call(row, "days_of_inventory_override");
+    const hasMinOverride = Object.prototype.hasOwnProperty.call(row, "reorder_min_override");
+    const hasMaxOverride = Object.prototype.hasOwnProperty.call(row, "reorder_max_override");
     merged.set(key, {
       ...base,
       code,
@@ -8278,11 +8286,11 @@ function mergeSharedProductRows(productRows = [], productMetaRows = []) {
       unit_cost: row.unit_cost ?? base.unit_cost ?? 0,
       case_size: row.case_size ?? base.case_size ?? 1,
       add_date: row.add_date ?? base.add_date ?? null,
-      ordering_rule_mode: row.ordering_rule_mode ?? base.ordering_rule_mode ?? "vendor",
-      safety_days_override: row.safety_days_override ?? base.safety_days_override ?? null,
-      days_of_inventory_override: row.days_of_inventory_override ?? base.days_of_inventory_override ?? null,
-      reorder_min_override: row.reorder_min_override ?? base.reorder_min_override ?? null,
-      reorder_max_override: row.reorder_max_override ?? base.reorder_max_override ?? null,
+      ordering_rule_mode: hasOrderingRuleMode ? row.ordering_rule_mode : (base.ordering_rule_mode ?? "vendor"),
+      safety_days_override: hasSafetyOverride ? row.safety_days_override : (base.safety_days_override ?? null),
+      days_of_inventory_override: hasDoiOverride ? row.days_of_inventory_override : (base.days_of_inventory_override ?? null),
+      reorder_min_override: hasMinOverride ? row.reorder_min_override : (base.reorder_min_override ?? null),
+      reorder_max_override: hasMaxOverride ? row.reorder_max_override : (base.reorder_max_override ?? null),
       updated_at: row.updated_at ?? base.updated_at ?? null,
       snapshot_date: row.snapshot_date ?? base.snapshot_date ?? null,
       sold_units: row.sold_units ?? base.sold_units ?? 0,
@@ -8375,10 +8383,12 @@ function applySharedProductRows(rows) {
     const overrideMin = row.reorder_min_override;
     const overrideMax = row.reorder_max_override;
     if (overrideMin != null || overrideMax != null) {
-      nextOverrides[inventoryItem.code || excelItem.code] = {
+      nextOverrides[key] = {
         ...(overrideMin != null ? { min: toNumber(overrideMin) } : {}),
         ...(overrideMax != null ? { max: toNumber(overrideMax) } : {}),
       };
+    } else {
+      delete nextOverrides[key];
     }
   });
   state.latestInventory = mergedInventory;
@@ -8403,7 +8413,15 @@ function applySharedImportLogRows(rows = []) {
 }
 
 function applySharedCountSessionRows(rows = []) {
-  if (!rows?.length) return 0;
+  if (!rows?.length) {
+    state.countSessions = [];
+    state.activeCountSession = null;
+    localStorage.setItem("posDashboardCountSessions:v1", JSON.stringify(state.countSessions));
+    localStorage.setItem("posDashboardActiveCountSession:v1", JSON.stringify(state.activeCountSession));
+    renderCountsWorkspace();
+    queueActiveTabRender();
+    return 0;
+  }
   const savedSessions = [];
   let activeSession = null;
   rows.forEach((row) => {
@@ -8416,6 +8434,7 @@ function applySharedCountSessionRows(rows = []) {
   state.activeCountSession = activeSession;
   localStorage.setItem("posDashboardCountSessions:v1", JSON.stringify(state.countSessions));
   localStorage.setItem("posDashboardActiveCountSession:v1", JSON.stringify(state.activeCountSession));
+  renderCountsWorkspace();
   queueActiveTabRender();
   return state.countSessions.length + (state.activeCountSession ? 1 : 0);
 }
@@ -8464,7 +8483,6 @@ async function restoreSharedImportLogsOnlyFromSupabase(options = {}) {
   const { silent = false } = options;
   try {
     const rows = await supabaseSelectRowsSafe("import_logs", { select: "*", order: "recorded_at.desc" });
-    if (!rows.length) return false;
     applySharedImportLogRows(rows);
     if (!silent) showToast(`Shared import logs loaded (${number.format(rows.length)} rows)`, 2400, "success");
     return true;
@@ -8479,7 +8497,6 @@ async function restoreSharedCountSessionsOnlyFromSupabase(options = {}) {
   const { silent = false } = options;
   try {
     const rows = await supabaseSelectRowsSafe("count_sessions", { select: "*" });
-    if (!rows.length) return false;
     applySharedCountSessionRows(rows);
     if (!silent) showToast("Shared count sessions loaded.", 2400, "success");
     return true;
@@ -8513,9 +8530,10 @@ async function updateSharedSyncState(kind = "products") {
 async function syncSharedVendorRulesToSupabase(silent = false) {
   if (!ENABLE_SHARED_SYNC || !sharedVendorRulesAvailable) return false;
   try {
-    const rows = (state.vendorRules || [])
+    const rows = [...new Map((state.vendorRules || [])
       .map(vendorRuleRowForSupabase)
-      .filter((row) => row.id && row.vendor);
+      .filter((row) => row.id && row.vendor)
+      .map((row) => [cleanCell(row.vendor).toUpperCase(), row])).values()];
     if (!rows.length) return true;
     await supabaseUpsertRows("vendor_rules", rows, "id");
     await updateSharedSyncState("vendor-rules");
@@ -8558,8 +8576,10 @@ async function syncSharedImportLogsToSupabase(silent = false) {
   if (!ENABLE_SHARED_SYNC || !sharedImportLogsAvailable) return false;
   try {
     const rows = (state.uploadLogs || []).map(importLogRowForSupabase).filter((row) => row.id);
-    if (!rows.length) return true;
-    await supabaseUpsertRows("import_logs", rows, "id");
+    await supabaseDeleteAllRows("import_logs");
+    if (rows.length) {
+      await supabaseInsertRows("import_logs", rows);
+    }
     await updateSharedSyncState("imports");
     return true;
   } catch (error) {
@@ -8578,8 +8598,10 @@ async function syncSharedCountSessionsToSupabase(silent = false) {
       ...(state.countSessions || []).filter((session) => cleanCell(session?.id)).map((session) => countSessionRowForSupabase(session, false)),
       ...(state.activeCountSession?.id ? [countSessionRowForSupabase(state.activeCountSession, true)] : []),
     ];
-    if (!rows.length) return true;
-    await supabaseUpsertRows("count_sessions", rows, "id");
+    await supabaseDeleteAllRows("count_sessions");
+    if (rows.length) {
+      await supabaseInsertRows("count_sessions", rows);
+    }
     await updateSharedSyncState("counts");
     return true;
   } catch (error) {
@@ -8662,10 +8684,21 @@ async function restoreSharedDataFromSupabase(options = {}) {
     state.excelByPlu = new Map();
     state.excelByItemNumber = new Map();
     const nextOverrides = {};
+    const nextItemMeta = { ...(state.itemMeta || {}) };
     mergedProductRows.map(hydrateExcelFromSupabase).forEach((item) => addExcelIndex(item));
     mergedProductRows.forEach((row) => {
       const code = normalizeCode(row.code);
       if (!code) return;
+      const existingMeta = nextItemMeta[code] || {};
+      nextItemMeta[code] = {
+        ...existingMeta,
+        ...(row.state != null ? { state: cleanCell(row.state), stateManual: true } : {}),
+        ...(row.case_size != null ? { caseSize: Math.max(1, Math.round(toNumber(row.case_size) || 1)), caseSizeManual: true } : {}),
+        ...(row.add_date ? { addDate: normalizeItemDate(row.add_date) } : {}),
+        orderingRuleMode: cleanCell(row.ordering_rule_mode) || existingMeta.orderingRuleMode || "vendor",
+        safetyDaysOverride: row.safety_days_override != null ? Math.max(0, Math.round(toNumber(row.safety_days_override) || 0)) : null,
+        daysOfInventoryOverride: row.days_of_inventory_override != null ? Math.max(0, Math.round(toNumber(row.days_of_inventory_override) || 0)) : null,
+      };
       const overrideMin = row.reorder_min_override;
       const overrideMax = row.reorder_max_override;
       if (overrideMin != null || overrideMax != null) {
@@ -8675,6 +8708,8 @@ async function restoreSharedDataFromSupabase(options = {}) {
         };
       }
     });
+    state.itemMeta = nextItemMeta;
+    saveItemMeta();
     state.reorderOverrides = nextOverrides;
     localStorage.setItem("posDashboardReorderOverrides:v1", JSON.stringify(state.reorderOverrides));
     rebuildExcelIndexes();
@@ -8797,7 +8832,7 @@ async function initApp() {
   if (ENABLE_SHARED_SYNC) {
     setTimeout(async () => {
       try {
-        const restoredShared = await restoreSharedDataFromSupabase({ silent: true, preferCurrentState: true });
+        const restoredShared = await restoreSharedDataFromSupabase({ silent: true, preferCurrentState: window.location.protocol === "file:" });
         if (restoredShared === "kept-local") {
           await syncSharedMetaSnapshotToSupabase({ silent: true, includeVendorRules: true });
         } else if (restoredShared) {
@@ -8841,6 +8876,7 @@ function confirmDeleteSavedSession() {
   state.countSessions = state.countSessions.filter((s) => s.id !== id);
   persistCountSessions();
   renderCountSessionRows();
+  void syncSharedCountSessionsToSupabase(true);
   showToast("Saved count deleted.", 2400, "warning");
 }
 
@@ -8861,6 +8897,7 @@ function continueCountFromReport() {
   if (document.querySelector("#reportCountModal")) document.querySelector("#reportCountModal").hidden = true;
   if (document.querySelector("#sessionHistoryModal")) document.querySelector("#sessionHistoryModal").hidden = true;
   renderCountsWorkspace();
+  void syncSharedCountSessionsToSupabase(true);
   showToast(`Continuing count: ${countSessionLabel(session)}`, 2800, "success");
 }
 
@@ -8916,6 +8953,7 @@ function restorePreviousCount(sessionId) {
   renderCountsWorkspace();
   render();
   renderAdjustLog();
+  void syncSharedCountSessionsToSupabase(true);
   void syncSharedProductsByCodes(Object.keys(session.preCountSnapshot || {}), { silent: true });
   showToast(`Restored â€” ${restored} stock values reverted`, 3200, "success");
 }
@@ -8971,6 +9009,7 @@ function submitAndApplyCount() {
   render();
   renderAdjustLog();
   generateFinalCountExport(session, candidates, latestByCode, snapshot);
+  void syncSharedCountSessionsToSupabase(true);
   void syncSharedProductsByCodes([...scopeCodes], { silent: true });
   showToast(`Submitted â€” ${updated} stock values updated`, 3200, "success");
 }
@@ -10953,7 +10992,7 @@ if (!state.authRequired || !loadUsers().length) {
       const restored = isVendorRulesOnly
         ? await restoreSharedVendorRulesOnlyFromSupabase({ silent: true })
         : isImportsOnly
-          ? await restoreSharedImportLogsOnlyFromSupabase({ silent: true })
+          ? await restoreSharedDataFromSupabase({ silent: true, preferCurrentState: false })
           : isCountsOnly
             ? await restoreSharedCountSessionsOnlyFromSupabase({ silent: true })
         : isProductsOnly
