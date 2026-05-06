@@ -1316,7 +1316,9 @@ function commitReorderFieldInput(input, options = {}) {
   if (!input) return;
   if (isUserRole()) return;
   const code = input.dataset.code;
+  const codeId = codeKey(code);
   const field = input.dataset.reorderField;
+  if (!codeId || !field) return;
   const val = input.value.trim();
   const nextCommitted = val === "" ? "" : String(Math.max(0, Math.round(toNumber(val) || 0)));
   if (input.dataset.lastCommittedValue === nextCommitted) {
@@ -1324,29 +1326,29 @@ function commitReorderFieldInput(input, options = {}) {
     return;
   }
   if (val === "") {
-    if (state.reorderOverrides[code]) {
-      delete state.reorderOverrides[code][field];
-      if (!Object.keys(state.reorderOverrides[code]).length) delete state.reorderOverrides[code];
+    if (state.reorderOverrides[codeId]) {
+      delete state.reorderOverrides[codeId][field];
+      if (!Object.keys(state.reorderOverrides[codeId]).length) delete state.reorderOverrides[codeId];
     }
   } else {
-    state.reorderOverrides[code] = state.reorderOverrides[code] || {};
-    state.reorderOverrides[code][field] = Math.max(0, Math.round(toNumber(val) || 0));
-    input.value = String(state.reorderOverrides[code][field]);
+    state.reorderOverrides[codeId] = state.reorderOverrides[codeId] || {};
+    state.reorderOverrides[codeId][field] = Math.max(0, Math.round(toNumber(val) || 0));
+    input.value = String(state.reorderOverrides[codeId][field]);
   }
   input.dataset.lastCommittedValue = val === "" ? "" : input.value;
   localStorage.setItem("posDashboardReorderOverrides:v1", JSON.stringify(state.reorderOverrides));
-  scheduleSharedProductSync(code);
+  scheduleSharedProductSync(codeId);
   const fastPath = !(
     (els.inventoryQuickFilter?.value || "").includes("needs") ||
     (els.inventoryQuickFilter?.value || "").includes("overrides") ||
     ["reorderMin", "reorderMax", "recommendedOrder", "needs"].includes(state.inventorySort.key)
   );
   if (options.render !== false) {
-    if (fastPath) {
-      patchInventoryRowFromCache(code);
-      renderInventorySummary(state.inventoryRows || []);
-      if (activeTabName() === "ordering") renderOrders();
-    } else {
+      if (fastPath) {
+        patchInventoryRowFromCache(code);
+        renderInventorySummary(state.inventoryRows || []);
+        if (activeTabName() === "ordering") renderOrders();
+      } else {
       bumpDataStamp();
       scheduleLightInventoryRefresh(code);
     }
@@ -1575,15 +1577,16 @@ document.addEventListener("click", (event) => {
   if (resetBtn) {
     event.stopPropagation();
     const { code, field } = resetBtn.dataset;
-    if (state.reorderOverrides[code]) {
+    const codeId = codeKey(code);
+    if (state.reorderOverrides[codeId]) {
       if (field === "all") {
-        delete state.reorderOverrides[code];
+        delete state.reorderOverrides[codeId];
       } else {
-        delete state.reorderOverrides[code][field];
-        if (!Object.keys(state.reorderOverrides[code]).length) delete state.reorderOverrides[code];
+        delete state.reorderOverrides[codeId][field];
+        if (!Object.keys(state.reorderOverrides[codeId]).length) delete state.reorderOverrides[codeId];
       }
       localStorage.setItem("posDashboardReorderOverrides:v1", JSON.stringify(state.reorderOverrides));
-      scheduleSharedProductSync(code);
+      scheduleSharedProductSync(codeId);
     }
     showToast(`${field === "all" ? "Min / Max" : field === "min" ? "Min" : "Max"} restored to auto for ${code}`);
     bumpDataStamp();
@@ -8721,16 +8724,16 @@ async function restoreSharedDataFromSupabase(options = {}) {
       state.inventories.set(inventoryDate, inventoryRows);
     }
     buildLatestInventory();
-    if (vendorRuleRows.length) {
-      applySharedVendorRuleRows(vendorRuleRows);
-    } else {
-      const seededRules = ensureVendorRulesFromData();
-      if (seededRules && ENABLE_SHARED_SYNC) {
-        syncSharedVendorRulesToSupabase(true).catch(() => {});
+      if (vendorRuleRows.length) {
+        applySharedVendorRuleRows(vendorRuleRows);
+      } else {
+        const seededRules = ensureVendorRulesFromData();
+        if (seededRules && ENABLE_SHARED_SYNC) {
+          syncSharedVendorRulesToSupabase(true).catch(() => {});
+        }
       }
-    }
-    if (importLogRows.length) applySharedImportLogRows(importLogRows);
-    if (countSessionRows.length) applySharedCountSessionRows(countSessionRows);
+      applySharedImportLogRows(importLogRows);
+      applySharedCountSessionRows(countSessionRows);
     state._loadedFileSignatures = new Set(["supabase-shared"]);
     bumpDataStamp();
     updateFilterOptions();
