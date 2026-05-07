@@ -8515,10 +8515,16 @@ function applySharedProductMetaRowsLight(rows = []) {
 
 function applySharedImportLogRows(rows = []) {
   if (!rows?.length) return 0;
-  state.uploadLogs = rows
+  const merged = new Map((state.uploadLogs || [])
+    .filter((entry) => entry?.id)
+    .map((entry) => [entry.id, entry]));
+  rows
     .map(hydrateImportLogFromSupabase)
     .filter((entry) => entry.id)
-    .sort((a, b) => String(b.recordedAt || "").localeCompare(String(a.recordedAt || "")));
+    .forEach((entry) => merged.set(entry.id, entry));
+  state.uploadLogs = [...merged.values()]
+    .sort((a, b) => String(b.recordedAt || "").localeCompare(String(a.recordedAt || "")))
+    .slice(0, 5000);
   saveUploadLogs();
   renderUploadLogs();
   return state.uploadLogs.length;
@@ -8699,9 +8705,8 @@ async function syncSharedImportLogsToSupabase(silent = false) {
   if (!ENABLE_SHARED_SYNC || !sharedImportLogsAvailable) return false;
   try {
     const rows = (state.uploadLogs || []).map(importLogRowForSupabase).filter((row) => row.id);
-    await supabaseDeleteAllRows("import_logs");
     if (rows.length) {
-      await supabaseInsertRows("import_logs", rows);
+      await supabaseUpsertRows("import_logs", rows, "id");
     }
     await updateSharedSyncState("imports");
     return true;
@@ -8774,6 +8779,31 @@ async function syncSharedProductsByCodes(codes = [], options = {}) {
       sharedProductMetaAvailable = false;
     }
     if (!silent) showToast("Shared product meta sync failed.", 2600, "warning");
+    return false;
+  }
+}
+
+async function syncSharedInventoryFactsByCodes(codes = [], options = {}) {
+  if (!ENABLE_SHARED_SYNC) return false;
+  const { silent = false, updateSyncState = true } = options;
+  try {
+    const uniqueCodes = [...new Set((codes || []).map((code) => codeKey(code)).filter(Boolean))];
+    const productRows = uniqueCodes
+      .map(productRowByCodeForSupabase)
+      .filter((row) => cleanCell(row?.code));
+    const productMetaRows = uniqueCodes
+      .map(productMetaRowByCodeForSupabase)
+      .filter((row) => cleanCell(row?.code));
+    if (productMetaRows.length) await supabaseUpsertRows("product_meta", productMetaRows, "code");
+    if (updateSyncState && productMetaRows.length) await updateSharedSyncState("product-meta");
+    if (productRows.length) {
+      supabaseUpsertRows("products", productRows, "code").catch(() => {});
+    }
+    if (!silent) showToast(`Shared ${uniqueCodes.length === 1 ? "item" : "items"} synced.`, 2200, "success");
+    return true;
+  } catch (error) {
+    if (String(error?.message || "").includes("product_meta")) sharedProductMetaAvailable = false;
+    if (!silent) showToast("Shared inventory sync failed.", 2600, "warning");
     return false;
   }
 }
@@ -9264,12 +9294,13 @@ function finalizeStockAdjust(reason) {
   const item = state.stockAdjustItem;
   if (!item) return;
   const qty = Math.max(0, Number(state.stockAdjustQtyBuffer || "0"));
+  const action = state.stockAdjustAction;
   const inventoryItem = state.latestInventory.get(codeKey(item.code));
   if (!inventoryItem) { showToast("Item not found in inventory.", 3000, "warning"); closeStockAdjustModal(); return; }
   const before = inventoryItem.stock;
   let after;
-  if (state.stockAdjustAction === "add") after = before + qty;
-  else if (state.stockAdjustAction === "remove") after = before - qty;
+  if (action === "add") after = before + qty;
+  else if (action === "remove") after = before - qty;
   else after = qty; // set
   inventoryItem.stock = after;
   state.latestInventory.set(codeKey(item.code), inventoryItem);
@@ -9285,7 +9316,7 @@ function finalizeStockAdjust(reason) {
     product: item.product,
     vendor: item.vendor || "",
     category: item.category || "",
-    action: state.stockAdjustAction.toUpperCase(),
+    action: String(action || "set").toUpperCase(),
     qtyChange: after - before,
     qtyBefore: before,
     qtyAfter: after,
@@ -9301,8 +9332,8 @@ function finalizeStockAdjust(reason) {
   if (activeTabName() === "ordering") renderOrders();
   else if (activeTabName() !== "inventory") queueActiveTabRender();
   renderAdjustLog();
-  void syncSharedProductsByCodes([item.code], { silent: true });
-  showToast(`${state.stockAdjustAction === "add" ? "Added" : state.stockAdjustAction === "remove" ? "Removed" : "Set"} ${number.format(qty)} â€” ${item.code} now ${number.format(after)}`, 3000, "success");
+  void syncSharedInventoryFactsByCodes([item.code], { silent: true });
+  showToast(`${action === "add" ? "Added" : action === "remove" ? "Removed" : "Set"} ${number.format(qty)} â€” ${item.code} now ${number.format(after)}`, 3000, "success");
 }
 
 // â”€â”€ Adjust log rendering â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
