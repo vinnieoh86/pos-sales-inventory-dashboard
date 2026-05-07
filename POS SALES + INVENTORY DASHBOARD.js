@@ -8457,8 +8457,21 @@ async function restoreSharedProductsOnlyFromSupabase(options = {}) {
     updateFilterOptions();
     updateInventoryStateFilter();
     const afterHash = sharedProductVisualHash();
-    if (beforeHash !== afterHash && !state.activeCountSession) renderDebounced();
-    if (!silent) showToast(`Shared product updates loaded (${number.format(mergedRows.length)} items)`, 2600, "success");
+    if (beforeHash !== afterHash && !state.activeCountSession) {
+      if (activeTabName() === "inventory") {
+        const visibleCodes = [...(els.inventoryBody?.querySelectorAll("tr[data-item-code]") || [])]
+          .map((row) => row.dataset.itemCode)
+          .filter(Boolean);
+        visibleCodes.forEach((code) => patchInventoryRowFromCache(code));
+        renderInventorySummary(state.inventoryRows || currentInventoryRows());
+        refreshDetailDrawer();
+      } else if (activeTabName() === "ordering") {
+        renderOrders();
+      } else {
+        renderDebounced();
+      }
+    }
+    if (!silent) showToast(`Shared product updates loaded (${number.format(mergedRows.length)} items)`, 1800, "success");
     return true;
   } catch (error) {
     if (!silent) showToast("Shared product refresh failed.", 2600, "warning");
@@ -8772,7 +8785,10 @@ async function syncSharedDataToSupabase(options = {}) {
       });
     const productRows = [...productRowMap.values()].filter((row) => cleanCell(row.code));
     const productMetaRows = buildProductMetaRowsSnapshot();
-    if (productRows.length) {
+    if (!productsOnly) {
+      await supabaseDeleteAllRows("products");
+      if (productRows.length) await supabaseInsertRows("products", productRows);
+    } else if (productRows.length) {
       await supabaseUpsertRows("products", productRows, "code");
     }
     if (productMetaRows.length) {
@@ -8781,15 +8797,11 @@ async function syncSharedDataToSupabase(options = {}) {
     await syncSharedVendorRulesToSupabase(true);
 
     if (!productsOnly) {
-      const targetDates = Array.isArray(salesDates) && salesDates.length
-        ? [...new Set(salesDates.map((date) => cleanCell(date)).filter(Boolean))]
-        : [...new Set(state.rawSales.map((row) => cleanCell(row.date)).filter(Boolean))];
       const salesRows = state.rawSales
-        .filter((row) => !targetDates.length || targetDates.includes(cleanCell(row.date)))
         .filter((row) => row.code || row.product)
         .map(salesRowForSupabase);
-      await supabaseDeleteRowsByValues("daily_sales", "sales_date", targetDates);
-      await supabaseInsertRows("daily_sales", salesRows);
+      await supabaseDeleteAllRows("daily_sales");
+      if (salesRows.length) await supabaseInsertRows("daily_sales", salesRows);
     }
     await syncSharedImportLogsToSupabase(true);
     await syncSharedCountSessionsToSupabase(true);
@@ -11002,22 +11014,22 @@ if (!state.authRequired || !loadUsers().length) {
           ? await restoreSharedProductsOnlyFromSupabase({ silent: true })
           : await restoreSharedDataFromSupabase({ silent: true, preferCurrentState: false });
       if (restored) {
-        showToast(
-          isVendorRulesOnly
-            ? "\u21ba Synced shared vendor rules from another device"
-            : isImportsOnly
-              ? "\u21ba Synced shared import updates from another device"
-              : isCountsOnly
-                ? "\u21ba Synced shared count updates from another device"
-            : isProductsOnly
-              ? "\u21ba Synced shared product meta from another device"
-              : "\u21ba Synced shared sales and inventory updates from another device",
-          2400,
-          "success"
-        );
+        if (!isProductsOnly) {
+          showToast(
+            isVendorRulesOnly
+              ? "\u21ba Synced shared vendor rules from another device"
+              : isImportsOnly
+                ? "\u21ba Synced shared import updates from another device"
+                : isCountsOnly
+                  ? "\u21ba Synced shared count updates from another device"
+                  : "\u21ba Synced shared sales and inventory updates from another device",
+            1800,
+            "success"
+          );
+        }
       }
     } catch (_) { /* silent fail on file:// */ }
   }
-  setTimeout(() => { poll(); setInterval(poll, 3000); }, 1500);
+  setTimeout(() => { poll(); setInterval(poll, 1500); }, 1000);
 })();
 
