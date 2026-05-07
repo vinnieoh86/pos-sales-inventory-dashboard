@@ -114,6 +114,9 @@ let sharedVendorRulesAvailable = true;
 let sharedProductMetaAvailable = true;
 let sharedImportLogsAvailable = true;
 let sharedCountSessionsAvailable = true;
+const SHARED_SYNC_POLL_MS = 3000;
+const SHARED_SYNC_INITIAL_DELAY_MS = 1200;
+const SHARED_PRODUCT_META_PULL_LIMIT = 500;
 
 // Increment this whenever raw data changes to bust the SKU cache
 function bumpDataStamp() {
@@ -1538,25 +1541,6 @@ document.addEventListener("input", (event) => {
   const input = event.target.closest("[data-reorder-field]");
   if (!input) return;
   input.value = input.value === "" ? "" : String(Math.max(0, Math.round(toNumber(input.value) || 0)));
-  return;
-  const code = input.dataset.code;
-  const field = input.dataset.reorderField;
-  const val = input.value.trim();
-  if (val === "") {
-    // Empty field = clear override, revert to auto
-    if (state.reorderOverrides[code]) {
-      delete state.reorderOverrides[code][field];
-      if (!Object.keys(state.reorderOverrides[code]).length) delete state.reorderOverrides[code];
-    }
-    showToast(`${field === "min" ? "Min" : "Max"} reset to auto for ${code}`);
-  } else {
-    state.reorderOverrides[code] = state.reorderOverrides[code] || {};
-    state.reorderOverrides[code][field] = toNumber(val);
-    showToast(`Manual ${field === "min" ? "Min" : "Max"} set - clear field to restore auto`);
-  }
-  localStorage.setItem("posDashboardReorderOverrides:v1", JSON.stringify(state.reorderOverrides));
-  bumpDataStamp();
-  renderDebounced();
 });
 
 document.addEventListener("focusin", (event) => {
@@ -1916,7 +1900,7 @@ function scheduleSharedProductSync(code) {
       return;
     }
     syncSharedMetaSnapshotToSupabase({ silent: true, includeVendorRules: false }).catch(() => {});
-  }, 250);
+  }, 600);
 }
 
 function scheduleSharedVendorRulesSync() {
@@ -8016,7 +8000,8 @@ function supabaseRestUrl(tableName) {
 }
 
 async function supabaseSelectRows(tableName, query = {}) {
-  const pageSize = 1000;
+  const requestedLimit = Math.max(0, Math.round(toNumber(query.limit) || 0));
+  const pageSize = requestedLimit ? Math.min(1000, requestedLimit) : 1000;
   const rows = [];
   let offset = 0;
   while (true) {
@@ -8030,10 +8015,11 @@ async function supabaseSelectRows(tableName, query = {}) {
     if (!response.ok) throw new Error(`${tableName} read failed (${response.status})`);
     const page = await response.json();
     rows.push(...page);
+    if (requestedLimit && rows.length >= requestedLimit) break;
     if (page.length < pageSize) break;
     offset += pageSize;
   }
-  return rows;
+  return requestedLimit ? rows.slice(0, requestedLimit) : rows;
 }
 
 async function supabaseSelectRowsSafe(tableName, query = {}) {
@@ -8448,6 +8434,85 @@ function applySharedProductRows(rows) {
   return rows.length;
 }
 
+function applySharedProductMetaRowsLight(rows = []) {
+  if (!rows?.length) return [];
+  const changedCodes = new Set();
+  const nextOverrides = { ...(state.reorderOverrides || {}) };
+  state.itemMeta = state.itemMeta || {};
+  rows.forEach((row) => {
+    const code = normalizeCode(row.code);
+    const key = codeKey(code);
+    if (!key) return;
+    const beforeInventory = state.latestInventory.get(key) || {};
+    const beforeMeta = state.itemMeta[key] || {};
+    const beforeOverride = reorderOverrideForCode(key);
+    const nextInventory = { ...beforeInventory };
+    if (!nextInventory.code) nextInventory.code = code;
+    if (row.product != null) nextInventory.product = cleanCell(row.product);
+    if (row.plu != null) nextInventory.plu = cleanCell(row.plu);
+    if (row.item_number != null) nextInventory.itemNumber = cleanCell(row.item_number);
+    if (row.vendor != null) nextInventory.vendor = cleanCell(row.vendor);
+    if (row.category != null) nextInventory.category = cleanCell(row.category);
+    if (row.department != null) nextInventory.department = cleanCell(row.department);
+    if (row.color != null) nextInventory.color = cleanCell(row.color);
+    if (row.stock != null) nextInventory.stock = toNumber(row.stock);
+    if (row.price != null) nextInventory.price = toNumber(row.price);
+    if (row.unit_cost != null) nextInventory.cost = toNumber(row.unit_cost);
+    if (row.snapshot_date != null || row.updated_at != null) {
+      nextInventory.date = cleanCell(row.snapshot_date) || (row.updated_at ? String(row.updated_at).slice(0, 10) : nextInventory.date);
+    }
+    const nextMeta = {
+      ...beforeMeta,
+      ...(row.state != null ? { state: normalizeItemState(row.state), stateManual: true } : {}),
+      ...(row.case_size != null ? { caseSize: Math.max(1, Math.round(toNumber(row.case_size) || 1)), caseSizeManual: true } : {}),
+      ...(row.add_date ? { addDate: normalizeItemDate(row.add_date) } : {}),
+      orderingRuleMode: cleanCell(row.ordering_rule_mode) || beforeMeta.orderingRuleMode || "vendor",
+      safetyDaysOverride: row.safety_days_override != null ? Math.max(0, Math.round(toNumber(row.safety_days_override) || 0)) : null,
+      daysOfInventoryOverride: row.days_of_inventory_override != null ? Math.max(0, Math.round(toNumber(row.days_of_inventory_override) || 0)) : null,
+    };
+    if (row.reorder_min_override != null || row.reorder_max_override != null) {
+      nextOverrides[key] = {
+        ...(row.reorder_min_override != null ? { min: toNumber(row.reorder_min_override) } : {}),
+        ...(row.reorder_max_override != null ? { max: toNumber(row.reorder_max_override) } : {}),
+      };
+    } else {
+      delete nextOverrides[key];
+    }
+    const nextOverride = nextOverrides[key] || {};
+    const inventoryChanged = JSON.stringify([
+      beforeInventory.stock,
+      beforeInventory.price,
+      beforeInventory.cost,
+      beforeInventory.vendor,
+      beforeInventory.product,
+      beforeInventory.category,
+      beforeInventory.department,
+    ]) !== JSON.stringify([
+      nextInventory.stock,
+      nextInventory.price,
+      nextInventory.cost,
+      nextInventory.vendor,
+      nextInventory.product,
+      nextInventory.category,
+      nextInventory.department,
+    ]);
+    const metaChanged = JSON.stringify(beforeMeta) !== JSON.stringify(nextMeta);
+    const overrideChanged = JSON.stringify(beforeOverride) !== JSON.stringify(nextOverride);
+    if (inventoryChanged || metaChanged || overrideChanged) {
+      state.latestInventory.set(key, nextInventory);
+      state.itemMeta[key] = nextMeta;
+      changedCodes.add(key);
+    }
+  });
+  if (!changedCodes.size) return [];
+  state.reorderOverrides = nextOverrides;
+  try {
+    localStorage.setItem("posDashboardReorderOverrides:v1", JSON.stringify(state.reorderOverrides));
+  } catch (_) {}
+  saveItemMeta();
+  return [...changedCodes];
+}
+
 function applySharedImportLogRows(rows = []) {
   if (!rows?.length) return 0;
   state.uploadLogs = rows
@@ -8465,8 +8530,7 @@ function applySharedCountSessionRows(rows = []) {
     if (!state.activeCountSession?.id) state.activeCountSession = null;
     localStorage.setItem("posDashboardCountSessions:v1", JSON.stringify(state.countSessions));
     localStorage.setItem("posDashboardActiveCountSession:v1", JSON.stringify(state.activeCountSession));
-    renderCountsWorkspace();
-    queueActiveTabRender();
+    if (activeTabName() === "inventory") renderCountsWorkspace();
     return 0;
   }
   const savedSessions = [];
@@ -8486,8 +8550,7 @@ function applySharedCountSessionRows(rows = []) {
   state.activeCountSession = localActiveId && remoteActiveId === localActiveId ? activeSession : null;
   localStorage.setItem("posDashboardCountSessions:v1", JSON.stringify(state.countSessions));
   localStorage.setItem("posDashboardActiveCountSession:v1", JSON.stringify(state.activeCountSession));
-  renderCountsWorkspace();
-  queueActiveTabRender();
+  if (activeTabName() === "inventory") renderCountsWorkspace();
   return state.countSessions.length + (state.activeCountSession ? 1 : 0);
 }
 
@@ -8495,30 +8558,27 @@ async function restoreSharedProductsOnlyFromSupabase(options = {}) {
   if (!ENABLE_SHARED_SYNC) return false;
   const { silent = false } = options;
   try {
-    const [productRows, productMetaRows] = await Promise.all([
-      supabaseSelectRows("products", { select: "*" }),
-      supabaseSelectRowsSafe("product_meta", { select: "*" }),
-    ]);
-    const mergedRows = mergeSharedProductRows(productRows, productMetaRows);
-    if (!mergedRows.length) return false;
-    const beforeHash = sharedProductVisualHash();
-    applySharedProductRows(mergedRows);
-    const afterHash = sharedProductVisualHash();
-    if (beforeHash !== afterHash && !state.activeCountSession) {
+    const productMetaRows = await supabaseSelectRowsSafe("product_meta", {
+      select: "*",
+      order: "updated_at.desc",
+      limit: String(SHARED_PRODUCT_META_PULL_LIMIT),
+    });
+    const changedCodes = applySharedProductMetaRowsLight(productMetaRows);
+    if (!changedCodes.length) return false;
+    if (!state.activeCountSession) {
       if (activeTabName() === "inventory") {
-        const visibleCodes = [...(els.inventoryBody?.querySelectorAll("tr[data-item-code]") || [])]
+        const visibleCodes = new Set([...(els.inventoryBody?.querySelectorAll("tr[data-item-code]") || [])]
           .map((row) => row.dataset.itemCode)
-          .filter(Boolean);
-        visibleCodes.forEach((code) => patchInventoryRowFromCache(code));
+          .filter(Boolean)
+          .map(codeKey));
+        changedCodes.filter((code) => visibleCodes.has(codeKey(code))).forEach((code) => patchInventoryRowFromCache(code));
         renderInventorySummary(state.inventoryRows || currentInventoryRows());
         refreshDetailDrawer();
       } else if (activeTabName() === "ordering") {
         renderOrders();
-      } else {
-        renderDebounced();
       }
     }
-    if (!silent) showToast(`Shared product updates loaded (${number.format(mergedRows.length)} items)`, 1800, "success");
+    if (!silent) showToast(`Shared product updates loaded (${number.format(changedCodes.length)} items)`, 1800, "success");
     return true;
   } catch (error) {
     if (!silent) showToast("Shared product refresh failed.", 2600, "warning");
@@ -11081,6 +11141,6 @@ if (!state.authRequired || !loadUsers().length) {
       }
     } catch (_) { /* silent fail on file:// */ }
   }
-  setTimeout(() => { poll(); setInterval(poll, 800); }, 600);
+  setTimeout(() => { poll(); setInterval(poll, SHARED_SYNC_POLL_MS); }, SHARED_SYNC_INITIAL_DELAY_MS);
 })();
 
