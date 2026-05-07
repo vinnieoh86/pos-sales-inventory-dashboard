@@ -1589,8 +1589,18 @@ document.addEventListener("click", (event) => {
       scheduleSharedProductSync(codeId);
     }
     showToast(`${field === "all" ? "Min / Max" : field === "min" ? "Min" : "Max"} restored to auto for ${code}`);
-    bumpDataStamp();
-    refreshAfterInventoryEdit();
+    patchInventoryRowFromCache(code);
+    renderInventorySummary(state.inventoryRows || currentInventoryRows());
+    refreshDetailDrawer();
+    if (activeTabName() === "ordering") renderOrders();
+    const heavyOrderingContext =
+      (els.inventoryQuickFilter?.value || "").includes("needs") ||
+      (els.inventoryQuickFilter?.value || "").includes("overrides") ||
+      ["reorderMin", "reorderMax", "recommendedOrder", "needs"].includes(state.inventorySort.key);
+    if (heavyOrderingContext) {
+      bumpDataStamp();
+      scheduleLightInventoryRefresh(code);
+    }
     return;
   }
   const editableCell = event.target.closest("td.order-col, td.order-highlight");
@@ -1906,7 +1916,7 @@ function scheduleSharedProductSync(code) {
       return;
     }
     syncSharedMetaSnapshotToSupabase({ silent: true, includeVendorRules: false }).catch(() => {});
-  }, 900);
+  }, 250);
 }
 
 function scheduleSharedVendorRulesSync() {
@@ -2414,8 +2424,8 @@ function buildPriceCheckEntry(inventory = {}, excel = {}) {
     unitCost: pickNumber(inventory.cost, excel.cost),
     price: pickNumber(inventory.price, excel.price),
     caseSize: toNumber(meta.caseSizeManual ? meta.caseSize : (excel.caseSize || meta.caseSize || inventory.caseSize)) || 1,
-    reorderMin: toNumber(state.reorderOverrides[itemCode]?.min) || 0,
-    reorderMax: toNumber(state.reorderOverrides[itemCode]?.max) || 0,
+    reorderMin: toNumber(reorderOverrideForCode(itemCode)?.min) || 0,
+    reorderMax: toNumber(reorderOverrideForCode(itemCode)?.max) || 0,
     recommendedOrder: 0,
     caseOrder: 0,
     inventoryCost: Number(inventory.stock ?? excel.stock ?? 0) * pickNumber(inventory.cost, excel.cost),
@@ -4005,8 +4015,8 @@ function renderCountSessionRows() {
         <td>${escapeHtml(session.status || "All")}</td>
         <td>${escapeHtml(new Date(session.startedAt).toLocaleString())}</td>
         <td class="num">${number.format((session.entries || []).length)}</td>
-        <td>${escapeHtml(new Date(session.updatedAt || session.startedAt).toLocaleString())}</td>
-        <td><button type="button" class="secondary-button count-inline-report-button" data-count-report="${escapeHtml(session.id)}">Continue</button></td>
+        <td>${escapeHtml(new Date(session.updatedAt || session.startedAt).toLocaleString())}${session.remoteActive ? ` <span class="muted">(Live)</span>` : ""}</td>
+        <td><button type="button" class="secondary-button count-inline-report-button" data-count-report="${escapeHtml(session.id)}">${session.remoteActive ? "Open" : "Continue"}</button></td>
         <td>${session.submittedAt ? `<button type="button" class="secondary-button final-report-btn" data-final-report="${escapeHtml(session.id)}">Final Report</button>` : `<span class="muted">Not submitted</span>`}</td>
         <td>${session.preCountSnapshot ? (session.restoredAt ? `<span class="muted">Restored</span>` : `<button type="button" class="restore-count-btn" data-restore-session="${escapeHtml(session.id)}">Restore</button>`) : ""}</td>
         <td><button type="button" class="delete-session-btn" data-delete-session="${escapeHtml(session.id)}">Delete</button></td>
@@ -4351,7 +4361,7 @@ function _buildRawSkuMap(start, end, leadDays, safetyDays, daysOfInventory) {
 
   return new Map([...grouped.entries()].map(([key, sku]) => {
     const velocity = sku.units / dayCount;
-    const override = state.reorderOverrides[sku.code] || {};
+    const override = reorderOverrideForCode(sku.code);
     const isOverridden = override.min != null || override.max != null;
     const dynamic = orderingTargets({ velocity, safetyDays, daysOfInventory });
     const dynamicMaxWithDoi = dynamic.max;
@@ -5268,7 +5278,7 @@ function inventoryCaseSizeInputHtml(item) {
 }
 
 function inventoryCellHtml(key, item) {
-  const override = state.reorderOverrides[item.code] || {};
+  const override = reorderOverrideForCode(item.code);
   const minOverridden = override.min != null;
   const maxOverridden = override.max != null;
   const anyOverride = minOverridden || maxOverridden;
@@ -5379,7 +5389,7 @@ function recomputeInventoryItemForLocalEdit(item) {
   const key = codeKey(item.code);
   const excel = findExcelFor(item);
   const meta = itemMetaFor(item.code);
-  const override = state.reorderOverrides[item.code] || state.reorderOverrides[key] || {};
+  const override = reorderOverrideForCode(item.code || key);
   const stateLabel = normalizeItemState(meta.stateManual ? meta.state : (excel.state || meta.state || item.state || "")) || item.state || "Active";
   const caseSize = meta.caseSizeManual
     ? Math.max(1, Math.round(toNumber(meta.caseSize) || 1))
@@ -5535,7 +5545,7 @@ function buildInventoryRows(options = {}) {
       const sales = salesByCode.get(codeKey(code)) || {};
       const itemCode = inventory.code || code;
       const meta = itemMetaFor(itemCode);
-      const override = state.reorderOverrides[itemCode] || state.reorderOverrides[code] || {};
+      const override = reorderOverrideForCode(itemCode || code);
       const isOverridden = override.min != null || override.max != null;
       const velocity = sales.velocity || excel.saleVelocity || 0;
       const caseSize = meta.caseSizeManual
@@ -7384,6 +7394,26 @@ function codeKey(value) {
   return state.multiBarcodeMap?.[rawKey] || rawKey;
 }
 
+function normalizeReorderOverridesState() {
+  const normalized = {};
+  Object.entries(state.reorderOverrides || {}).forEach(([rawKey, override]) => {
+    const key = codeKey(rawKey);
+    if (!key || !override || typeof override !== "object") return;
+    normalized[key] = {
+      ...(override.min != null ? { min: Math.max(0, Math.round(toNumber(override.min) || 0)) } : {}),
+      ...(override.max != null ? { max: Math.max(0, Math.round(toNumber(override.max) || 0)) } : {}),
+    };
+    if (!Object.keys(normalized[key]).length) delete normalized[key];
+  });
+  state.reorderOverrides = normalized;
+}
+
+function reorderOverrideForCode(code) {
+  return state.reorderOverrides?.[codeKey(code)] || {};
+}
+
+normalizeReorderOverridesState();
+
 function matchesSearchQuery(item, query) {
   const rawQuery = cleanCell(query);
   const normalizedQuery = normalizeSearchText(rawQuery);
@@ -7443,15 +7473,28 @@ function labelStatus(status) {
 }
 
 function fileSummary() {
-  const salesDays = state.dates.length;
-  const inventoryDays = state.inventories.size;
+  const recentLogs = state.uploadLogs || [];
+  const loggedSalesDates = recentLogs
+    .filter((entry) => entry.type === "Daily_Sale" && entry.status === "Success")
+    .map((entry) => extractDateFromFilename(entry.filename))
+    .filter(Boolean);
+  const loggedInventoryDates = recentLogs
+    .filter((entry) => entry.type === "Current_Inventory" && entry.status === "Success")
+    .map((entry) => extractDateFromFilename(entry.filename))
+    .filter(Boolean);
+  const salesDays = new Set([...(state.dates || []), ...loggedSalesDates]).size;
+  const inventoryDays = new Set([...state.inventories.keys(), ...loggedInventoryDates]).size;
   const excelItems = state.excelItems.size;
   if (!salesDays && !inventoryDays && !excelItems) return "No files loaded";
   return `${salesDays} sales days Ã‚Â· ${inventoryDays} inventory snapshots Ã‚Â· ${number.format(excelItems)} Excel items`;
 }
 
 function coverageSummary() {
-  const inventoryDates = [...state.inventories.keys()].sort();
+  const loggedInventoryDates = (state.uploadLogs || [])
+    .filter((entry) => entry.type === "Current_Inventory" && entry.status === "Success")
+    .map((entry) => extractDateFromFilename(entry.filename))
+    .filter(Boolean);
+  const inventoryDates = [...new Set([...state.inventories.keys(), ...loggedInventoryDates])].sort();
   if (!state.dates.length && !inventoryDates.length) return "Choose POS sales and inventory CSV exports.";
   const salesText = state.dates.length ? `Sales ${state.dates[0]} through ${state.dates[state.dates.length - 1]}` : "No sales days loaded";
   const inventoryText = inventoryDates.length ? `current inventory ${inventoryDates[inventoryDates.length - 1]}` : "no inventory snapshot";
@@ -7904,6 +7947,7 @@ async function restorePersistedState() {
   try {
     const saved = await readPersistedState();
     if (!saved) return;
+    normalizeReorderOverridesState();
     state.rawSales = saved.rawSales || [];
     state.dates = [...new Set(state.rawSales.map((row) => row.date))].sort();
     state.inventories = new Map();
@@ -8223,7 +8267,7 @@ function productMetaRowForSupabase(source = {}) {
   const normalizedCode = normalizeCode(source.code || excel.code || "");
   const sku = state._skuCache?.get?.(codeKey(normalizedCode)) || {};
   const meta = itemMetaFor(normalizedCode);
-  const override = state.reorderOverrides[normalizedCode] || state.reorderOverrides[codeKey(normalizedCode)] || {};
+  const override = reorderOverrideForCode(normalizedCode);
   const stateValue = normalizeItemState(meta.stateManual ? meta.state : (meta.state || source.state || excel.state || sku.state || ""));
   const caseSize = meta.caseSizeManual
     ? Math.max(1, Math.round(toNumber(meta.caseSize) || 1))
@@ -8418,7 +8462,7 @@ function applySharedImportLogRows(rows = []) {
 function applySharedCountSessionRows(rows = []) {
   if (!rows?.length) {
     state.countSessions = [];
-    state.activeCountSession = null;
+    if (!state.activeCountSession?.id) state.activeCountSession = null;
     localStorage.setItem("posDashboardCountSessions:v1", JSON.stringify(state.countSessions));
     localStorage.setItem("posDashboardActiveCountSession:v1", JSON.stringify(state.activeCountSession));
     renderCountsWorkspace();
@@ -8427,14 +8471,19 @@ function applySharedCountSessionRows(rows = []) {
   }
   const savedSessions = [];
   let activeSession = null;
+  const localActiveId = cleanCell(state.activeCountSession?.id);
   rows.forEach((row) => {
     const session = hydrateCountSessionFromSupabase(row);
     if (!session) return;
     if (cleanCell(row.session_kind).toLowerCase() === "active") activeSession = session;
     else savedSessions.push(session);
   });
+  const remoteActiveId = cleanCell(activeSession?.id);
+  if (activeSession && remoteActiveId && remoteActiveId !== localActiveId) {
+    savedSessions.unshift({ ...activeSession, remoteActive: true });
+  }
   state.countSessions = savedSessions.sort((a, b) => String(b.updatedAt || b.submittedAt || "").localeCompare(String(a.updatedAt || a.submittedAt || "")));
-  state.activeCountSession = activeSession;
+  state.activeCountSession = localActiveId && remoteActiveId === localActiveId ? activeSession : null;
   localStorage.setItem("posDashboardCountSessions:v1", JSON.stringify(state.countSessions));
   localStorage.setItem("posDashboardActiveCountSession:v1", JSON.stringify(state.activeCountSession));
   renderCountsWorkspace();
@@ -8454,8 +8503,6 @@ async function restoreSharedProductsOnlyFromSupabase(options = {}) {
     if (!mergedRows.length) return false;
     const beforeHash = sharedProductVisualHash();
     applySharedProductRows(mergedRows);
-    updateFilterOptions();
-    updateInventoryStateFilter();
     const afterHash = sharedProductVisualHash();
     if (beforeHash !== afterHash && !state.activeCountSession) {
       if (activeTabName() === "inventory") {
@@ -9188,7 +9235,11 @@ function finalizeStockAdjust(reason) {
   state._pinnedAdjustCode = item.code;
   bumpDataStamp();
   closeStockAdjustModal();
-  render();
+  patchInventoryRowFromCache(item.code);
+  renderInventorySummary(state.inventoryRows || currentInventoryRows());
+  refreshDetailDrawer();
+  if (activeTabName() === "ordering") renderOrders();
+  else if (activeTabName() !== "inventory") queueActiveTabRender();
   renderAdjustLog();
   void syncSharedProductsByCodes([item.code], { silent: true });
   showToast(`${state.stockAdjustAction === "add" ? "Added" : state.stockAdjustAction === "remove" ? "Removed" : "Set"} ${number.format(qty)} â€” ${item.code} now ${number.format(after)}`, 3000, "success");
@@ -11030,6 +11081,6 @@ if (!state.authRequired || !loadUsers().length) {
       }
     } catch (_) { /* silent fail on file:// */ }
   }
-  setTimeout(() => { poll(); setInterval(poll, 1500); }, 1000);
+  setTimeout(() => { poll(); setInterval(poll, 800); }, 600);
 })();
 
