@@ -4614,16 +4614,46 @@ body[data-active-tab="settings"] .sticky-pills {
 
 /* Mobile: compact count modal, full-width keypad */
 @media (max-width: 640px) {
+  .count-modal {
+    align-items: stretch !important;
+    justify-items: stretch !important;
+    place-items: stretch !important;
+    padding: 0 !important;
+  }
   .count-modal__dialog--workspace {
-    width: calc(100vw - 1rem) !important;
+    width: 100vw !important;
+    height: 100dvh !important;
     max-height: 100dvh !important;
     border-radius: 0 !important;
-    padding: 0.6rem !important;
+    padding: 0.55rem !important;
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
+    box-sizing: border-box !important;
   }
+  .count-modal__dialog--workspace .count-modal__header {
+    position: sticky;
+    top: -0.55rem;
+    z-index: 2;
+    margin: -0.55rem -0.55rem 0;
+    padding: 0.55rem;
+    background: #fff;
+    border-bottom: 1px solid var(--line);
+  }
+  .count-workspace { gap: 0.55rem !important; }
+  .count-workspace__header { align-items: flex-start !important; gap: 0.5rem !important; }
+  .count-workspace__actions { width: 100% !important; justify-content: stretch !important; }
+  .count-workspace__actions > * { flex: 1 1 auto !important; }
   .count-workspace__grid { grid-template-columns: 1fr !important; }
+  .count-panel { padding: 0.65rem !important; gap: 0.55rem !important; }
+  .count-selected-item { min-height: 5.5rem !important; padding: 0.65rem !important; }
+  .count-item-card__meta { grid-template-columns: 1fr !important; }
   .count-search-label input { min-height: 3.5rem !important; font-size: 1.3rem !important; }
   .count-keypad { grid-template-columns: repeat(4, 1fr) !important; gap: 0.4rem !important; }
   .count-keypad button { min-height: 4rem !important; font-size: 1.6rem !important; }
+  .count-modal .table-wrap {
+    max-width: 100% !important;
+    overflow-x: auto !important;
+  }
   #scanModeInput { min-height: 3.8rem !important; font-size: 1.3rem !important; }
 }
 
