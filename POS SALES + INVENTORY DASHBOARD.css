@@ -16,6 +16,7 @@
   --filters-height: 4.55rem;
   --inventory-summary-height: 0px;
 }
+
 * { box-sizing: border-box; }
 html { scroll-behavior: smooth; }
 body {
@@ -5426,4 +5427,40 @@ body[data-active-tab="multi"] .sticky-pills {
 
 #inventoryBody td[data-col="caseSize"] input[data-item-field="caseSize"] {
   min-width: 5.2rem !important;
+}
+
+/* Final override: keep physical inventory full-width/full-height on every device. */
+#countSessionModal.count-modal:not([hidden]) {
+  display: flex !important;
+  position: fixed !important;
+  inset: 0 !important;
+  width: 100vw !important;
+  height: 100dvh !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  align-items: stretch !important;
+  justify-content: stretch !important;
+  overflow: hidden !important;
+  z-index: 9999 !important;
+}
+
+#countSessionModal.count-modal[hidden] {
+  display: none !important;
+}
+
+#countSessionModal .count-modal__dialog--workspace {
+  position: relative !important;
+  inset: auto !important;
+  flex: 1 1 auto !important;
+  width: 100vw !important;
+  max-width: 100vw !important;
+  min-width: 0 !important;
+  height: 100dvh !important;
+  max-height: 100dvh !important;
+  margin: 0 !important;
+  border-radius: 0 !important;
+  transform: none !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  -webkit-overflow-scrolling: touch;
 }

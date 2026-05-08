@@ -29,6 +29,9 @@
   _salesWindowsCache: new Map(),
   _dailyTotals: new Map(),
   _inventoryRowIndex: new Map(),
+  _localProductMetaEdits: new Map(),
+  _localImportHoldUntil: 0,
+  _localCountHoldUntil: 0,
   _priceCheckExactIndex: null,
   _priceCheckExactIndexStamp: 0,
   _filteredSkuIndex: new Map(),
@@ -779,6 +782,10 @@ els.countDuplicateModal?.addEventListener("click", (event) => {
 els.countSessionModal?.addEventListener("click", (event) => {
   if (els.countDuplicateModal && !els.countDuplicateModal.hidden) return;
   if (els.countReportModal && !els.countReportModal.hidden) return;
+  if (event.target === els.countSessionModal) {
+    els.countSessionModal.hidden = true;
+    return;
+  }
   const interactive = event.target.closest("button, input, select, textarea, a, label, [data-count-key], .count-keypad");
   if (!interactive) {
     setTimeout(() => focusCountSearch(), 0);
@@ -1031,6 +1038,7 @@ document.addEventListener("keydown", (event) => {
   if (!els.countSessionModal.hidden) {
     if (event.key === "Escape") {
       event.preventDefault();
+      els.countSessionModal.hidden = true;
       return;
     }
   }
@@ -1628,11 +1636,12 @@ async function loadFiles(fileList) {
     let skippedDuplicates = 0;
     let processedFiles = 0;
     for (const file of files) {
-      const isCurrentInventoryFile = /(^|[^a-z])current[_ ]inventory/i.test(file.name);
       const signature = fileSignature(file);
-      const date = dateFromFileName(file.name);
-      if (!date) continue;
       const rows = parseCsv(await file.text());
+      const isCurrentInventoryFile = /(^|[^a-z])(current[_ -]?inventory|all[_ -]?inventory|inventory[_ -]?snapshot)/i.test(file.name)
+        || looksLikeInventoryRows(rows);
+      const date = dateFromFileName(file.name) || dateFromRows(rows) || (isCurrentInventoryFile ? todayFileDate() : null);
+      if (!date) continue;
       if (isCurrentInventoryFile) {
         const normalized = mergeInventoryRowsByCode(rows.map((row) => normalizeInventoryRow(row, date)).filter((row) => row.code || row.product));
         if (normalized.length && (!selectedInventory || date.iso >= selectedInventory.date)) {
@@ -1677,6 +1686,9 @@ async function loadFiles(fileList) {
     bumpDataStamp();
     updateFilterOptions();
     setDefaultDates();
+    state._localImportHoldUntil = Date.now() + 120000;
+    render();
+    renderUploadLogs();
     await savePersistedState();
       const syncOk = await syncSharedDataToSupabase({ silent: true });
     render();
@@ -3225,6 +3237,7 @@ function exportProductReviewPdf() {
 }
 
 function persistCountSessions() {
+  state._localCountHoldUntil = Date.now() + 90000;
   localStorage.setItem("posDashboardCountSessions:v1", JSON.stringify(state.countSessions));
   localStorage.setItem("posDashboardActiveCountSession:v1", JSON.stringify(state.activeCountSession));
   scheduleSharedCountSessionsSync();
@@ -3361,6 +3374,7 @@ function saveCountSession() {
   let updatedCount = 0;
   latestByCode.forEach((entry, key) => {
     const existing = state.latestInventory.get(key);
+    state._localProductMetaEdits.set(key, Date.now());
     if (existing) {
       existing.stock = Number(entry.countedQty || 0);
       state.latestInventory.set(key, existing);
@@ -3387,6 +3401,7 @@ function saveCountSession() {
   setTimeout(() => render(), 50);
   void syncSharedCountSessionsToSupabase(true);
   void syncSharedProductsByCodes([...latestByCode.keys()], { silent: true });
+  void syncSharedInventoryFactsByCodes([...latestByCode.keys()], { silent: true, updateSyncState: false });
   showToast(`Count saved Â· ${updatedCount} item stock quantities updated`, 3200, "success");
 }
 
@@ -5462,6 +5477,16 @@ function patchInventoryRowFromCache(code) {
   return nextItem;
 }
 
+function patchVisibleStockCell(code, stock) {
+  const key = codeKey(code);
+  [...(els.inventoryBody?.querySelectorAll("tr[data-item-code]") || [])]
+    .filter((row) => codeKey(row.dataset.itemCode || "") === key)
+    .forEach((row) => {
+      const cell = row.querySelector('[data-col="stock"]');
+      if (cell) cell.textContent = number.format(stock);
+    });
+}
+
 function moveColumn(from, to) {
   if (!from || !to || from === to) return;
   const order = state.columnOrder.filter((key) => key !== from);
@@ -6011,6 +6036,33 @@ function dateFromFileName(fileName) {
   if (!match) return null;
   const [, mm, dd, yyyy] = match;
   return { iso: `${yyyy}-${mm}-${dd}`, compact: `${mm}${dd}${yyyy}` };
+}
+
+function dateFromRows(rows = []) {
+  const sample = rows.find((row) => row && typeof row === "object") || {};
+  const value = cleanCell(
+    sample.snapshotDate || sample.snapshot_date || sample["Snapshot Date"] || sample["SNAPSHOT DATE"] ||
+    sample.inventoryDate || sample.inventory_date || sample["Inventory Date"] || sample.date || sample.Date,
+  );
+  const iso = normalizeItemDate(value);
+  if (!iso) return null;
+  const [yyyy, mm, dd] = iso.split("-");
+  return { iso, compact: `${mm}${dd}${yyyy}` };
+}
+
+function todayFileDate() {
+  const iso = new Date().toISOString().slice(0, 10);
+  const [yyyy, mm, dd] = iso.split("-");
+  return { iso, compact: `${mm}${dd}${yyyy}` };
+}
+
+function looksLikeInventoryRows(rows = []) {
+  const sample = rows.find((row) => row && typeof row === "object") || {};
+  const keys = Object.keys(sample).map((key) => key.toLowerCase().replace(/[^a-z0-9]/g, ""));
+  const hasCode = keys.some((key) => ["code", "barcode", "sku", "upc"].includes(key));
+  const hasStock = keys.some((key) => ["stock", "stockonhand", "qtyonhand", "quantityonhand", "onhand"].includes(key));
+  const hasSalesOnlyMarker = keys.some((key) => ["sbtls", "subtotal", "prf", "profit", "soldqty"].includes(key));
+  return hasCode && hasStock && !hasSalesOnlyMarker;
 }
 
 function fileSignature(file) {
@@ -8497,6 +8549,10 @@ function applySharedProductMetaRowsLight(rows = []) {
     const code = normalizeCode(row.code);
     const key = codeKey(code);
     if (!key) return;
+    const localEditMs = state._localProductMetaEdits?.get?.(key) || 0;
+    const remoteEditMs = Date.parse(row.updated_at || row.snapshot_date || "") || 0;
+    if (localEditMs && (!remoteEditMs || remoteEditMs < localEditMs - 1000)) return;
+    if (localEditMs && remoteEditMs >= localEditMs - 1000) state._localProductMetaEdits.delete(key);
     const beforeInventory = state.latestInventory.get(key) || {};
     const beforeMeta = state.itemMeta[key] || {};
     const beforeOverride = reorderOverrideForCode(key);
@@ -8586,6 +8642,7 @@ function applySharedImportLogRows(rows = []) {
 
 function applySharedCountSessionRows(rows = []) {
   if (!rows?.length) {
+    if (Date.now() < (state._localCountHoldUntil || 0)) return (state.countSessions || []).length + (state.activeCountSession ? 1 : 0);
     state.countSessions = [];
     if (!state.activeCountSession?.id) state.activeCountSession = null;
     localStorage.setItem("posDashboardCountSessions:v1", JSON.stringify(state.countSessions));
@@ -8595,13 +8652,17 @@ function applySharedCountSessionRows(rows = []) {
   }
   const savedSessions = [];
   let activeSession = null;
+  const savedById = new Map((state.countSessions || [])
+    .filter((session) => cleanCell(session?.id))
+    .map((session) => [cleanCell(session.id), session]));
   const localActiveId = cleanCell(state.activeCountSession?.id);
   rows.forEach((row) => {
     const session = hydrateCountSessionFromSupabase(row);
     if (!session) return;
     if (cleanCell(row.session_kind).toLowerCase() === "active") activeSession = session;
-    else savedSessions.push(session);
+    else savedById.set(cleanCell(session.id), session);
   });
+  savedSessions.push(...savedById.values());
   const remoteActiveId = cleanCell(activeSession?.id);
   if (activeSession && remoteActiveId && remoteActiveId !== localActiveId) {
     savedSessions.unshift({ ...activeSession, remoteActive: true });
@@ -8780,9 +8841,8 @@ async function syncSharedCountSessionsToSupabase(silent = false) {
       ...(state.countSessions || []).filter((session) => cleanCell(session?.id)).map((session) => countSessionRowForSupabase(session, false)),
       ...(state.activeCountSession?.id ? [countSessionRowForSupabase(state.activeCountSession, true)] : []),
     ];
-    await supabaseDeleteAllRows("count_sessions");
     if (rows.length) {
-      await supabaseInsertRows("count_sessions", rows);
+      await supabaseUpsertRows("count_sessions", rows, "id");
     }
     await updateSharedSyncState("counts");
     return true;
@@ -8874,15 +8934,26 @@ async function restoreSharedDataFromSupabase(options = {}) {
       supabaseSelectRowsSafe("import_logs", { select: "*", order: "recorded_at.desc" }),
       supabaseSelectRowsSafe("count_sessions", { select: "*" }),
     ]);
-    const mergedProductRows = mergeSharedProductRows(productRows, productMetaRows);
+    let mergedProductRows = mergeSharedProductRows(productRows, productMetaRows);
     if (!mergedProductRows.length && !salesRows.length && !vendorRuleRows.length && !importLogRows.length && !countSessionRows.length) return false;
-    if (preferCurrentState && sharedSnapshotIsOlderThanCurrent(mergedProductRows, salesRows)) {
+    const localImportProtected = Date.now() < (state._localImportHoldUntil || 0);
+    const shouldKeepLocalData = (preferCurrentState || localImportProtected) && sharedSnapshotIsOlderThanCurrent(mergedProductRows, salesRows);
+    if (shouldKeepLocalData) {
       if (vendorRuleRows.length) applySharedVendorRuleRows(vendorRuleRows);
       if (importLogRows.length) applySharedImportLogRows(importLogRows);
       if (countSessionRows.length) applySharedCountSessionRows(countSessionRows);
       if (!silent) showToast("Kept newer local data instead of older shared snapshot.", 2800, "success");
       return "kept-local";
     }
+    mergedProductRows = mergedProductRows.map((row) => {
+      const key = codeKey(row.code);
+      const localEditMs = state._localProductMetaEdits?.get?.(key) || 0;
+      const remoteEditMs = Date.parse(row.updated_at || row.snapshot_date || "") || 0;
+      if (!localEditMs || (remoteEditMs && remoteEditMs >= localEditMs - 1000)) return row;
+      const localItem = state.latestInventory.get(key);
+      if (!localItem) return row;
+      return { ...row, stock: localItem.stock, price: localItem.price ?? row.price, unit_cost: localItem.cost ?? row.unit_cost };
+    });
 
     state.rawSales = salesRows.map(hydrateSalesFromSupabase).filter((row) => row.code || row.product);
     state.dates = [...new Set(state.rawSales.map((row) => row.date))].sort();
@@ -9080,9 +9151,16 @@ function confirmDeleteSavedSession() {
   document.querySelector("#confirmDeleteSessionModal").hidden = true;
   if (!id) return;
   state.countSessions = state.countSessions.filter((s) => s.id !== id);
+  state._localCountHoldUntil = Date.now() + 90000;
   persistCountSessions();
   renderCountSessionRows();
-  void syncSharedCountSessionsToSupabase(true);
+  void (async () => {
+    if (ENABLE_SHARED_SYNC && sharedCountSessionsAvailable) {
+      await supabaseDeleteRowsByValues("count_sessions", "id", [id]);
+      await updateSharedSyncState("counts");
+    }
+    await syncSharedCountSessionsToSupabase(true);
+  })().catch(() => {});
   showToast("Saved count deleted.", 2400, "warning");
 }
 
@@ -9152,6 +9230,7 @@ function restorePreviousCount(sessionId) {
     });
   });
   session.restoredAt = new Date().toISOString();
+  Object.keys(session.preCountSnapshot || {}).forEach((code) => state._localProductMetaEdits.set(codeKey(code), Date.now()));
   persistCountSessions();
   localStorage.setItem("posDashboardAdjustLog:v1", JSON.stringify(state.adjustmentLog));
   bumpDataStamp();
@@ -9161,6 +9240,7 @@ function restorePreviousCount(sessionId) {
   renderAdjustLog();
   void syncSharedCountSessionsToSupabase(true);
   void syncSharedProductsByCodes(Object.keys(session.preCountSnapshot || {}), { silent: true });
+  void syncSharedInventoryFactsByCodes(Object.keys(session.preCountSnapshot || {}), { silent: true, updateSyncState: false });
   showToast(`Restored â€” ${restored} stock values reverted`, 3200, "success");
 }
 
@@ -9192,6 +9272,7 @@ function submitAndApplyCount() {
     if (before === after) return;
     item.stock = after;
     state.latestInventory.set(key, item);
+    state._localProductMetaEdits.set(codeKey(item.code), Date.now());
     updated++;
     state.adjustmentLog.unshift({
       recordedAt: new Date().toISOString(),
@@ -9217,6 +9298,7 @@ function submitAndApplyCount() {
   generateFinalCountExport(session, candidates, latestByCode, snapshot);
   void syncSharedCountSessionsToSupabase(true);
   void syncSharedProductsByCodes([...scopeCodes], { silent: true });
+  void syncSharedInventoryFactsByCodes([...scopeCodes], { silent: true, updateSyncState: false });
   showToast(`Submitted â€” ${updated} stock values updated`, 3200, "success");
 }
 
@@ -9362,6 +9444,9 @@ function finalizeStockAdjust(reason) {
   state.latestInventory.forEach((inv, k) => {
     if (codeKey(inv.code) === codeKey(item.code)) inv.stock = after;
   });
+  const key = codeKey(item.code);
+  state._localProductMetaEdits.set(key, Date.now());
+  patchVisibleStockCell(item.code, after);
   // Record in log
   state.adjustmentLog.unshift({
     recordedAt: new Date().toISOString(),
@@ -9380,6 +9465,7 @@ function finalizeStockAdjust(reason) {
   state._pinnedAdjustCode = item.code;
   bumpDataStamp();
   closeStockAdjustModal();
+  patchVisibleStockCell(item.code, after);
   patchInventoryRowFromCache(item.code);
   renderInventorySummary(state.inventoryRows || currentInventoryRows());
   refreshDetailDrawer();
