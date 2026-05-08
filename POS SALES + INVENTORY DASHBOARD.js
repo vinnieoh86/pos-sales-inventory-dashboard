@@ -1630,15 +1630,11 @@ async function loadFiles(fileList) {
     for (const file of files) {
       const isCurrentInventoryFile = /(^|[^a-z])current[_ ]inventory/i.test(file.name);
       const signature = fileSignature(file);
-      if (!isCurrentInventoryFile && state._loadedFileSignatures.has(signature)) {
-        skippedDuplicates += 1;
-        continue;
-      }
       const date = dateFromFileName(file.name);
       if (!date) continue;
       const rows = parseCsv(await file.text());
       if (isCurrentInventoryFile) {
-        const normalized = rows.map((row) => normalizeInventoryRow(row, date)).filter((row) => row.code || row.product);
+        const normalized = mergeInventoryRowsByCode(rows.map((row) => normalizeInventoryRow(row, date)).filter((row) => row.code || row.product));
         if (normalized.length && (!selectedInventory || date.iso >= selectedInventory.date)) {
           selectedInventory = { date: date.iso, rows: normalized };
         }
@@ -2171,10 +2167,18 @@ function alignCsvValues(headers, values) {
 }
 
 function normalizeSalesRow(row, date) {
-  const code = normalizeCode(row.CODE);
-  const product = cleanCell(row.PRODUCT);
-  const department = cleanCell(row.DEPARTMENT);
-  const summaryLabel = `${product} ${department} ${cleanCell(row["::CAT::"])} ${cleanCell(row["::VENDOR::"])}`.toUpperCase();
+  const field = (...names) => {
+    for (const name of names) {
+      if (Object.prototype.hasOwnProperty.call(row, name) && cleanCell(row[name]) !== "") return row[name];
+    }
+    return "";
+  };
+  const code = normalizeCode(field("CODE", "Code", "code", "UPC", "Barcode"));
+  const product = cleanCell(field("PRODUCT", "Product", "product", "NAME", "Name", "name", "Item Name", "ITEM NAME"));
+  const department = cleanCell(field("DEPARTMENT", "Department", "department", "DEPT", "Dept"));
+  const category = cleanCell(field("::CAT::", "CATEGORY", "Category", "category"));
+  const vendor = cleanCell(field("::VENDOR::", "VENDOR", "Vendor", "vendor"));
+  const summaryLabel = `${product} ${department} ${category} ${vendor}`.toUpperCase();
   if (!code) return null;
   if (/\b(TOTAL|SUBTOTAL|SUMMARY|GRAND TOTAL|NET SALES|TAX|DISCOUNT)\b/.test(summaryLabel)) return null;
   return {
@@ -2182,12 +2186,12 @@ function normalizeSalesRow(row, date) {
     code,
     product,
     department: department || "Unassigned",
-    category: cleanCell(row["::CAT::"]) || "Unassigned",
-    vendor: cleanCell(row["::VENDOR::"]) || "Unassigned",
-    units: toNumber(row.QTY),
-    sales: toNumber(row.SBTLS),
-    cost: toNumber(row.COST),
-    profit: toNumber(row.PRF),
+    category: category || "Unassigned",
+    vendor: vendor || "Unassigned",
+    units: toNumber(field("QTY", "Qty", "qty", "UNITS", "Units", "units")),
+    sales: toNumber(field("SBTLS", "Subtotal", "SUBTOTAL", "Sales", "sales")),
+    cost: toNumber(field("COST", "Cost", "cost", "Cost Sold", "costSold")),
+    profit: toNumber(field("PRF", "Profit", "profit")),
   };
 }
 
@@ -2202,11 +2206,11 @@ function normalizeInventoryRow(row, date) {
     date: date.iso,
     code: normalizeCode(field("CODE", "code")),
     category: cleanCell(field("CATEGORY", "category")),
-    product: cleanCell(field("NAME", "name", "ITEM NAME", "item_name")),
+    product: cleanCell(field("NAME", "name", "ITEM NAME", "Item Name", "item_name", "product", "Product", "PRODUCT")),
     plu: cleanCell(field("PLU", "plu")),
-    itemNumber: cleanCell(field("ITEM NUMBER", "item number", "ITEMNUM", "itemnum")),
+    itemNumber: cleanCell(field("ITEM NUMBER", "item number", "ITEMNUM", "itemnum", "itemNumber", "Item Number")),
     price: toNumber(field("PRICE", "price")),
-    cost: toNumber(field("COST", "cost")),
+    cost: toNumber(field("COST", "cost", "unitCost", "Unit Cost", "unit_cost")),
     stock: toNumber(field("STOCK", "stock")),
     vendor: cleanCell(field("VENDOR", "vendor")),
     vendorCode: cleanCell(field("VENDOR CODE", "vendor code")),
@@ -2217,14 +2221,38 @@ function normalizeInventoryRow(row, date) {
     memo: cleanCell(field("MEMO", "memo")),
     state: normalizeItemState(field("STATE", "state", "Status", "ITEM STATUS", "Item Status", "ITEM STATE", "Item State")),
     addDate: normalizeItemDate(field("ADD DATE", "add_date", "Add Date", "addDate", "DATE ADDED", "Date Added")),
-    caseSize: toNumber(field("CASE SIZE", "case_size", "Case Size", "CASE", "CASE QTY", "Case Qty")) || 1,
+    caseSize: toNumber(field("CASE SIZE", "case_size", "caseSize", "Case Size", "CASE", "CASE QTY", "Case Qty")) || 1,
   };
+}
+
+function mergeInventoryRowsByCode(rows = []) {
+  const merged = new Map();
+  rows.forEach((row) => {
+    const key = codeKey(row.code);
+    if (!key) return;
+    const existing = merged.get(key);
+    if (!existing) {
+      merged.set(key, { ...row, stock: toNumber(row.stock) || 0 });
+      return;
+    }
+    merged.set(key, {
+      ...existing,
+      ...Object.fromEntries(Object.entries(row).filter(([, value]) => cleanCell(value) !== "")),
+      code: existing.code || row.code,
+      product: existing.product || row.product,
+      vendor: existing.vendor || row.vendor,
+      category: existing.category || row.category,
+      department: existing.department || row.department,
+      stock: (toNumber(existing.stock) || 0) + (toNumber(row.stock) || 0),
+    });
+  });
+  return [...merged.values()];
 }
 
 function buildLatestInventory() {
   state.latestInventory = new Map();
   [...state.inventories.entries()].sort(([a], [b]) => a.localeCompare(b)).forEach(([, rows]) => {
-    rows.forEach((row) => {
+    mergeInventoryRowsByCode(rows).forEach((row) => {
       if (row.code) state.latestInventory.set(codeKey(row.code), row);
     });
   });
@@ -6002,6 +6030,11 @@ function switchTab(tab) {
     if (!els.priceCheckResult?.innerHTML) renderPriceCheckResult(null);
     if (tab === "pricecheck") focusPriceCheckSearch();
     if (tab === "scanmode") setTimeout(() => { document.querySelector("#scanModeInput")?.focus(); }, 80);
+  } else if (tab === "inventory") {
+    setTimeout(() => {
+      els.searchInput?.focus();
+      els.searchInput?.select?.();
+    }, 80);
   }
   applyRoleRestrictions(true);
   renderSharedQuickTools(tab);
@@ -6068,7 +6101,28 @@ function showDetail(item, options = {}) {
     .filter((row) => codeKey(row.code) === codeKey(item.code))
     .sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")))
     .slice(0, 90);
-  const historyRows = (state.adjustmentLog || [])
+  const countHistoryRows = (state.countSessions || []).flatMap((session) => {
+    const latestByCode = new Map();
+    (session.entries || []).forEach((entry) => latestByCode.set(codeKey(entry.code), entry));
+    const entry = latestByCode.get(codeKey(item.code));
+    if (!entry) return [];
+    const before = session.preCountSnapshot?.[codeKey(item.code)] ?? entry.originalQty ?? 0;
+    const after = Number(entry.countedQty || 0);
+    return [{
+      recordedAt: session.submittedAt || entry.recordedAt || session.updatedAt || "",
+      code: entry.code || item.code,
+      product: entry.product || item.product || "",
+      vendor: entry.vendor || item.vendor || "",
+      category: entry.category || item.category || "",
+      action: session.submittedAt ? "PHYSICAL COUNT" : "COUNT ENTRY",
+      qtyChange: after - before,
+      qtyBefore: before,
+      qtyAfter: after,
+      user: entry.user || session.user || "System",
+      reason: `${session.submittedAt ? "Submitted physical count" : "Saved count entry"}: ${countSessionLabel(session)}`,
+    }];
+  });
+  const historyRows = [...(state.adjustmentLog || []), ...countHistoryRows]
     .filter((entry) => codeKey(entry.code) === codeKey(item.code))
     .sort((a, b) => String(b.recordedAt || "").localeCompare(String(a.recordedAt || "")))
     .slice(0, 90);
@@ -8100,9 +8154,9 @@ function productRowForSupabase(item) {
     department: item.department || excel.department || "",
     color: item.color || excel.color || "",
     state: syncState || "",
-    stock: Number(item.stock || excel.stock || 0),
-    price: Number(item.price || excel.price || 0),
-    unit_cost: Number(item.unitCost || item.cost || excel.cost || 0),
+    stock: Number(item.stock ?? excel.stock ?? 0),
+    price: Number(item.price ?? excel.price ?? 0),
+    unit_cost: Number(item.unitCost ?? item.cost ?? excel.cost ?? 0),
     case_size: Number(syncCaseSize || 1),
     add_date: syncAddDate || null,
     updated_at: new Date().toISOString(),
@@ -8127,9 +8181,9 @@ function productRowFromExcelForSupabase(item = {}) {
     department: item.department || "",
     color: item.color || "",
     state: syncState || "",
-    stock: Number(item.stock || 0),
-    price: Number(item.price || 0),
-    unit_cost: Number(item.cost || 0),
+    stock: Number(item.stock ?? 0),
+    price: Number(item.price ?? 0),
+    unit_cost: Number(item.cost ?? 0),
     case_size: Number(syncCaseSize || 1),
     add_date: syncAddDate || null,
     updated_at: new Date().toISOString(),
@@ -9332,7 +9386,8 @@ function finalizeStockAdjust(reason) {
   if (activeTabName() === "ordering") renderOrders();
   else if (activeTabName() !== "inventory") queueActiveTabRender();
   renderAdjustLog();
-  void syncSharedInventoryFactsByCodes([item.code], { silent: true });
+  void syncSharedProductsByCodes([item.code], { silent: true });
+  void syncSharedInventoryFactsByCodes([item.code], { silent: true, updateSyncState: false });
   showToast(`${action === "add" ? "Added" : action === "remove" ? "Removed" : "Set"} ${number.format(qty)} â€” ${item.code} now ${number.format(after)}`, 3000, "success");
 }
 

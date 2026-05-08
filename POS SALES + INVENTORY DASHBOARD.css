@@ -4679,6 +4679,41 @@ body[data-active-tab="settings"] .sticky-pills {
   #scanModeInput { min-height: 3.8rem !important; font-size: 1.3rem !important; }
 }
 
+@media (max-width: 900px), (pointer: coarse) {
+  #countSessionModal.count-modal:not([hidden]) {
+    display: block !important;
+    position: fixed !important;
+    inset: 0 !important;
+    width: 100vw !important;
+    height: 100dvh !important;
+    padding: 0 !important;
+    overflow: hidden !important;
+  }
+  #countSessionModal .count-modal__dialog--workspace {
+    position: fixed !important;
+    inset: 0 !important;
+    width: 100vw !important;
+    max-width: none !important;
+    min-width: 0 !important;
+    height: 100dvh !important;
+    max-height: 100dvh !important;
+    margin: 0 !important;
+    border-radius: 0 !important;
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
+    transform: none !important;
+    box-sizing: border-box !important;
+    -webkit-overflow-scrolling: touch;
+  }
+  #countSessionModal .count-keypad {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  }
+  #countSessionModal .count-keypad__done {
+    grid-row: auto !important;
+    grid-column: 1 / -1 !important;
+  }
+}
+
 /* Final stability overrides for Ordering / PO modal layout */
 #inventory th[data-col="reorderMin"],
 #inventoryBody td[data-col="reorderMin"],
