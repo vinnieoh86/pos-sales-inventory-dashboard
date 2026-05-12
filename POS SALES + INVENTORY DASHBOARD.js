@@ -11170,46 +11170,68 @@ function pdfTextEscape(value) {
 }
 
 function buildSimplePoPdfBase64(vendorName, rows, meta) {
-  const lineRows = [
-    `Purchase Order: ${vendorName || "Vendor"}`,
-    `Date: ${meta.today}`,
-    `Items: ${rows.length}`,
-    `Grand Total: ${currency.format(meta.grandTotal)}`,
-    "",
-    "CODE    ITEM    QTY    CASES    CASE SIZE    UNIT COST    TOTAL COST",
-    ...rows.map((row) => [
-      row.code,
-      poAscii(row.product).slice(0, 48),
-      number.format(row.qty || 0),
-      number.format(row.cases || 0),
-      number.format(row.caseSize || 1),
-      currency.format(row.unitCost || 0),
-      currency.format(row.totalCost || 0),
-    ].join("    ")),
-  ];
+  const rowsPerPage = 33;
   const chunks = [];
-  for (let i = 0; i < lineRows.length; i += 58) chunks.push(lineRows.slice(i, i + 58));
+  for (let i = 0; i < rows.length; i += rowsPerPage) chunks.push(rows.slice(i, i + rowsPerPage));
+  if (!chunks.length) chunks.push([]);
+  const poLabel = meta.poNumber ? `PO# ${meta.poNumber}` : "Purchase Order";
+  const text = (value, x, y, size = 8, font = "F1", color = "0.11 0.14 0.13") =>
+    `${color} rg BT /${font} ${size} Tf ${x} ${y} Td (${pdfTextEscape(value)}) Tj ET`;
+  const rightText = (value, rightX, y, size = 8, font = "F1", color = "0.11 0.14 0.13") => {
+    const str = poAscii(value);
+    return text(str, rightX - (str.length * size * 0.48), y, size, font, color);
+  };
+  const line = (x1, y1, x2, y2, color = "0.78 0.83 0.80") => `${color} RG ${x1} ${y1} m ${x2} ${y2} l S`;
+  const rect = (x, y, w, h, color) => `${color} rg ${x} ${y} ${w} ${h} re f`;
   const objects = [
     "<< /Type /Catalog /Pages 2 0 R >>",
     "",
     "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>",
   ];
   const pageObjectNumbers = [];
-  chunks.forEach((chunk) => {
+  chunks.forEach((chunk, pageIndex) => {
     const pageObj = objects.length + 1;
     const contentObj = objects.length + 2;
     pageObjectNumbers.push(pageObj);
-    const content = [
-      "BT",
-      "/F1 8 Tf",
-      "40 760 Td",
-      ...chunk.flatMap((line, index) => [
-        index ? "0 -12 Td" : "",
-        `(${pdfTextEscape(line)}) Tj`,
-      ]).filter(Boolean),
-      "ET",
-    ].join("\n");
-    objects.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents ${contentObj} 0 R >>`);
+    const commands = [
+      rect(36, 722, 540, 42, "0.08 0.50 0.35"),
+      text("CEE KAY ORDER", 52, 746, 15, "F2", "1 1 1"),
+      rightText(poLabel, 560, 746, 10, "F2", "1 1 1"),
+      text(`Vendor: ${vendorName || "Vendor"}`, 52, 728, 9, "F2", "1 1 1"),
+      text(`Date ${meta.today}`, 46, 704, 8, "F1"),
+      text(`Items ${rows.length}`, 126, 704, 8, "F1"),
+      text(`Total ${currency.format(meta.grandTotal)}`, 190, 704, 8, "F1"),
+      pageIndex ? text(`Page ${pageIndex + 1}`, 522, 704, 8, "F1") : "",
+      rect(36, 674, 540, 18, "0.91 0.97 0.93"),
+      text("CODE", 42, 680, 7, "F2", "0.08 0.36 0.27"),
+      text("ITEM", 112, 680, 7, "F2", "0.08 0.36 0.27"),
+      rightText("QTY", 350, 680, 7, "F2", "0.08 0.36 0.27"),
+      rightText("CASES", 394, 680, 7, "F2", "0.08 0.36 0.27"),
+      rightText("CASE SIZE", 444, 680, 7, "F2", "0.08 0.36 0.27"),
+      rightText("UNIT COST", 510, 680, 7, "F2", "0.08 0.36 0.27"),
+      rightText("TOTAL", 570, 680, 7, "F2", "0.08 0.36 0.27"),
+      line(36, 674, 576, 674, "0.08 0.50 0.35"),
+    ].filter(Boolean);
+    chunk.forEach((row, index) => {
+      const y = 657 - (index * 16);
+      if (index % 2) commands.push(rect(36, y - 4, 540, 16, "0.98 0.99 0.98"));
+      commands.push(text(poAscii(row.code).slice(0, 14), 42, y, 7));
+      commands.push(text(poAscii(row.product).slice(0, 44), 112, y, 7, "F2"));
+      commands.push(rightText(number.format(row.qty || 0), 350, y, 7));
+      commands.push(rightText(number.format(row.cases || 0), 394, y, 7, "F2"));
+      commands.push(rightText(number.format(row.caseSize || 1), 444, y, 7));
+      commands.push(rightText(currency.format(row.unitCost || 0), 510, y, 7));
+      commands.push(rightText(currency.format(row.totalCost || 0), 570, y, 7, "F2"));
+      commands.push(line(36, y - 7, 576, y - 7, "0.86 0.89 0.87"));
+    });
+    const totalY = Math.max(72, 657 - (chunk.length * 16) - 16);
+    if (pageIndex === chunks.length - 1) {
+      commands.push(line(390, totalY + 16, 576, totalY + 16, "0.08 0.50 0.35"));
+      commands.push(rightText(`Grand Total: ${currency.format(meta.grandTotal)}`, 570, totalY, 12, "F2"));
+    }
+    const content = commands.join("\n");
+    objects.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents ${contentObj} 0 R >>`);
     objects.push(`<< /Length ${content.length} >>\nstream\n${content}\nendstream`);
   });
   objects[1] = `<< /Type /Pages /Count ${pageObjectNumbers.length} /Kids [${pageObjectNumbers.map((num) => `${num} 0 R`).join(" ")}] >>`;
@@ -11250,26 +11272,38 @@ function buildPoCsv(vendorName, rows, meta) {
 }
 
 function buildPoExcelHtml(vendorName, rows, meta) {
-  return `<!doctype html><html><head><meta charset="utf-8"></head><body>
+  const poLabel = meta.poNumber ? `PO# ${escapeHtml(meta.poNumber)}` : "Purchase Order";
+  return `<!doctype html><html><head><meta charset="utf-8">
+    <style>
+      body{font-family:Arial,sans-serif;color:#17231f;}
+      .title{background:#0f7f5a;color:#fff;font-size:22px;font-weight:700;padding:14px 16px;}
+      .sub{font-size:16px;font-weight:700;margin:12px 0 8px;}
+      .chip{display:inline-block;border:1px solid #d9e6df;background:#f4faf6;padding:6px 10px;margin:0 6px 12px 0;border-radius:6px;}
+      table{border-collapse:collapse;width:100%;}
+      th{background:#eaf6ef;color:#0b6b4b;border-bottom:2px solid #0f7f5a;padding:8px;text-align:left;font-size:12px;}
+      td{border-bottom:1px solid #dbe5df;padding:7px;font-size:12px;vertical-align:top;}
+      tr:nth-child(even) td{background:#fbfdfb;}
+      .num{text-align:right;}
+      .grand{font-size:18px;font-weight:700;text-align:right;border-top:2px solid #17231f;padding-top:10px;margin-top:10px;}
+    </style></head><body>
+    <div class="title">Cee Kay Order - ${escapeHtml(vendorName || "Vendor")}</div>
+    <div class="sub">${poLabel}</div>
+    <span class="chip"><b>Date</b> ${escapeHtml(meta.today)}</span>
+    <span class="chip"><b>Items</b> ${number.format(rows.length)}</span>
+    <span class="chip"><b>Total</b> ${escapeHtml(currency.format(meta.grandTotal))}</span>
     <table>
-      <tr><td><b>Purchase Order</b></td><td>${escapeHtml(vendorName || "Vendor")}</td></tr>
-      <tr><td><b>Date</b></td><td>${escapeHtml(meta.today)}</td></tr>
-      <tr><td><b>Items</b></td><td>${number.format(rows.length)}</td></tr>
-      <tr><td><b>Grand Total</b></td><td>${escapeHtml(currency.format(meta.grandTotal))}</td></tr>
-    </table>
-    <br>
-    <table border="1">
-      <thead><tr><th>CODE</th><th>ITEM</th><th>QTY</th><th>CASES</th><th>CASE SIZE</th><th>UNIT COST</th><th>TOTAL COST</th></tr></thead>
+      <thead><tr><th>CODE</th><th>ITEM</th><th class="num">QTY</th><th class="num">CASES</th><th class="num">CASE SIZE</th><th class="num">UNIT COST</th><th class="num">TOTAL COST</th></tr></thead>
       <tbody>${rows.map((row) => `<tr>
         <td style="mso-number-format:'\\@';">${escapeHtml(row.code)}</td>
         <td>${escapeHtml(row.product)}</td>
-        <td>${escapeHtml(row.qty || 0)}</td>
-        <td>${escapeHtml(row.cases || 0)}</td>
-        <td>${escapeHtml(row.caseSize || 1)}</td>
-        <td>${escapeHtml(row.unitCost || 0)}</td>
-        <td>${escapeHtml(row.totalCost || 0)}</td>
+        <td class="num">${escapeHtml(number.format(row.qty || 0))}</td>
+        <td class="num">${escapeHtml(number.format(row.cases || 0))}</td>
+        <td class="num">${escapeHtml(number.format(row.caseSize || 1))}</td>
+        <td class="num">${escapeHtml(currency.format(row.unitCost || 0))}</td>
+        <td class="num">${escapeHtml(currency.format(row.totalCost || 0))}</td>
       </tr>`).join("")}</tbody>
     </table>
+    <div class="grand">Grand Total: ${escapeHtml(currency.format(meta.grandTotal))}</div>
   </body></html>`;
 }
 
@@ -11324,12 +11358,12 @@ function buildVendorPoEmail(vendorName, rows, options = {}) {
       {
         filename: `PO-${fileVendor}-${dateForFile}.xls`,
         contentType: "application/vnd.ms-excel",
-        content: base64FromUtf8(buildPoExcelHtml(vendorName, rows, { today, grandTotal })),
+        content: base64FromUtf8(buildPoExcelHtml(vendorName, rows, { today, grandTotal, poNumber })),
       },
       {
         filename: `PO-${fileVendor}-${dateForFile}.pdf`,
         contentType: "application/pdf",
-        content: buildSimplePoPdfBase64(vendorName, rows, { today, grandTotal }),
+        content: buildSimplePoPdfBase64(vendorName, rows, { today, grandTotal, poNumber }),
       },
     ],
   };
