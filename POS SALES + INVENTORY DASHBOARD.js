@@ -2379,14 +2379,19 @@ function renderSharedQuickTools(tab = activeTabName()) {
   }
 
   if (isOrdering) {
-    row.replaceChildren(...[
+    const orderingControls = [
       els.inventoryStateFilter,
       orderArrangeButton,
       orderColumnPicker,
       exportPoExcelButton,
       exportPoPdfButton,
       downloadOrderButton,
-    ].filter(Boolean));
+    ].filter(Boolean);
+    orderingControls.forEach((control) => {
+      control.hidden = false;
+      control.style.display = "";
+    });
+    row.replaceChildren(...orderingControls);
     return;
   }
 
@@ -10321,7 +10326,7 @@ function openOrderVendorMenu(vendorName, anchor) {
   });
 }
 
-function submitVendorPo(vendorName) {
+function submitVendorPo(vendorName, options = {}) {
   const draftItems = state.orderSubmissionDrafts?.[String(vendorName || "").toUpperCase()] || [];
   const items = (draftItems.length ? draftItems : currentOrderRows({ ignoreSubmissionDrafts: true }))
     .filter((item) => (item.vendor||"").toUpperCase() === vendorName.toUpperCase())
@@ -10363,6 +10368,9 @@ function submitVendorPo(vendorName) {
     reason: currency.format(totalCost) + " total",
   });
   localStorage.setItem("posDashboardAdjustLog:v1", JSON.stringify(state.adjustmentLog));
+  if (options.email !== false) {
+    emailVendorPo(vendorName, { items, silent: options.silentEmail });
+  }
   showToast("PO submitted for " + vendorName + " - " + items.length + " items pending", 3200, "success");
   renderOrders();
   renderAdjustLog();
@@ -11070,7 +11078,26 @@ function vendorEmailForName(vendorName) {
   return cleanCell(vendorRuleForName(vendorName)?.email || "");
 }
 
-function currentVendorPoEmailRows(vendorName) {
+function itemsToPoEmailRows(items) {
+  return (items || []).map((item) => {
+    const caseSize = Math.max(1, toNumber(item.caseSize) || 1);
+    const cases = Math.max(0, Math.round(toNumber(item.caseOrder) || 0));
+    const qty = caseSize <= 1 ? cases : cases * caseSize;
+    const unitCost = toNumber(item.unitCost) || 0;
+    return {
+      code: item.code || "",
+      product: item.product || "",
+      qty,
+      cases,
+      caseSize,
+      unitCost,
+      totalCost: qty * unitCost,
+    };
+  }).filter((row) => row.cases > 0 || row.qty > 0);
+}
+
+function currentVendorPoEmailRows(vendorName, sourceItems = null) {
+  if (Array.isArray(sourceItems)) return itemsToPoEmailRows(sourceItems);
   const body = document.querySelector("#vpmBody");
   const domRows = Array.from(body?.querySelectorAll("tr[data-vpm-code]") || []);
   if (domRows.length) {
@@ -11093,23 +11120,9 @@ function currentVendorPoEmailRows(vendorName) {
     }).filter((row) => row.cases > 0 || row.qty > 0);
   }
   const vendorKey = cleanCell(vendorName).toUpperCase();
-  return currentOrderRows()
+  return itemsToPoEmailRows(currentOrderRows()
     .filter((item) => !vendorKey || cleanCell(item.vendor).toUpperCase() === vendorKey)
-    .map((item) => {
-      const caseSize = Math.max(1, toNumber(item.caseSize) || 1);
-      const cases = Math.max(0, Math.round(toNumber(item.caseOrder) || 0));
-      const qty = caseSize <= 1 ? cases : cases * caseSize;
-      const unitCost = toNumber(item.unitCost) || 0;
-      return {
-        code: item.code || "",
-        product: item.product || "",
-        qty,
-        cases,
-        caseSize,
-        unitCost,
-        totalCost: qty * unitCost,
-      };
-    }).filter((row) => row.cases > 0 || row.qty > 0);
+    .map((item) => applyOrderOverride({ ...item })));
 }
 
 function buildVendorPoEmail(vendorName, rows) {
@@ -11124,7 +11137,7 @@ function buildVendorPoEmail(vendorName, rows) {
     number.format(row.caseSize || 1),
     currency.format(row.unitCost || 0),
     currency.format(row.totalCost || 0),
-  ].join("\t"));
+  ].join(" | "));
   return {
     subject: `Purchase Order - ${vendorName || "Vendor"} - ${today}`,
     body: [
@@ -11133,7 +11146,7 @@ function buildVendorPoEmail(vendorName, rows) {
       `Items: ${rows.length}`,
       `Grand Total: ${currency.format(grandTotal)}`,
       "",
-      header.join("\t"),
+      header.join(" | "),
       ...lines,
       "",
       `Copy sent to: ${DEFAULT_PO_COPY_EMAIL}`,
@@ -11141,25 +11154,29 @@ function buildVendorPoEmail(vendorName, rows) {
   };
 }
 
-function emailVendorPo(vendorName) {
-  const rows = currentVendorPoEmailRows(vendorName);
+function emailVendorPo(vendorName, options = {}) {
+  const rows = currentVendorPoEmailRows(vendorName, options.items || null);
   if (!rows.length) {
-    showToast("No PO lines to email for this vendor.", 2600, "warning");
-    return;
+    if (!options.silent) showToast("No PO lines to email for this vendor.", 2600, "warning");
+    return false;
   }
   const vendorEmail = vendorEmailForName(vendorName);
   const toEmail = vendorEmail || DEFAULT_PO_COPY_EMAIL;
   const { subject, body } = buildVendorPoEmail(vendorName, rows);
   const cc = toEmail.toLowerCase() === DEFAULT_PO_COPY_EMAIL.toLowerCase() ? "" : DEFAULT_PO_COPY_EMAIL;
-  const mailto = `mailto:${encodeURIComponent(toEmail)}?` +
-    (cc ? `cc=${encodeURIComponent(cc)}&` : "") +
-    `subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
-  if (!vendorEmail) showToast(`No vendor email saved for ${vendorName}. Opening email to ${DEFAULT_PO_COPY_EMAIL}.`, 3600, "warning");
-  if (mailto.length > 7000 && navigator.clipboard?.writeText) {
+  const gmailUrl = "https://mail.google.com/mail/?view=cm&fs=1" +
+    `&to=${encodeURIComponent(toEmail)}` +
+    (cc ? `&cc=${encodeURIComponent(cc)}` : "") +
+    `&su=${encodeURIComponent(subject)}` +
+    `&body=${encodeURIComponent(body)}`;
+  if (!vendorEmail && !options.silent) showToast(`No vendor email saved for ${vendorName}. Opening Gmail to ${DEFAULT_PO_COPY_EMAIL}.`, 3600, "warning");
+  if (gmailUrl.length > 7000 && navigator.clipboard?.writeText) {
     navigator.clipboard.writeText(body).catch(() => {});
     showToast("PO is large, so the email body was copied too.", 3600, "warning");
   }
-  window.location.href = mailto;
+  const win = window.open(gmailUrl, "_blank", "noopener,noreferrer");
+  if (!win) window.location.href = gmailUrl;
+  return true;
 }
 
 function applyOrderOverride(item) {
