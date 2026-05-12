@@ -108,6 +108,7 @@ const ENABLE_CUSTOM_PARENT_RULES = true;
 const ENABLE_CUSTOM_ATTRIBUTE_RULES = false;
 const ENABLE_SHARED_SYNC = true;
 const DEFAULT_PO_COPY_EMAIL = "vinnieoh86@gmail.com";
+const PO_EMAIL_FUNCTION_NAME = "send-po-email";
 const pendingInventoryRefreshTimers = new Map();
 let sharedSyncTimer = 0;
 let sharedVendorRulesTimer = 0;
@@ -170,6 +171,14 @@ function debounce(fn, ms) {
     clearTimeout(timer);
     timer = setTimeout(() => fn(...args), ms);
   };
+}
+
+function localIsoDate(date = new Date()) {
+  const d = date instanceof Date ? date : new Date(date);
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 const DB_NAME = "posDashboardHistory_launch421";
@@ -7680,7 +7689,8 @@ function renderUploadLogs() {
   const latestExcelSnapshot = [...new Set([latestExcelAddDate(), ...loggedExcelDates])].filter(Boolean).sort().at(-1) || "";
   const inventoryDates = latestInventorySnapshot ? [latestInventorySnapshot] : [];
   const dataDates = latestExcelSnapshot ? [latestExcelSnapshot] : [];
-  const knownDates = [...new Set([...salesDates, ...inventoryDates, ...dataDates])].sort();
+  const todayIso = localIsoDate(new Date());
+  const knownDates = [...new Set([...salesDates, ...inventoryDates, ...dataDates, todayIso])].filter(Boolean).sort();
   const excelLoaded = !!latestExcelSnapshot || state.excelItems.size > 0;
   const inventoryFilter = document.querySelector("#logsInventoryFilter")?.value || "";
   const salesFilter = document.querySelector("#logsSalesFilter")?.value || "";
@@ -11125,9 +11135,139 @@ function currentVendorPoEmailRows(vendorName, sourceItems = null) {
     .map((item) => applyOrderOverride({ ...item })));
 }
 
+function csvValue(value) {
+  const text = String(value ?? "");
+  return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+function base64FromUtf8(value) {
+  const bytes = new TextEncoder().encode(String(value ?? ""));
+  let binary = "";
+  bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
+  return btoa(binary);
+}
+
+function poSafeFilenamePart(value) {
+  return cleanCell(value || "Vendor").replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "") || "Vendor";
+}
+
+function poAscii(value) {
+  return String(value ?? "").normalize("NFKD").replace(/[^\x20-\x7E]/g, "").replace(/\s+/g, " ").trim();
+}
+
+function pdfTextEscape(value) {
+  return poAscii(value).replace(/\\/g, "\\\\").replace(/\(/g, "\\(").replace(/\)/g, "\\)");
+}
+
+function buildSimplePoPdfBase64(vendorName, rows, meta) {
+  const lineRows = [
+    `Purchase Order: ${vendorName || "Vendor"}`,
+    `Date: ${meta.today}`,
+    `Items: ${rows.length}`,
+    `Grand Total: ${currency.format(meta.grandTotal)}`,
+    "",
+    "CODE    ITEM    QTY    CASES    CASE SIZE    UNIT COST    TOTAL COST",
+    ...rows.map((row) => [
+      row.code,
+      poAscii(row.product).slice(0, 48),
+      number.format(row.qty || 0),
+      number.format(row.cases || 0),
+      number.format(row.caseSize || 1),
+      currency.format(row.unitCost || 0),
+      currency.format(row.totalCost || 0),
+    ].join("    ")),
+  ];
+  const chunks = [];
+  for (let i = 0; i < lineRows.length; i += 58) chunks.push(lineRows.slice(i, i + 58));
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+  ];
+  const pageObjectNumbers = [];
+  chunks.forEach((chunk) => {
+    const pageObj = objects.length + 1;
+    const contentObj = objects.length + 2;
+    pageObjectNumbers.push(pageObj);
+    const content = [
+      "BT",
+      "/F1 8 Tf",
+      "40 760 Td",
+      ...chunk.flatMap((line, index) => [
+        index ? "0 -12 Td" : "",
+        `(${pdfTextEscape(line)}) Tj`,
+      ]).filter(Boolean),
+      "ET",
+    ].join("\n");
+    objects.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents ${contentObj} 0 R >>`);
+    objects.push(`<< /Length ${content.length} >>\nstream\n${content}\nendstream`);
+  });
+  objects[1] = `<< /Type /Pages /Count ${pageObjectNumbers.length} /Kids [${pageObjectNumbers.map((num) => `${num} 0 R`).join(" ")}] >>`;
+  let pdf = "%PDF-1.4\n";
+  const offsets = [0];
+  objects.forEach((object, index) => {
+    offsets.push(pdf.length);
+    pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  });
+  const xrefOffset = pdf.length;
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  offsets.slice(1).forEach((offset) => {
+    pdf += `${String(offset).padStart(10, "0")} 00000 n \n`;
+  });
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
+  return btoa(pdf);
+}
+
+function buildPoCsv(vendorName, rows, meta) {
+  const table = [
+    ["Purchase Order", vendorName || "Vendor"],
+    ["Date", meta.today],
+    ["Items", rows.length],
+    ["Grand Total", currency.format(meta.grandTotal)],
+    [],
+    ["CODE", "ITEM", "QTY", "CASES", "CASE SIZE", "UNIT COST", "TOTAL COST"],
+    ...rows.map((row) => [
+      row.code,
+      row.product,
+      row.qty || 0,
+      row.cases || 0,
+      row.caseSize || 1,
+      row.unitCost || 0,
+      row.totalCost || 0,
+    ]),
+  ];
+  return table.map((line) => line.map(csvValue).join(",")).join("\r\n");
+}
+
+function buildPoExcelHtml(vendorName, rows, meta) {
+  return `<!doctype html><html><head><meta charset="utf-8"></head><body>
+    <table>
+      <tr><td><b>Purchase Order</b></td><td>${escapeHtml(vendorName || "Vendor")}</td></tr>
+      <tr><td><b>Date</b></td><td>${escapeHtml(meta.today)}</td></tr>
+      <tr><td><b>Items</b></td><td>${number.format(rows.length)}</td></tr>
+      <tr><td><b>Grand Total</b></td><td>${escapeHtml(currency.format(meta.grandTotal))}</td></tr>
+    </table>
+    <br>
+    <table border="1">
+      <thead><tr><th>CODE</th><th>ITEM</th><th>QTY</th><th>CASES</th><th>CASE SIZE</th><th>UNIT COST</th><th>TOTAL COST</th></tr></thead>
+      <tbody>${rows.map((row) => `<tr>
+        <td style="mso-number-format:'\\@';">${escapeHtml(row.code)}</td>
+        <td>${escapeHtml(row.product)}</td>
+        <td>${escapeHtml(row.qty || 0)}</td>
+        <td>${escapeHtml(row.cases || 0)}</td>
+        <td>${escapeHtml(row.caseSize || 1)}</td>
+        <td>${escapeHtml(row.unitCost || 0)}</td>
+        <td>${escapeHtml(row.totalCost || 0)}</td>
+      </tr>`).join("")}</tbody>
+    </table>
+  </body></html>`;
+}
+
 function buildVendorPoEmail(vendorName, rows) {
   const today = new Date().toLocaleDateString("en-US", { year: "numeric", month: "2-digit", day: "2-digit" });
   const grandTotal = rows.reduce((sum, row) => sum + (toNumber(row.totalCost) || 0), 0);
+  const dateForFile = localIsoDate(new Date());
+  const fileVendor = poSafeFilenamePart(vendorName);
   const header = ["CODE", "ITEM", "QTY", "CASES", "CASE SIZE", "UNIT COST", "TOTAL COST"];
   const lines = rows.map((row) => [
     row.code,
@@ -11151,15 +11291,64 @@ function buildVendorPoEmail(vendorName, rows) {
       "",
       `Copy sent to: ${DEFAULT_PO_COPY_EMAIL}`,
     ].join("\n"),
+    html: `
+      <p><b>Purchase Order:</b> ${escapeHtml(vendorName || "Vendor")}</p>
+      <p><b>Date:</b> ${escapeHtml(today)}<br><b>Items:</b> ${number.format(rows.length)}<br><b>Grand Total:</b> ${escapeHtml(currency.format(grandTotal))}</p>
+      <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;font-family:Arial,sans-serif;font-size:13px;">
+        <thead><tr>${header.map((label) => `<th>${escapeHtml(label)}</th>`).join("")}</tr></thead>
+        <tbody>${rows.map((row) => `<tr>
+          <td>${escapeHtml(row.code)}</td>
+          <td>${escapeHtml(row.product)}</td>
+          <td>${escapeHtml(number.format(row.qty || 0))}</td>
+          <td>${escapeHtml(number.format(row.cases || 0))}</td>
+          <td>${escapeHtml(number.format(row.caseSize || 1))}</td>
+          <td>${escapeHtml(currency.format(row.unitCost || 0))}</td>
+          <td>${escapeHtml(currency.format(row.totalCost || 0))}</td>
+        </tr>`).join("")}</tbody>
+      </table>
+      <p>Copy sent to: ${escapeHtml(DEFAULT_PO_COPY_EMAIL)}</p>`,
+    attachments: [
+      {
+        filename: `PO-${fileVendor}-${dateForFile}.xls`,
+        contentType: "application/vnd.ms-excel",
+        content: base64FromUtf8(buildPoExcelHtml(vendorName, rows, { today, grandTotal })),
+      },
+      {
+        filename: `PO-${fileVendor}-${dateForFile}.pdf`,
+        contentType: "application/pdf",
+        content: buildSimplePoPdfBase64(vendorName, rows, { today, grandTotal }),
+      },
+    ],
   };
 }
 
-function emailVendorPo(vendorName, options = {}) {
-  const rows = currentVendorPoEmailRows(vendorName, options.items || null);
-  if (!rows.length) {
-    if (!options.silent) showToast("No PO lines to email for this vendor.", 2600, "warning");
-    return false;
+async function sendPoEmailBackend(vendorName, rows) {
+  const vendorEmail = vendorEmailForName(vendorName);
+  const toEmail = vendorEmail || DEFAULT_PO_COPY_EMAIL;
+  const cc = toEmail.toLowerCase() === DEFAULT_PO_COPY_EMAIL.toLowerCase() ? [] : [DEFAULT_PO_COPY_EMAIL];
+  const email = buildVendorPoEmail(vendorName, rows);
+  const payload = {
+    to: [toEmail],
+    cc,
+    vendor: vendorName || "Vendor",
+    subject: email.subject,
+    text: email.body,
+    html: email.html,
+    attachments: email.attachments,
+  };
+  const response = await fetch(`${SUPABASE_URL}/functions/v1/${PO_EMAIL_FUNCTION_NAME}`, {
+    method: "POST",
+    headers: supabaseHeaders(),
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new Error(`PO email backend failed (${response.status}) ${detail}`);
   }
+  return response.json().catch(() => ({ ok: true }));
+}
+
+function openPoEmailDraft(vendorName, rows, options = {}) {
   const vendorEmail = vendorEmailForName(vendorName);
   const toEmail = vendorEmail || DEFAULT_PO_COPY_EMAIL;
   const { subject, body } = buildVendorPoEmail(vendorName, rows);
@@ -11169,7 +11358,7 @@ function emailVendorPo(vendorName, options = {}) {
     (cc ? `&cc=${encodeURIComponent(cc)}` : "") +
     `&su=${encodeURIComponent(subject)}` +
     `&body=${encodeURIComponent(body)}`;
-  if (!vendorEmail && !options.silent) showToast(`No vendor email saved for ${vendorName}. Opening Gmail to ${DEFAULT_PO_COPY_EMAIL}.`, 3600, "warning");
+  if (!vendorEmail && !options.silent) showToast(`No vendor email saved for ${vendorName}. Opening draft to ${DEFAULT_PO_COPY_EMAIL}.`, 3600, "warning");
   if (gmailUrl.length > 7000 && navigator.clipboard?.writeText) {
     navigator.clipboard.writeText(body).catch(() => {});
     showToast("PO is large, so the email body was copied too.", 3600, "warning");
@@ -11177,6 +11366,23 @@ function emailVendorPo(vendorName, options = {}) {
   const win = window.open(gmailUrl, "_blank", "noopener,noreferrer");
   if (!win) window.location.href = gmailUrl;
   return true;
+}
+
+async function emailVendorPo(vendorName, options = {}) {
+  const rows = currentVendorPoEmailRows(vendorName, options.items || null);
+  if (!rows.length) {
+    if (!options.silent) showToast("No PO lines to email for this vendor.", 2600, "warning");
+    return false;
+  }
+  try {
+    await sendPoEmailBackend(vendorName, rows);
+    if (!options.silent) showToast(`PO emailed for ${vendorName || "vendor"} with CSV/PDF attachments.`, 3200, "success");
+    return true;
+  } catch (error) {
+    console.warn("Backend PO email failed", error);
+    if (!options.silent) showToast("Backend email is not deployed/configured yet. Opening draft fallback.", 4200, "warning");
+    return openPoEmailDraft(vendorName, rows, options);
+  }
 }
 
 function applyOrderOverride(item) {
