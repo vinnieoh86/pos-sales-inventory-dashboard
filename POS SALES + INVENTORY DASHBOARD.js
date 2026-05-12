@@ -10344,8 +10344,10 @@ function submitVendorPo(vendorName, options = {}) {
   if (!items.length) { showToast(`No items to order for ${vendorName}.`, 2800, "warning"); return; }
   const clearAt = Date.now() + 10 * 24 * 60 * 60 * 1000; // 10 days
   const totalCost = items.reduce((sum, item) => sum + orderLineCost(item), 0);
+  const poNumber = nextPoNumber();
   const po = {
     id: `po-${Date.now()}`,
+    poNumber,
     vendor: vendorName,
     codes: items.map((item) => codeKey(item.code)),
     items: items.map((item) => ({
@@ -10368,7 +10370,7 @@ function submitVendorPo(vendorName, options = {}) {
     recordedAt: new Date().toISOString(),
     user: currentAuditUser(),
     code: "-",
-    product: "PO submitted: " + vendorName + " (" + items.length + " items)",
+    product: "PO #" + poNumber + " submitted: " + vendorName + " (" + items.length + " items)",
     vendor: vendorName,
     category: "-",
     action: "PO SUBMIT",
@@ -10379,7 +10381,7 @@ function submitVendorPo(vendorName, options = {}) {
   });
   localStorage.setItem("posDashboardAdjustLog:v1", JSON.stringify(state.adjustmentLog));
   if (options.email !== false) {
-    emailVendorPo(vendorName, { items, silent: options.silentEmail });
+    emailVendorPo(vendorName, { items, silent: options.silentEmail, poNumber });
   }
   showToast("PO submitted for " + vendorName + " - " + items.length + " items pending", 3200, "success");
   renderOrders();
@@ -11078,6 +11080,14 @@ function orderLineCost(item) {
   return orderLineUnits(item) * (toNumber(item.unitCost) || 0);
 }
 
+function nextPoNumber() {
+  const existingMax = Math.max(0, ...(state.pendingOrders || []).map((po) => Number(po.poNumber || 0)).filter(Number.isFinite));
+  const storedNext = Number(localStorage.getItem("posDashboardNextPoNumber:v1") || "1") || 1;
+  const poNumber = Math.max(1, existingMax + 1, storedNext);
+  localStorage.setItem("posDashboardNextPoNumber:v1", String(poNumber + 1));
+  return poNumber;
+}
+
 function vendorRuleForName(vendorName) {
   const key = cleanCell(vendorName).toUpperCase();
   if (!key) return null;
@@ -11263,11 +11273,13 @@ function buildPoExcelHtml(vendorName, rows, meta) {
   </body></html>`;
 }
 
-function buildVendorPoEmail(vendorName, rows) {
+function buildVendorPoEmail(vendorName, rows, options = {}) {
   const today = new Date().toLocaleDateString("en-US", { year: "numeric", month: "2-digit", day: "2-digit" });
   const grandTotal = rows.reduce((sum, row) => sum + (toNumber(row.totalCost) || 0), 0);
   const dateForFile = localIsoDate(new Date());
   const fileVendor = poSafeFilenamePart(vendorName);
+  const poNumber = Number(options.poNumber || 0) || "";
+  const poLabel = poNumber ? `PO# ${poNumber}` : "PO";
   const header = ["CODE", "ITEM", "QTY", "CASES", "CASE SIZE", "UNIT COST", "TOTAL COST"];
   const lines = rows.map((row) => [
     row.code,
@@ -11279,9 +11291,10 @@ function buildVendorPoEmail(vendorName, rows) {
     currency.format(row.totalCost || 0),
   ].join(" | "));
   return {
-    subject: `Purchase Order - ${vendorName || "Vendor"} - ${today}`,
+    subject: `[${vendorName || "Vendor"}] Cee Kay Order (${poLabel})`,
     body: [
       `Purchase Order: ${vendorName || "Vendor"}`,
+      poNumber ? `PO#: ${poNumber}` : "",
       `Date: ${today}`,
       `Items: ${rows.length}`,
       `Grand Total: ${currency.format(grandTotal)}`,
@@ -11293,7 +11306,7 @@ function buildVendorPoEmail(vendorName, rows) {
     ].join("\n"),
     html: `
       <p><b>Purchase Order:</b> ${escapeHtml(vendorName || "Vendor")}</p>
-      <p><b>Date:</b> ${escapeHtml(today)}<br><b>Items:</b> ${number.format(rows.length)}<br><b>Grand Total:</b> ${escapeHtml(currency.format(grandTotal))}</p>
+      <p>${poNumber ? `<b>PO#:</b> ${escapeHtml(poNumber)}<br>` : ""}<b>Date:</b> ${escapeHtml(today)}<br><b>Items:</b> ${number.format(rows.length)}<br><b>Grand Total:</b> ${escapeHtml(currency.format(grandTotal))}</p>
       <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;font-family:Arial,sans-serif;font-size:13px;">
         <thead><tr>${header.map((label) => `<th>${escapeHtml(label)}</th>`).join("")}</tr></thead>
         <tbody>${rows.map((row) => `<tr>
@@ -11322,11 +11335,11 @@ function buildVendorPoEmail(vendorName, rows) {
   };
 }
 
-async function sendPoEmailBackend(vendorName, rows) {
+async function sendPoEmailBackend(vendorName, rows, options = {}) {
   const vendorEmail = vendorEmailForName(vendorName);
   const toEmail = vendorEmail || DEFAULT_PO_COPY_EMAIL;
   const cc = toEmail.toLowerCase() === DEFAULT_PO_COPY_EMAIL.toLowerCase() ? [] : [DEFAULT_PO_COPY_EMAIL];
-  const email = buildVendorPoEmail(vendorName, rows);
+  const email = buildVendorPoEmail(vendorName, rows, { poNumber: options.poNumber });
   const payload = {
     to: [toEmail],
     cc,
@@ -11351,7 +11364,7 @@ async function sendPoEmailBackend(vendorName, rows) {
 function openPoEmailDraft(vendorName, rows, options = {}) {
   const vendorEmail = vendorEmailForName(vendorName);
   const toEmail = vendorEmail || DEFAULT_PO_COPY_EMAIL;
-  const { subject, body } = buildVendorPoEmail(vendorName, rows);
+  const { subject, body } = buildVendorPoEmail(vendorName, rows, { poNumber: options.poNumber });
   const cc = toEmail.toLowerCase() === DEFAULT_PO_COPY_EMAIL.toLowerCase() ? "" : DEFAULT_PO_COPY_EMAIL;
   const gmailUrl = "https://mail.google.com/mail/?view=cm&fs=1" +
     `&to=${encodeURIComponent(toEmail)}` +
@@ -11375,7 +11388,7 @@ async function emailVendorPo(vendorName, options = {}) {
     return false;
   }
   try {
-    await sendPoEmailBackend(vendorName, rows);
+    await sendPoEmailBackend(vendorName, rows, { poNumber: options.poNumber });
     if (!options.silent) showToast(`PO emailed for ${vendorName || "vendor"} with CSV/PDF attachments.`, 3200, "success");
     return true;
   } catch (error) {
