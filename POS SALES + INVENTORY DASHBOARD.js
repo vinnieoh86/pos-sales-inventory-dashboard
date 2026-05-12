@@ -11380,8 +11380,8 @@ async function emailVendorPo(vendorName, options = {}) {
     return true;
   } catch (error) {
     console.warn("Backend PO email failed", error);
-    if (!options.silent) showToast("Backend email is not deployed/configured yet. Opening draft fallback.", 4200, "warning");
-    return openPoEmailDraft(vendorName, rows, options);
+    if (!options.silent) showToast("PO email was not sent. Check Supabase function logs/secrets.", 5200, "warning");
+    return false;
   }
 }
 
