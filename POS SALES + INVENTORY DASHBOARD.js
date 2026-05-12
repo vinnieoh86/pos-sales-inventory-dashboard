@@ -32,6 +32,7 @@
   _localProductMetaEdits: new Map(),
   _localImportHoldUntil: 0,
   _localCountHoldUntil: 0,
+  _deletedCountSessionIds: new Set(),
   _priceCheckExactIndex: null,
   _priceCheckExactIndexStamp: 0,
   _filteredSkuIndex: new Map(),
@@ -106,6 +107,7 @@
 const ENABLE_CUSTOM_PARENT_RULES = true;
 const ENABLE_CUSTOM_ATTRIBUTE_RULES = false;
 const ENABLE_SHARED_SYNC = true;
+const DEFAULT_PO_COPY_EMAIL = "vinnieoh86@gmail.com";
 const pendingInventoryRefreshTimers = new Map();
 let sharedSyncTimer = 0;
 let sharedVendorRulesTimer = 0;
@@ -3631,7 +3633,7 @@ function applyCountEntry() {
   const qty = Math.max(0, Number(state.countQtyBuffer || "0"));
   const existing = state.activeCountSession.entries?.filter((entry) => codeKey(entry.code) === codeKey(item.code)).at(-1);
   if (existing) {
-    openDuplicateCountModal(item, qty, existing);
+    commitCountEntry(item, qty, "reset");
     return;
   }
   commitCountEntry(item, qty, "set");
@@ -5485,6 +5487,23 @@ function patchVisibleStockCell(code, stock) {
       const cell = row.querySelector('[data-col="stock"]');
       if (cell) cell.textContent = number.format(stock);
     });
+}
+
+function patchInventoryModelStock(code, stock) {
+  const key = codeKey(code);
+  const patch = (item) => {
+    if (item && codeKey(item.code) === key) item.stock = stock;
+    return item;
+  };
+  state.inventoryRows = (state.inventoryRows || []).map(patch);
+  state.filteredSkus = (state.filteredSkus || []).map(patch);
+  if (state._inventoryCache) state._inventoryCache = state._inventoryCache.map(patch);
+  if (state._skuCache instanceof Map) {
+    const cached = state._skuCache.get(key);
+    if (cached) cached.stock = stock;
+  }
+  const indexed = state._inventoryRowIndex?.get?.(key);
+  if (indexed) indexed.stock = stock;
 }
 
 function moveColumn(from, to) {
@@ -7343,7 +7362,8 @@ function pickNumber(...values) {
 function orderingTargets({ velocity, safetyDays, daysOfInventory }) {
   // Targets represent true unit need. Case size only affects the final order qty.
   const rawMin = Math.max(0, velocity * Math.max(0, safetyDays || 0));
-  const min = Math.max(0, Math.ceil(rawMin));
+  const calculatedMin = Math.max(0, Math.ceil(rawMin));
+  const min = calculatedMin > 0 ? Math.max(2, calculatedMin) : 0;
   const max = Math.max(min, Math.ceil(rawMin + (velocity * Math.max(0, daysOfInventory || 0))));
   return { min, max };
 }
@@ -8659,8 +8679,10 @@ function applySharedCountSessionRows(rows = []) {
   rows.forEach((row) => {
     const session = hydrateCountSessionFromSupabase(row);
     if (!session) return;
+    const sessionId = cleanCell(session.id);
+    if (sessionId && state._deletedCountSessionIds?.has?.(sessionId)) return;
     if (cleanCell(row.session_kind).toLowerCase() === "active") activeSession = session;
-    else savedById.set(cleanCell(session.id), session);
+    else savedById.set(sessionId, session);
   });
   savedSessions.push(...savedById.values());
   const remoteActiveId = cleanCell(activeSession?.id);
@@ -8668,7 +8690,11 @@ function applySharedCountSessionRows(rows = []) {
     savedSessions.unshift({ ...activeSession, remoteActive: true });
   }
   state.countSessions = savedSessions.sort((a, b) => String(b.updatedAt || b.submittedAt || "").localeCompare(String(a.updatedAt || a.submittedAt || "")));
-  state.activeCountSession = localActiveId && remoteActiveId === localActiveId ? activeSession : null;
+  if (localActiveId) {
+    state.activeCountSession = remoteActiveId === localActiveId ? activeSession : state.activeCountSession;
+  } else {
+    state.activeCountSession = null;
+  }
   localStorage.setItem("posDashboardCountSessions:v1", JSON.stringify(state.countSessions));
   localStorage.setItem("posDashboardActiveCountSession:v1", JSON.stringify(state.activeCountSession));
   if (activeTabName() === "inventory") renderCountsWorkspace();
@@ -9150,6 +9176,7 @@ function confirmDeleteSavedSession() {
   state.pendingDeleteSessionId = null;
   document.querySelector("#confirmDeleteSessionModal").hidden = true;
   if (!id) return;
+  state._deletedCountSessionIds.add(cleanCell(id));
   state.countSessions = state.countSessions.filter((s) => s.id !== id);
   state._localCountHoldUntil = Date.now() + 90000;
   persistCountSessions();
@@ -9446,6 +9473,7 @@ function finalizeStockAdjust(reason) {
   });
   const key = codeKey(item.code);
   state._localProductMetaEdits.set(key, Date.now());
+  patchInventoryModelStock(item.code, after);
   patchVisibleStockCell(item.code, after);
   // Record in log
   state.adjustmentLog.unshift({
@@ -9463,15 +9491,13 @@ function finalizeStockAdjust(reason) {
   });
   localStorage.setItem("posDashboardAdjustLog:v1", JSON.stringify(state.adjustmentLog));
   state._pinnedAdjustCode = item.code;
-  bumpDataStamp();
   closeStockAdjustModal();
   patchVisibleStockCell(item.code, after);
-  patchInventoryRowFromCache(item.code);
-  renderInventorySummary(state.inventoryRows || currentInventoryRows());
-  refreshDetailDrawer();
-  if (activeTabName() === "ordering") renderOrders();
-  else if (activeTabName() !== "inventory") queueActiveTabRender();
+  if (state.inventoryRows?.length) renderInventorySummary(state.inventoryRows);
+  if (activeTabName() === "ordering") setTimeout(() => renderOrders(), 0);
+  else if (activeTabName() !== "inventory") setTimeout(() => queueActiveTabRender(), 0);
   renderAdjustLog();
+  void savePersistedState();
   void syncSharedProductsByCodes([item.code], { silent: true });
   void syncSharedInventoryFactsByCodes([item.code], { silent: true, updateSyncState: false });
   showToast(`${action === "add" ? "Added" : action === "remove" ? "Removed" : "Set"} ${number.format(qty)} â€” ${item.code} now ${number.format(after)}`, 3000, "success");
@@ -10533,6 +10559,11 @@ function openVendorAnalysisPanel(vendorName) {
     syncModalOverrides();
     exportVendorPoPdf(normalizedVendor || "ALL_SENT", items);
   };
+  const emailBtn = document.querySelector("#vpmEmailButton");
+  if (emailBtn) emailBtn.onclick = function() {
+    syncModalOverrides();
+    emailVendorPo(normalizedVendor || "ALL_SENT");
+  };
 
   const body = document.querySelector("#vpmBody");
   if (body) {
@@ -11027,6 +11058,108 @@ function orderLineUnits(item) {
 
 function orderLineCost(item) {
   return orderLineUnits(item) * (toNumber(item.unitCost) || 0);
+}
+
+function vendorRuleForName(vendorName) {
+  const key = cleanCell(vendorName).toUpperCase();
+  if (!key) return null;
+  return state.vendorRules.find((rule) => cleanCell(rule.vendor).toUpperCase() === key) || null;
+}
+
+function vendorEmailForName(vendorName) {
+  return cleanCell(vendorRuleForName(vendorName)?.email || "");
+}
+
+function currentVendorPoEmailRows(vendorName) {
+  const body = document.querySelector("#vpmBody");
+  const domRows = Array.from(body?.querySelectorAll("tr[data-vpm-code]") || []);
+  if (domRows.length) {
+    return domRows.map((tr) => {
+      const cells = Array.from(tr.cells);
+      const input = tr.querySelector(".vpm-qty-input");
+      const caseSize = Math.max(1, toNumber(tr.querySelector(".vpm-line-cost")?.dataset.caseSize || cells[8]?.textContent || 1));
+      const cases = Math.max(0, Math.round(toNumber(input?.value || cells[7]?.textContent || 0)));
+      const unitCost = toNumber(input?.dataset.unitCost || cells[9]?.textContent || 0);
+      const qty = caseSize <= 1 ? cases : cases * caseSize;
+      return {
+        code: cells[0]?.textContent.trim() || "",
+        product: cells[1]?.textContent.trim() || "",
+        qty,
+        cases,
+        caseSize,
+        unitCost,
+        totalCost: qty * unitCost,
+      };
+    }).filter((row) => row.cases > 0 || row.qty > 0);
+  }
+  const vendorKey = cleanCell(vendorName).toUpperCase();
+  return currentOrderRows()
+    .filter((item) => !vendorKey || cleanCell(item.vendor).toUpperCase() === vendorKey)
+    .map((item) => {
+      const caseSize = Math.max(1, toNumber(item.caseSize) || 1);
+      const cases = Math.max(0, Math.round(toNumber(item.caseOrder) || 0));
+      const qty = caseSize <= 1 ? cases : cases * caseSize;
+      const unitCost = toNumber(item.unitCost) || 0;
+      return {
+        code: item.code || "",
+        product: item.product || "",
+        qty,
+        cases,
+        caseSize,
+        unitCost,
+        totalCost: qty * unitCost,
+      };
+    }).filter((row) => row.cases > 0 || row.qty > 0);
+}
+
+function buildVendorPoEmail(vendorName, rows) {
+  const today = new Date().toLocaleDateString("en-US", { year: "numeric", month: "2-digit", day: "2-digit" });
+  const grandTotal = rows.reduce((sum, row) => sum + (toNumber(row.totalCost) || 0), 0);
+  const header = ["CODE", "ITEM", "QTY", "CASES", "CASE SIZE", "UNIT COST", "TOTAL COST"];
+  const lines = rows.map((row) => [
+    row.code,
+    row.product,
+    number.format(row.qty || 0),
+    number.format(row.cases || 0),
+    number.format(row.caseSize || 1),
+    currency.format(row.unitCost || 0),
+    currency.format(row.totalCost || 0),
+  ].join("\t"));
+  return {
+    subject: `Purchase Order - ${vendorName || "Vendor"} - ${today}`,
+    body: [
+      `Purchase Order: ${vendorName || "Vendor"}`,
+      `Date: ${today}`,
+      `Items: ${rows.length}`,
+      `Grand Total: ${currency.format(grandTotal)}`,
+      "",
+      header.join("\t"),
+      ...lines,
+      "",
+      `Copy sent to: ${DEFAULT_PO_COPY_EMAIL}`,
+    ].join("\n"),
+  };
+}
+
+function emailVendorPo(vendorName) {
+  const rows = currentVendorPoEmailRows(vendorName);
+  if (!rows.length) {
+    showToast("No PO lines to email for this vendor.", 2600, "warning");
+    return;
+  }
+  const vendorEmail = vendorEmailForName(vendorName);
+  const toEmail = vendorEmail || DEFAULT_PO_COPY_EMAIL;
+  const { subject, body } = buildVendorPoEmail(vendorName, rows);
+  const cc = toEmail.toLowerCase() === DEFAULT_PO_COPY_EMAIL.toLowerCase() ? "" : DEFAULT_PO_COPY_EMAIL;
+  const mailto = `mailto:${encodeURIComponent(toEmail)}?` +
+    (cc ? `cc=${encodeURIComponent(cc)}&` : "") +
+    `subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  if (!vendorEmail) showToast(`No vendor email saved for ${vendorName}. Opening email to ${DEFAULT_PO_COPY_EMAIL}.`, 3600, "warning");
+  if (mailto.length > 7000 && navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(body).catch(() => {});
+    showToast("PO is large, so the email body was copied too.", 3600, "warning");
+  }
+  window.location.href = mailto;
 }
 
 function applyOrderOverride(item) {
