@@ -5512,3 +5512,87 @@ body[data-active-tab="multi"] .sticky-pills {
     grid-row: auto !important;
   }
 }
+
+/* Final stability pass: keep controls inside the page instead of widening the viewport. */
+html,
+body {
+  max-width: 100% !important;
+  overflow-x: hidden !important;
+}
+
+.tab-view,
+.panel,
+.table-wrap,
+.order-cards,
+.filters-grid {
+  max-width: 100% !important;
+  min-width: 0 !important;
+}
+
+.inventory-quick-tools--ordering {
+  grid-column: 1 / -1 !important;
+  max-width: 100% !important;
+  overflow: visible !important;
+}
+
+.inventory-quick-tools--ordering .inventory-quick-tools__row {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  gap: 0.42rem !important;
+  max-width: 100% !important;
+  overflow: visible !important;
+}
+
+.inventory-quick-tools--ordering .inventory-quick-tools__row > * {
+  flex: 0 1 auto !important;
+  max-width: 100% !important;
+  white-space: nowrap !important;
+}
+
+.inventory-quick-tools--ordering .inventory-quick-tools__row button,
+.inventory-quick-tools--ordering .inventory-quick-tools__row summary,
+.inventory-quick-tools--ordering .inventory-quick-tools__row select {
+  min-width: 6.8rem !important;
+  width: auto !important;
+  height: 1.95rem !important;
+  min-height: 1.95rem !important;
+  padding: 0.28rem 0.74rem !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+}
+
+.inventory-quick-tools--ordering .inventory-quick-tools__row details {
+  min-width: 6.8rem !important;
+}
+
+#inventory th[data-col="addDate"],
+#inventoryBody td[data-col="addDate"] {
+  font-size: 0.82rem !important;
+  line-height: 1.1 !important;
+  text-align: center !important;
+  vertical-align: middle !important;
+  font-variant-numeric: tabular-nums;
+}
+
+#inventory th[data-col="product"],
+#inventoryBody td[data-col="product"] {
+  width: 20% !important;
+}
+
+#inventoryBody td[data-col="product"] {
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+.order-table .sku-name,
+.vpm-table .sku-name {
+  text-align: left !important;
+  min-width: 16rem !important;
+  max-width: 34rem !important;
+}
+
+.order-table-wrap,
+.vpm-table-wrap {
+  max-width: 100% !important;
+}

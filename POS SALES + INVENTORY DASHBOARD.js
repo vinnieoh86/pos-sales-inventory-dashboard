@@ -2040,6 +2040,7 @@ function seedItemMetaFromExcelRows(rows = []) {
     const existingAddDate = normalizeItemDate(existing.addDate || "");
     const seededInventoryDate = existingAddDate && snapshotDate && existingAddDate === snapshotDate;
     const excelCaseSize = Math.max(1, Math.round(toNumber(item.caseSize) || 1));
+    const hasExplicitExcelCaseSize = excelCaseSize > 1;
     const existingCaseSize = Math.max(1, Math.round(toNumber(existing.caseSize) || 1));
     const excelState = normalizeItemState(item.state || "");
     const existingState = normalizeItemState(existing.state || "");
@@ -2047,7 +2048,7 @@ function seedItemMetaFromExcelRows(rows = []) {
       ...existing,
       addDate: excelAddDate || (seededInventoryDate ? "" : existingAddDate) || "",
       state: existing.stateManual ? existingState : (excelState || ((existingState === "Active" && !existing.stateManual) ? "" : existingState) || ""),
-      caseSize: existing.caseSizeManual ? existingCaseSize : ((excelCaseSize > 1 || existingCaseSize <= 1) ? excelCaseSize : existingCaseSize),
+      caseSize: hasExplicitExcelCaseSize ? excelCaseSize : (existing.caseSizeManual ? existingCaseSize : ((excelCaseSize > 1 || existingCaseSize <= 1) ? excelCaseSize : existingCaseSize)),
     };
     if (JSON.stringify(existing) !== JSON.stringify(merged)) {
       state.itemMeta[key] = merged;
@@ -2064,11 +2065,13 @@ function registerInventorySnapshotMeta(snapshotDate, rows = [], previousCodes = 
     if (!key) return;
     const existing = state.itemMeta[key] || {};
     const isNew = !previousCodes.has(key) && !existing.addDate;
+    const rowCaseSize = Math.max(1, Math.round(toNumber(row.caseSize) || 1));
+    const existingCaseSize = Math.max(1, Math.round(toNumber(existing.caseSize) || 1));
     const merged = {
       ...existing,
       addDate: normalizeItemDate(existing.addDate || (isNew ? snapshotDate : "")),
       state: normalizeItemState(existing.state || row.state || ""),
-      caseSize: existing.caseSize ?? (toNumber(row.caseSize) > 0 ? toNumber(row.caseSize) : undefined),
+      caseSize: rowCaseSize > 1 ? rowCaseSize : (existing.caseSizeManual ? existingCaseSize : (existing.caseSize ?? (toNumber(row.caseSize) > 0 ? toNumber(row.caseSize) : undefined))),
       firstSeenDate: existing.firstSeenDate || (isNew ? snapshotDate : ""),
       lastSeenDate: snapshotDate || existing.lastSeenDate || "",
     };
@@ -2463,7 +2466,7 @@ function buildPriceCheckEntry(inventory = {}, excel = {}) {
     velocity: 0,
     unitCost: pickNumber(inventory.cost, excel.cost),
     price: pickNumber(inventory.price, excel.price),
-    caseSize: toNumber(meta.caseSizeManual ? meta.caseSize : (excel.caseSize || meta.caseSize || inventory.caseSize)) || 1,
+    caseSize: effectiveCaseSizeFor(inventory, excel, meta),
     reorderMin: toNumber(reorderOverrideForCode(itemCode)?.min) || 0,
     reorderMax: toNumber(reorderOverrideForCode(itemCode)?.max) || 0,
     recommendedOrder: 0,
@@ -3006,6 +3009,7 @@ function latestExcelAddDate() {
 }
 
 function currentOrderRows(options = {}) {
+  pruneOrderSubmissionDrafts();
   if (!options.ignoreSubmissionDrafts && state.orderSubmissionVendors?.length && Object.keys(state.orderSubmissionDrafts || {}).length) {
     const vendorKeys = state.orderSubmissionActiveVendor ? [state.orderSubmissionActiveVendor] : state.orderSubmissionVendors;
     return vendorKeys
@@ -3047,7 +3051,24 @@ function buildOrderSubmissionDrafts(vendors, rows) {
   return drafts;
 }
 
-function removeSubmittedVendor(vendorName) {
+function pruneOrderSubmissionDrafts() {
+  const drafts = { ...(state.orderSubmissionDrafts || {}) };
+  const vendors = (state.orderSubmissionVendors || []).filter((vendor) => {
+    const key = String(vendor || "").toUpperCase();
+    const hasOpenRows = (drafts[key] || []).some((item) => !isPendingOrder(item.code));
+    if (!hasOpenRows) delete drafts[key];
+    return hasOpenRows;
+  });
+  if (vendors.length !== (state.orderSubmissionVendors || []).length) {
+    state.orderSubmissionVendors = vendors;
+    state.orderSubmissionDrafts = drafts;
+    if (state.orderSubmissionActiveVendor && !vendors.some((vendor) => vendor.toUpperCase() === state.orderSubmissionActiveVendor.toUpperCase())) {
+      state.orderSubmissionActiveVendor = "";
+    }
+  }
+}
+
+function removeSubmittedVendor(vendorName, options = {}) {
   const normalized = String(vendorName || "").trim().toUpperCase();
   if (!normalized) return;
   state.orderSubmissionVendors = (state.orderSubmissionVendors || []).filter((vendor) => vendor.toUpperCase() !== normalized);
@@ -3057,7 +3078,7 @@ function removeSubmittedVendor(vendorName) {
   if ((state.orderSubmissionActiveVendor || "").toUpperCase() === normalized) {
     state.orderSubmissionActiveVendor = "";
   }
-  renderOrders();
+  if (options.render !== false) renderOrders();
 }
 
 function saveDismissedOrderVendors() {
@@ -4880,6 +4901,7 @@ function moveOrderColumnRelative(key, direction = 1) {
 
 function renderOrders() {
   renderSharedQuickTools("ordering");
+  pruneOrderSubmissionDrafts();
   const arrangeButton = document.querySelector("#orderArrangeColumnsButton");
   if (arrangeButton) {
     arrangeButton.classList.toggle("active", state.orderArrangeColumns);
@@ -5439,9 +5461,7 @@ function recomputeInventoryItemForLocalEdit(item) {
   const meta = itemMetaFor(item.code);
   const override = reorderOverrideForCode(item.code || key);
   const stateLabel = normalizeItemState(meta.stateManual ? meta.state : (excel.state || meta.state || item.state || "")) || item.state || "Active";
-  const caseSize = meta.caseSizeManual
-    ? Math.max(1, Math.round(toNumber(meta.caseSize) || 1))
-    : Math.max(1, Math.round(toNumber(excel.caseSize || meta.caseSize || item.caseSize) || 1));
+  const caseSize = effectiveCaseSizeFor(item, excel, meta);
   item.state = stateLabel;
   item.itemState = stateLabel.toLowerCase();
   item.isOrderable = !["discontinued", "disabled"].includes(item.itemState);
@@ -5623,9 +5643,7 @@ function buildInventoryRows(options = {}) {
       const override = reorderOverrideForCode(itemCode || code);
       const isOverridden = override.min != null || override.max != null;
       const velocity = sales.velocity || excel.saleVelocity || 0;
-      const caseSize = meta.caseSizeManual
-        ? (toNumber(meta.caseSize) || 1)
-        : (excel.caseSize || toNumber(meta.caseSize) || toNumber(inventory.caseSize) || sales.caseSize || 1);
+      const caseSize = effectiveCaseSizeFor(inventory, excel, meta, sales);
       const displayState = meta.stateManual
         ? meta.state
         : (normalizeItemState(excel.state) || normalizeItemState(meta.state) || normalizeItemState(inventory.state) || "");
@@ -6853,7 +6871,7 @@ function roundOrderToNearestCase(quantity, caseSize) {
   const size = Math.max(1, toNumber(caseSize) || 1);
   const qty = Math.max(0, Math.ceil(toNumber(quantity) || 0));
   if (!qty) return 0;
-  return Math.max(size, Math.round(qty / size) * size);
+  return Math.max(size, Math.ceil(qty / size) * size);
 }
 
 function roundInventoryTargetToCase(stock, targetQty, caseSize) {
@@ -6863,13 +6881,13 @@ function roundInventoryTargetToCase(stock, targetQty, caseSize) {
 }
 
 function recommendedOrderQty({ stock, min, max }) {
-  const currentStock = Math.max(0, toNumber(stock) || 0);
+  const currentStock = Math.ceil(toNumber(stock) || 0);
   const minQty = Math.max(0, Math.ceil(toNumber(min) || 0));
   const maxQty = Math.max(minQty, Math.ceil(toNumber(max) || 0));
   if (currentStock >= minQty) return 0;
   const needed = Math.max(0, Math.ceil(maxQty - currentStock));
   if (needed <= 0) return 0;
-  return Math.max(2, needed);
+  return needed;
 }
 
 function renderColumnPicker() {
@@ -7392,7 +7410,7 @@ function orderingTargets({ velocity, safetyDays, daysOfInventory }) {
   const rawMin = Math.max(0, velocity * Math.max(0, safetyDays || 0));
   const calculatedMin = Math.max(0, Math.ceil(rawMin));
   const min = calculatedMin > 0 ? Math.max(2, calculatedMin) : 0;
-  const max = Math.max(min, Math.ceil(rawMin + (velocity * Math.max(0, daysOfInventory || 0))));
+  const max = Math.max(min, Math.ceil(min + (velocity * Math.max(0, daysOfInventory || 0))));
   return { min, max };
 }
 
@@ -7490,6 +7508,23 @@ function toNumber(value) {
   const cleaned = String(value ?? "").replace(/="/g, "").replace(/"/g, "").replace(/,/g, "").trim();
   const parsed = Number(cleaned);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function normalizedCaseSize(value) {
+  return Math.max(1, Math.round(toNumber(value) || 1));
+}
+
+function effectiveCaseSizeFor(inventory = {}, excel = {}, meta = {}, fallback = {}) {
+  const excelSize = normalizedCaseSize(excel.caseSize);
+  const metaSize = normalizedCaseSize(meta.caseSize);
+  const inventorySize = normalizedCaseSize(inventory.caseSize);
+  const fallbackSize = normalizedCaseSize(fallback.caseSize);
+  if (excelSize > 1) return excelSize;
+  if (meta.caseSizeManual) return metaSize;
+  if (metaSize > 1) return metaSize;
+  if (inventorySize > 1) return inventorySize;
+  if (fallbackSize > 1) return fallbackSize;
+  return 1;
 }
 
 function cleanHeader(value) {
@@ -8268,9 +8303,7 @@ function productRowFromExcelForSupabase(item = {}) {
   const normalizedCode = normalizeCode(item.code || "");
   const meta = itemMetaFor(normalizedCode);
   const syncState = normalizeItemState(meta.stateManual ? meta.state : (meta.state || item.state || ""));
-  const syncCaseSize = meta.caseSizeManual
-    ? Math.max(1, Math.round(toNumber(meta.caseSize) || 1))
-    : Math.max(1, Math.round(toNumber(item.caseSize || meta.caseSize) || 1));
+  const syncCaseSize = effectiveCaseSizeFor({}, item, meta);
   const syncAddDate = normalizeItemDate(meta.addDate || item.addDate || meta.firstSeenDate || "");
   return {
     code: normalizedCode,
@@ -8410,9 +8443,7 @@ function productMetaRowForSupabase(source = {}) {
   const meta = itemMetaFor(normalizedCode);
   const override = reorderOverrideForCode(normalizedCode);
   const stateValue = normalizeItemState(meta.stateManual ? meta.state : (meta.state || source.state || excel.state || sku.state || ""));
-  const caseSize = meta.caseSizeManual
-    ? Math.max(1, Math.round(toNumber(meta.caseSize) || 1))
-    : Math.max(1, Math.round(toNumber(source.caseSize || excel.caseSize || meta.caseSize || sku.caseSize) || 1));
+  const caseSize = effectiveCaseSizeFor(source, excel, meta, sku);
   const addDate = normalizeItemDate(meta.addDate || source.addDate || excel.addDate || meta.firstSeenDate || "");
   return {
     code: normalizedCode,
@@ -8562,7 +8593,7 @@ function applySharedProductRows(rows) {
     state.itemMeta[key] = {
       ...meta,
       ...(row.state != null ? { state: cleanCell(row.state), stateManual: true } : {}),
-      ...(row.case_size != null ? { caseSize: Math.max(1, Math.round(toNumber(row.case_size) || 1)), caseSizeManual: true } : {}),
+      ...(row.case_size != null ? { caseSize: normalizedCaseSize(row.case_size), caseSizeManual: meta.caseSizeManual === true } : {}),
       ...(row.add_date ? { addDate: normalizeItemDate(row.add_date) } : {}),
       orderingRuleMode: cleanCell(row.ordering_rule_mode) || meta.orderingRuleMode || "vendor",
       safetyDaysOverride: row.safety_days_override != null ? Math.max(0, Math.round(toNumber(row.safety_days_override) || 0)) : null,
@@ -8623,7 +8654,7 @@ function applySharedProductMetaRowsLight(rows = []) {
     const nextMeta = {
       ...beforeMeta,
       ...(row.state != null ? { state: normalizeItemState(row.state), stateManual: true } : {}),
-      ...(row.case_size != null ? { caseSize: Math.max(1, Math.round(toNumber(row.case_size) || 1)), caseSizeManual: true } : {}),
+      ...(row.case_size != null ? { caseSize: normalizedCaseSize(row.case_size), caseSizeManual: beforeMeta.caseSizeManual === true } : {}),
       ...(row.add_date ? { addDate: normalizeItemDate(row.add_date) } : {}),
       orderingRuleMode: cleanCell(row.ordering_rule_mode) || beforeMeta.orderingRuleMode || "vendor",
       safetyDaysOverride: row.safety_days_override != null ? Math.max(0, Math.round(toNumber(row.safety_days_override) || 0)) : null,
@@ -9026,7 +9057,7 @@ async function restoreSharedDataFromSupabase(options = {}) {
       nextItemMeta[code] = {
         ...existingMeta,
         ...(row.state != null ? { state: cleanCell(row.state), stateManual: true } : {}),
-        ...(row.case_size != null ? { caseSize: Math.max(1, Math.round(toNumber(row.case_size) || 1)), caseSizeManual: true } : {}),
+        ...(row.case_size != null ? { caseSize: normalizedCaseSize(row.case_size), caseSizeManual: existingMeta.caseSizeManual === true } : {}),
         ...(row.add_date ? { addDate: normalizeItemDate(row.add_date) } : {}),
         orderingRuleMode: cleanCell(row.ordering_rule_mode) || existingMeta.orderingRuleMode || "vendor",
         safetyDaysOverride: row.safety_days_override != null ? Math.max(0, Math.round(toNumber(row.safety_days_override) || 0)) : null,
@@ -10404,6 +10435,7 @@ function submitVendorPo(vendorName, options = {}) {
   if (options.email !== false) {
     emailVendorPo(vendorName, { items, silent: options.silentEmail, poNumber });
   }
+  removeSubmittedVendor(vendorName, { render: false });
   showToast("PO submitted for " + vendorName + " - " + items.length + " items pending", 3200, "success");
   renderOrders();
   renderAdjustLog();
@@ -11088,7 +11120,7 @@ function calcCaseOrder(recOrder, caseSize) {
   if (!orderQty) return 0;
   if (size <= 1) return orderQty;
   if (orderQty <= size) return 1;
-  return Math.max(1, Math.round(orderQty / size));
+  return Math.max(1, Math.ceil(orderQty / size));
 }
 
 function orderLineUnits(item) {
@@ -11506,9 +11538,10 @@ function renderPoHistory() {
   const body = document.querySelector("#poHistoryBody");
   if (!body) return;
   const pos = (state.pendingOrders||[]).filter((po) => po.submittedAt);
-  if (!pos.length) { body.innerHTML = '<tr><td colspan="6" class="empty-cell">No POs submitted yet.</td></tr>'; return; }
+  if (!pos.length) { body.innerHTML = '<tr><td colspan="7" class="empty-cell">No POs submitted yet.</td></tr>'; return; }
   body.innerHTML = pos.sort((a,b) => b.submittedAt.localeCompare(a.submittedAt)).map((po) => `<tr>
     <td><button type="button" class="text-link-button po-history-open" data-po-id="${escapeHtml(po.id)}">${new Date(po.submittedAt).toLocaleDateString()}</button></td>
+    <td><button type="button" class="text-link-button po-history-open" data-po-id="${escapeHtml(po.id)}"><b>${po.poNumber ? `#${escapeHtml(po.poNumber)}` : "-"}</b></button></td>
     <td><button type="button" class="text-link-button po-history-open" data-po-id="${escapeHtml(po.id)}"><b>${escapeHtml(po.vendor)}</b></button></td>
     <td>${(po.codes||[]).length}</td>
     <td>${currency.format(toNumber(po.totalCost) || (po.items || []).reduce((sum, item) => sum + (toNumber(item.totalCost) || 0), 0))}</td>
@@ -11558,6 +11591,7 @@ function openPoHistoryDetail(poId) {
   const totalCost = toNumber(po.totalCost) || fallbackItems.reduce((sum, item) => sum + (toNumber(item.totalCost) || 0), 0);
   document.querySelector("#poHistoryDetailTitle").textContent = `${po.vendor} PO`;
   document.querySelector("#poHistoryDetailMeta").innerHTML = `
+    <span><b>PO #</b> ${po.poNumber ? escapeHtml(po.poNumber) : "-"}</span>
     <span><b>Date</b> ${escapeHtml(new Date(po.submittedAt).toLocaleString())}</span>
     <span><b>Items</b> ${fallbackItems.length}</span>
     <span><b>Total</b> ${currency.format(totalCost)}</span>
