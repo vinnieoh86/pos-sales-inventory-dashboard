@@ -5015,13 +5015,17 @@ body[data-active-tab="multi"] .sticky-pills {
 }
 
 .inventory-quick-tools--ordering {
-  grid-column: 4 / 10;
+  grid-column: 1 / -1;
+  width: 100%;
+  min-width: 0;
 }
 
 .inventory-quick-tools--ordering .inventory-quick-tools__row {
   gap: 0.4rem;
   align-items: center;
   flex-wrap: wrap;
+  justify-content: flex-start;
+  width: 100%;
 }
 
 .inventory-quick-tools--ordering .inventory-quick-tools__row > * {
