@@ -3010,6 +3010,7 @@ function currentOrderRows(options = {}) {
     const vendorKeys = state.orderSubmissionActiveVendor ? [state.orderSubmissionActiveVendor] : state.orderSubmissionVendors;
     return vendorKeys
       .flatMap((vendor) => (state.orderSubmissionDrafts[vendor.toUpperCase()] || []).map((item) => applyOrderOverride({ ...item })))
+      .filter((item) => !isPendingOrder(item.code))
       .sort((a, b) => (b.recommendedOrder || b.qtyNeeded || 0) - (a.recommendedOrder || a.qtyNeeded || 0));
   }
   const vendorFilter = getOrderVendorFilter ? getOrderVendorFilter() : "Active";
@@ -3017,6 +3018,7 @@ function currentOrderRows(options = {}) {
     .map(applyOrderOverride)
     .filter((item) => {
       if (item.isOrderable === false) return false;
+      if (isPendingOrder(item.code)) return false;
       if (item.recommendedOrder <= 0 && !item.qtyNeeded) return false;
       if (state.vendorRules.length && vendorFilter !== "") {
         const vendorName = (item.vendor || "").toUpperCase();
@@ -3151,13 +3153,13 @@ function renderProductPoReviewModal() {
   els.productPoReviewBody.innerHTML = rows.map((item) => `<tr>
     <td>${escapeHtml(item.vendor || "-")}</td>
     <td>${escapeHtml(item.code)}</td>
+    <td>${escapeHtml(item.plu || "-")}</td>
     <td class="sku-name">${escapeHtml(item.product)}</td>
     <td class="num">${number.format(item.stock || 0)}</td>
     <td class="num">${number.format(item.reorderMin || 0)}</td>
     <td class="num">${number.format(item.reorderMax || 0)}</td>
     <td class="num"><input type="number" class="order-rec-input mini-input" data-code="${escapeHtml(item.code)}" value="${Math.max(0, toNumber(item.recommendedOrder) || 0)}" min="0" style="width:4rem;text-align:center;font-weight:700" /></td>
     <td class="num"><b>${number.format(calcCaseOrder(item.recommendedOrder || 0, item.caseSize || 1))}</b></td>
-    <td class="num">${number.format(item.caseSize || 1)}</td>
     <td class="num">${currency.format(orderLineCost(item))}</td>
   </tr>`).join("");
   els.productPoReviewBody.querySelectorAll(".order-rec-input").forEach((input) => {
@@ -3171,7 +3173,7 @@ function renderProductPoReviewModal() {
       const item = rows.find((entry) => codeKey(entry.code) === code);
       if (!row || !item) return;
       const caseCount = calcCaseOrder(val, item.caseSize || 1);
-      row.cells[7].innerHTML = `<b>${number.format(caseCount)}</b>`;
+      row.cells[8].innerHTML = `<b>${number.format(caseCount)}</b>`;
       row.cells[9].textContent = currency.format((toNumber(item.unitCost) || 0) * caseCount * Math.max(1, toNumber(item.caseSize) || 1));
     });
   });
@@ -3223,7 +3225,6 @@ function exportProductReviewCsv() {
     reorderMax: item.reorderMax,
     recommendedOrder: item.recommendedOrder,
     caseOrder: calcCaseOrder(item.recommendedOrder || 0, item.caseSize || 1),
-    caseSize: item.caseSize,
     totalCost: orderLineCost(item),
   })));
 }
@@ -3243,7 +3244,7 @@ function exportProductReviewPdf() {
     .num { text-align: right; }
   </style></head><body>
   <h1>Products PO Review</h1>
-  <table><thead><tr><th>Vendor</th><th>Code</th><th>Item</th><th>Stock</th><th>Min</th><th>Max</th><th>Rec. Order</th><th>Cases</th><th>Case Size</th><th>Total</th></tr></thead>
+  <table><thead><tr><th>Vendor</th><th>Code</th><th>PLU</th><th>Item</th><th>Stock</th><th>Min</th><th>Max</th><th>Rec. Order</th><th>Cases</th><th>Total</th></tr></thead>
   <tbody>${htmlRows}</tbody></table></body></html>`;
   const win = window.open("", "_blank", "width=960,height=720");
   if (!win) { showToast("Pop-up blocked.", 3000, "warning"); return; }
@@ -4886,6 +4887,7 @@ function renderOrders() {
     .map(applyOrderOverride)
     .filter((item) => {
       if (item.isOrderable === false) return false;
+      if (isPendingOrder(item.code)) return false;
       if (item.recommendedOrder <= 0 && !item.qtyNeeded) return false;
       const vendorFilter = getOrderVendorFilter ? getOrderVendorFilter() : "Active";
       if (state.vendorRules.length && vendorFilter !== "") {
@@ -5881,6 +5883,15 @@ function downloadCsv(fileName, rows) {
   const headers = preferred.filter((key) => available.has(key)).concat([...available].filter((key) => !preferred.includes(key)));
   const csv = [headers.join(",")].concat(rows.map((row) => headers.map((header) => csvCell(row[header], header)).join(","))).join("\n");
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function downloadBlob(fileName, blob) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
@@ -10291,7 +10302,12 @@ function exportVendorPoExcel(vendorName, items) {
     showToast(`No items to export for ${vendorName}.`, 2600, "warning");
     return;
   }
-  downloadCsv(`po-${vendorName.toLowerCase().replace(/[^a-z0-9]+/g, "-") || "vendor"}.csv`, items);
+  const rows = currentVendorPoEmailRows(vendorName, items);
+  const grandTotal = rows.reduce((sum, row) => sum + (toNumber(row.totalCost) || 0), 0);
+  const today = new Date().toLocaleDateString("en-US", { year: "numeric", month: "2-digit", day: "2-digit" });
+  const fileVendor = poSafeFilenamePart(vendorName);
+  const html = buildPoExcelHtml(vendorName, rows, { today, grandTotal, poNumber: "" });
+  downloadBlob(`PO-${fileVendor}-${localIsoDate(new Date())}.xls`, new Blob([html], { type: "application/vnd.ms-excel;charset=utf-8" }));
 }
 
 function submitShownVendorPo() {
@@ -10340,6 +10356,7 @@ function submitVendorPo(vendorName, options = {}) {
   const draftItems = state.orderSubmissionDrafts?.[String(vendorName || "").toUpperCase()] || [];
   const items = (draftItems.length ? draftItems : currentOrderRows({ ignoreSubmissionDrafts: true }))
     .filter((item) => (item.vendor||"").toUpperCase() === vendorName.toUpperCase())
+    .filter((item) => !isPendingOrder(item.code))
     .map((item) => applyOrderOverride({ ...item }));
   if (!items.length) { showToast(`No items to order for ${vendorName}.`, 2800, "warning"); return; }
   const clearAt = Date.now() + 10 * 24 * 60 * 60 * 1000; // 10 days
@@ -10352,6 +10369,7 @@ function submitVendorPo(vendorName, options = {}) {
     codes: items.map((item) => codeKey(item.code)),
     items: items.map((item) => ({
       code: item.code,
+      plu: item.plu || "",
       product: item.product,
       vendor: item.vendor,
       recommendedOrder: item.recommendedOrder,
@@ -10422,7 +10440,7 @@ function clearExpiredPendingOrders() {
 clearExpiredPendingOrders();
 
 // â”€â”€ Vendor Analysis Panel (inline in ordering tab) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-function exportVendorPoPdf(vendorName, items) {
+function exportVendorPoPdfLegacy(vendorName, items) {
   const today = new Date().toLocaleDateString("en-US", { year:"numeric", month:"long", day:"numeric" });
   const body = document.querySelector("#vpmBody");
   const rows = [...(body?.querySelectorAll("tr[data-vpm-code]") || [])];
@@ -10591,6 +10609,7 @@ function openVendorAnalysisPanel(vendorName) {
       const pend = isPendingOrder(sku.code);
       return "<tr data-vpm-code='" + sku.code + "'>" +
         "<td style='color:#2470c4;font-weight:700;white-space:nowrap'>" + escapeHtml(sku.code) + "</td>" +
+        "<td style='white-space:nowrap'>" + escapeHtml(sku.plu || "") + "</td>" +
         "<td class='sku-name' title='" + escapeHtml(sku.product) + "'>" + escapeHtml(sku.product) + "</td>" +
         "<td class='num " + ((sku.stock||0)<0?"entry-negative":"") + "'>" + number.format(sku.stock||0) + "</td>" +
         "<td class='num'>" + formatVelocity(sku.velocity||0) + "</td>" +
@@ -10598,7 +10617,6 @@ function openVendorAnalysisPanel(vendorName) {
         "<td class='num'>" + number.format(sku.reorderMax||0) + "</td>" +
         "<td class='num'>" + number.format(sku.recommendedOrder||0) + "</td>" +
         "<td class='num order-highlight'><input type='number' class='vpm-qty-input mini-input' data-code='" + sku.code + "' data-unit-cost='" + (sku.unitCost||0) + "' value='" + (sku.caseOrder||0) + "' min='0' style='width:4rem;text-align:center;font-weight:700' /></td>" +
-        "<td class='num'>" + number.format(sku.caseSize||1) + "</td>" +
         "<td class='num'>" + currency.format(sku.unitCost||0) + "</td>" +
         "<td class='num vpm-line-cost' data-unit-cost='" + (sku.unitCost||0) + "' data-case-size='" + (sku.caseSize||1) + "'>" + currency.format(orderLineCost(sku)) + "</td>" +
         "<td style='text-align:center'>" + (pend ? "&#x1F550;" : "") + "</td>" +
@@ -10651,35 +10669,35 @@ function exportVendorPoPdf(vendorName, items) {
   var grandTotal = 0;
   var rowsHtml = rows.map(function(tr) {
     var qtyInput = tr.querySelector(".vpm-qty-input");
-    var qty = Math.max(0, toNumber(qtyInput ? qtyInput.value : 0));
+    var cases = Math.max(0, toNumber(qtyInput ? qtyInput.value : 0));
     var uc = parseFloat(qtyInput ? qtyInput.dataset.unitCost : 0);
     var caseSize = Math.max(1, toNumber(tr.querySelector(".vpm-line-cost")?.dataset.caseSize || 1));
-    var lineCost = qty * caseSize * uc;
+    var qty = caseSize <= 1 ? cases : cases * caseSize;
+    var lineCost = qty * uc;
     grandTotal += lineCost;
     var cells = Array.from(tr.cells);
     return "<tr><td>" + (cells[0]?cells[0].textContent.trim():"") + "</td>" +
       "<td>" + (cells[1]?cells[1].textContent.trim():"") + "</td>" +
-      "<td class='num'>" + (cells[2]?cells[2].textContent.trim():"") + "</td>" +
-      "<td class='num'>" + (cells[3]?cells[3].textContent.trim():"") + "</td>" +
-      "<td class='num'>" + (cells[4]?cells[4].textContent.trim():"") + "</td>" +
-      "<td class='num'>" + (cells[5]?cells[5].textContent.trim():"") + "</td>" +
-      "<td class='num'>" + (cells[6]?cells[6].textContent.trim():"") + "</td>" +
+      "<td>" + (cells[2]?cells[2].textContent.trim():"") + "</td>" +
       "<td class='num'><b>" + qty + "</b></td>" +
-      "<td class='num'>" + (cells[8]?cells[8].textContent.trim():"") + "</td>" +
+      "<td class='num'>" + cases + "</td>" +
       "<td class='num'>" + (cells[9]?cells[9].textContent.trim():"") + "</td>" +
       "<td class='num'><b>" + currency.format(lineCost) + "</b></td></tr>";
   }).join("");
   var html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>PO - " + escapeHtml(vendorName) + "</title>" +
-    "<style>body{font-family:Arial,sans-serif;font-size:11px;color:#1c2320;padding:20px;margin:0}" +
-    "h1{font-size:20px;margin:0 0 4px}.meta{display:flex;gap:14px;flex-wrap:wrap;margin:8px 0 14px;font-size:10px;color:#555}" +
-    ".meta span{background:#f0f4f2;padding:3px 8px;border-radius:4px}" +
-    "table{width:100%;border-collapse:collapse}th{background:#eef7f0;text-align:left;padding:5px 6px;font-size:9px;text-transform:uppercase;border-bottom:2px solid #dce3df}" +
-    "td{padding:4px 6px;border-bottom:1px solid #eee}.num{text-align:right}" +
-    ".grand{font-size:14px;font-weight:700;text-align:right;padding:10px 6px;border-top:2px solid #1c2320}" +
+    "<style>body{font-family:Arial,sans-serif;font-size:11px;color:#111;padding:20px;margin:0;background:#fff}" +
+    ".head{display:flex;align-items:center;justify-content:space-between;border-bottom:3px solid #bd8c22;padding-bottom:10px;margin-bottom:10px}" +
+    ".brand{display:flex;align-items:center;gap:12px}.brand img{width:74px;height:auto}.brand h1{font-size:22px;margin:0;color:#111;letter-spacing:.3px}" +
+    ".po-label{color:#6f5014;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.7px}.meta{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0 14px;font-size:10px;color:#111}" +
+    ".meta span{background:#fff7dd;border:1px solid #ead28e;padding:4px 9px;border-radius:999px}" +
+    "table{width:100%;border-collapse:collapse}th{background:#111;color:#f5d57b;text-align:left;padding:6px 7px;font-size:9px;text-transform:uppercase;border-bottom:2px solid #bd8c22}" +
+    "td{padding:5px 7px;border-bottom:1px solid #eee;color:#111}.num{text-align:right}" +
+    ".grand{font-size:15px;font-weight:800;text-align:right;padding:12px 6px;border-top:2px solid #111;color:#111}" +
     "@media print{body{padding:8px}}</style></head><body>" +
-    "<h1>Purchase Order &mdash; " + escapeHtml(vendorName) + "</h1>" +
+    "<div class='head'><div class='brand'><img src='data:image/jpeg;base64," + PO_LOGO_GOLD_JPEG_BASE64 + "' alt='Cee Kay'><h1>Cee Kay Order</h1></div><div class='po-label'>Purchase Order</div></div>" +
+    "<h1 style='font-size:18px;margin:0 0 6px;color:#111'>" + escapeHtml(vendorName) + "</h1>" +
     "<div class='meta'><span><b>Date</b> " + today + "</span><span><b>Items</b> " + rows.length + "</span><span><b>Total</b> " + currency.format(grandTotal) + "</span></div>" +
-    "<table><thead><tr><th>Code</th><th>Item</th><th>Stock</th><th>SV/day</th><th>Min</th><th>Max</th><th>Rec</th><th>Order Qty</th><th>Case</th><th>Unit Cost</th><th>Total</th></tr></thead>" +
+    "<table><thead><tr><th>Code</th><th>PLU</th><th>Item</th><th>Qty</th><th>Cases</th><th>Unit Cost</th><th>Total</th></tr></thead>" +
     "<tbody>" + rowsHtml + "</tbody></table>" +
     "<div class='grand'>Grand Total: " + currency.format(grandTotal) + "</div>" +
     "</body></html>";
@@ -11106,10 +11124,10 @@ function itemsToPoEmailRows(items) {
     const unitCost = toNumber(item.unitCost) || 0;
     return {
       code: item.code || "",
+      plu: item.plu || "",
       product: item.product || "",
       qty,
       cases,
-      caseSize,
       unitCost,
       totalCost: qty * unitCost,
     };
@@ -11124,16 +11142,16 @@ function currentVendorPoEmailRows(vendorName, sourceItems = null) {
     return domRows.map((tr) => {
       const cells = Array.from(tr.cells);
       const input = tr.querySelector(".vpm-qty-input");
-      const caseSize = Math.max(1, toNumber(tr.querySelector(".vpm-line-cost")?.dataset.caseSize || cells[8]?.textContent || 1));
-      const cases = Math.max(0, Math.round(toNumber(input?.value || cells[7]?.textContent || 0)));
+      const caseSize = Math.max(1, toNumber(tr.querySelector(".vpm-line-cost")?.dataset.caseSize || 1));
+      const cases = Math.max(0, Math.round(toNumber(input?.value || cells[8]?.textContent || 0)));
       const unitCost = toNumber(input?.dataset.unitCost || cells[9]?.textContent || 0);
       const qty = caseSize <= 1 ? cases : cases * caseSize;
       return {
         code: cells[0]?.textContent.trim() || "",
-        product: cells[1]?.textContent.trim() || "",
+        plu: cells[1]?.textContent.trim() || "",
+        product: cells[2]?.textContent.trim() || "",
         qty,
         cases,
-        caseSize,
         unitCost,
         totalCost: qty * unitCost,
       };
@@ -11169,25 +11187,29 @@ function pdfTextEscape(value) {
   return poAscii(value).replace(/\\/g, "\\\\").replace(/\(/g, "\\(").replace(/\)/g, "\\)");
 }
 
+const PO_LOGO_GOLD_JPEG_BASE64 = "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";
+
 function buildSimplePoPdfBase64(vendorName, rows, meta) {
-  const rowsPerPage = 33;
+  const rowsPerPage = 31;
   const chunks = [];
   for (let i = 0; i < rows.length; i += rowsPerPage) chunks.push(rows.slice(i, i + rowsPerPage));
   if (!chunks.length) chunks.push([]);
   const poLabel = meta.poNumber ? `PO# ${meta.poNumber}` : "Purchase Order";
-  const text = (value, x, y, size = 8, font = "F1", color = "0.11 0.14 0.13") =>
+  const text = (value, x, y, size = 8, font = "F1", color = "0 0 0") =>
     `${color} rg BT /${font} ${size} Tf ${x} ${y} Td (${pdfTextEscape(value)}) Tj ET`;
-  const rightText = (value, rightX, y, size = 8, font = "F1", color = "0.11 0.14 0.13") => {
+  const rightText = (value, rightX, y, size = 8, font = "F1", color = "0 0 0") => {
     const str = poAscii(value);
     return text(str, rightX - (str.length * size * 0.48), y, size, font, color);
   };
   const line = (x1, y1, x2, y2, color = "0.78 0.83 0.80") => `${color} RG ${x1} ${y1} m ${x2} ${y2} l S`;
   const rect = (x, y, w, h, color) => `${color} rg ${x} ${y} ${w} ${h} re f`;
+  const logoBinary = atob(PO_LOGO_GOLD_JPEG_BASE64);
   const objects = [
     "<< /Type /Catalog /Pages 2 0 R >>",
     "",
     "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
     "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>",
+    `<< /Type /XObject /Subtype /Image /Width 260 /Height 201 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${logoBinary.length} >>\nstream\n${logoBinary}\nendstream`,
   ];
   const pageObjectNumbers = [];
   chunks.forEach((chunk, pageIndex) => {
@@ -11195,43 +11217,45 @@ function buildSimplePoPdfBase64(vendorName, rows, meta) {
     const contentObj = objects.length + 2;
     pageObjectNumbers.push(pageObj);
     const commands = [
-      rect(36, 722, 540, 42, "0.08 0.50 0.35"),
-      text("CEE KAY ORDER", 52, 746, 15, "F2", "1 1 1"),
-      rightText(poLabel, 560, 746, 10, "F2", "1 1 1"),
-      text(`Vendor: ${vendorName || "Vendor"}`, 52, 728, 9, "F2", "1 1 1"),
-      text(`Date ${meta.today}`, 46, 704, 8, "F1"),
-      text(`Items ${rows.length}`, 126, 704, 8, "F1"),
-      text(`Total ${currency.format(meta.grandTotal)}`, 190, 704, 8, "F1"),
-      pageIndex ? text(`Page ${pageIndex + 1}`, 522, 704, 8, "F1") : "",
-      rect(36, 674, 540, 18, "0.91 0.97 0.93"),
-      text("CODE", 42, 680, 7, "F2", "0.08 0.36 0.27"),
-      text("ITEM", 112, 680, 7, "F2", "0.08 0.36 0.27"),
-      rightText("QTY", 350, 680, 7, "F2", "0.08 0.36 0.27"),
-      rightText("CASES", 394, 680, 7, "F2", "0.08 0.36 0.27"),
-      rightText("CASE SIZE", 444, 680, 7, "F2", "0.08 0.36 0.27"),
-      rightText("UNIT COST", 510, 680, 7, "F2", "0.08 0.36 0.27"),
-      rightText("TOTAL", 570, 680, 7, "F2", "0.08 0.36 0.27"),
-      line(36, 674, 576, 674, "0.08 0.50 0.35"),
+      "q 72 0 0 56 42 716 cm /Logo Do Q",
+      text("CEE KAY BEAUTY SUPPLY", 128, 748, 14, "F2", "0 0 0"),
+      text("Purchase Order", 128, 732, 10, "F1", "0.66 0.47 0.12"),
+      rightText(poLabel, 570, 748, 10, "F2", "0 0 0"),
+      text(`Vendor: ${vendorName || "Vendor"}`, 128, 718, 9, "F2", "0 0 0"),
+      line(36, 704, 576, 704, "0.76 0.56 0.16"),
+      text(`Date ${meta.today}`, 46, 686, 8, "F1"),
+      text(`Items ${rows.length}`, 126, 686, 8, "F1"),
+      text(`Total ${currency.format(meta.grandTotal)}`, 190, 686, 8, "F1"),
+      pageIndex ? text(`Page ${pageIndex + 1}`, 522, 686, 8, "F1") : "",
+      rect(36, 656, 540, 18, "0.95 0.90 0.77"),
+      text("CODE", 42, 662, 7, "F2"),
+      text("PLU", 100, 662, 7, "F2"),
+      text("ITEM", 148, 662, 7, "F2"),
+      rightText("QTY", 390, 662, 7, "F2"),
+      rightText("CASES", 438, 662, 7, "F2"),
+      rightText("UNIT COST", 510, 662, 7, "F2"),
+      rightText("TOTAL", 570, 662, 7, "F2"),
+      line(36, 656, 576, 656, "0.76 0.56 0.16"),
     ].filter(Boolean);
     chunk.forEach((row, index) => {
-      const y = 657 - (index * 16);
+      const y = 639 - (index * 16);
       if (index % 2) commands.push(rect(36, y - 4, 540, 16, "0.98 0.99 0.98"));
       commands.push(text(poAscii(row.code).slice(0, 14), 42, y, 7));
-      commands.push(text(poAscii(row.product).slice(0, 44), 112, y, 7, "F2"));
-      commands.push(rightText(number.format(row.qty || 0), 350, y, 7));
-      commands.push(rightText(number.format(row.cases || 0), 394, y, 7, "F2"));
-      commands.push(rightText(number.format(row.caseSize || 1), 444, y, 7));
+      commands.push(text(poAscii(row.plu).slice(0, 10), 100, y, 7));
+      commands.push(text(poAscii(row.product).slice(0, 42), 148, y, 7, "F2"));
+      commands.push(rightText(number.format(row.qty || 0), 390, y, 7));
+      commands.push(rightText(number.format(row.cases || 0), 438, y, 7, "F2"));
       commands.push(rightText(currency.format(row.unitCost || 0), 510, y, 7));
       commands.push(rightText(currency.format(row.totalCost || 0), 570, y, 7, "F2"));
       commands.push(line(36, y - 7, 576, y - 7, "0.86 0.89 0.87"));
     });
-    const totalY = Math.max(72, 657 - (chunk.length * 16) - 16);
+    const totalY = Math.max(72, 639 - (chunk.length * 16) - 16);
     if (pageIndex === chunks.length - 1) {
-      commands.push(line(390, totalY + 16, 576, totalY + 16, "0.08 0.50 0.35"));
+      commands.push(line(390, totalY + 16, 576, totalY + 16, "0 0 0"));
       commands.push(rightText(`Grand Total: ${currency.format(meta.grandTotal)}`, 570, totalY, 12, "F2"));
     }
     const content = commands.join("\n");
-    objects.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents ${contentObj} 0 R >>`);
+    objects.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> /XObject << /Logo 5 0 R >> >> /Contents ${contentObj} 0 R >>`);
     objects.push(`<< /Length ${content.length} >>\nstream\n${content}\nendstream`);
   });
   objects[1] = `<< /Type /Pages /Count ${pageObjectNumbers.length} /Kids [${pageObjectNumbers.map((num) => `${num} 0 R`).join(" ")}] >>`;
@@ -11257,13 +11281,13 @@ function buildPoCsv(vendorName, rows, meta) {
     ["Items", rows.length],
     ["Grand Total", currency.format(meta.grandTotal)],
     [],
-    ["CODE", "ITEM", "QTY", "CASES", "CASE SIZE", "UNIT COST", "TOTAL COST"],
+    ["CODE", "PLU", "ITEM", "QTY", "CASES", "UNIT COST", "TOTAL COST"],
     ...rows.map((row) => [
       row.code,
+      row.plu || "",
       row.product,
       row.qty || 0,
       row.cases || 0,
-      row.caseSize || 1,
       row.unitCost || 0,
       row.totalCost || 0,
     ]),
@@ -11275,30 +11299,32 @@ function buildPoExcelHtml(vendorName, rows, meta) {
   const poLabel = meta.poNumber ? `PO# ${escapeHtml(meta.poNumber)}` : "Purchase Order";
   return `<!doctype html><html><head><meta charset="utf-8">
     <style>
-      body{font-family:Arial,sans-serif;color:#17231f;}
-      .title{background:#0f7f5a;color:#fff;font-size:22px;font-weight:700;padding:14px 16px;}
-      .sub{font-size:16px;font-weight:700;margin:12px 0 8px;}
-      .chip{display:inline-block;border:1px solid #d9e6df;background:#f4faf6;padding:6px 10px;margin:0 6px 12px 0;border-radius:6px;}
+      body{font-family:Arial,sans-serif;color:#111!important;background:#fff;}
+      .head{border-bottom:4px solid #caa03d;padding:10px 0 12px;margin-bottom:12px;}
+      .logo{height:70px;vertical-align:middle;margin-right:16px;}
+      .title{color:#111!important;font-size:24px;font-weight:800;vertical-align:middle;}
+      .sub{font-size:16px;font-weight:700;margin:12px 0 8px;color:#8a6518!important;}
+      .chip{display:inline-block;border:1px solid #e2d3aa;background:#fff8e6;color:#111!important;padding:6px 10px;margin:0 6px 12px 0;border-radius:6px;}
       table{border-collapse:collapse;width:100%;}
-      th{background:#eaf6ef;color:#0b6b4b;border-bottom:2px solid #0f7f5a;padding:8px;text-align:left;font-size:12px;}
-      td{border-bottom:1px solid #dbe5df;padding:7px;font-size:12px;vertical-align:top;}
+      th{background:#f3e7c3;color:#111!important;border-bottom:2px solid #caa03d;padding:8px;text-align:left;font-size:12px;}
+      td{border-bottom:1px solid #e8dfc6;color:#111!important;padding:7px;font-size:12px;vertical-align:top;}
       tr:nth-child(even) td{background:#fbfdfb;}
       .num{text-align:right;}
       .grand{font-size:18px;font-weight:700;text-align:right;border-top:2px solid #17231f;padding-top:10px;margin-top:10px;}
     </style></head><body>
-    <div class="title">Cee Kay Order - ${escapeHtml(vendorName || "Vendor")}</div>
+    <div class="head"><img class="logo" src="data:image/jpeg;base64,${PO_LOGO_GOLD_JPEG_BASE64}" alt="Cee Kay"><span class="title">Cee Kay Order - ${escapeHtml(vendorName || "Vendor")}</span></div>
     <div class="sub">${poLabel}</div>
     <span class="chip"><b>Date</b> ${escapeHtml(meta.today)}</span>
     <span class="chip"><b>Items</b> ${number.format(rows.length)}</span>
     <span class="chip"><b>Total</b> ${escapeHtml(currency.format(meta.grandTotal))}</span>
     <table>
-      <thead><tr><th>CODE</th><th>ITEM</th><th class="num">QTY</th><th class="num">CASES</th><th class="num">CASE SIZE</th><th class="num">UNIT COST</th><th class="num">TOTAL COST</th></tr></thead>
+      <thead><tr><th>CODE</th><th>PLU</th><th>ITEM</th><th class="num">QTY</th><th class="num">CASES</th><th class="num">UNIT COST</th><th class="num">TOTAL COST</th></tr></thead>
       <tbody>${rows.map((row) => `<tr>
         <td style="mso-number-format:'\\@';">${escapeHtml(row.code)}</td>
+        <td style="mso-number-format:'\\@';">${escapeHtml(row.plu || "")}</td>
         <td>${escapeHtml(row.product)}</td>
         <td class="num">${escapeHtml(number.format(row.qty || 0))}</td>
         <td class="num">${escapeHtml(number.format(row.cases || 0))}</td>
-        <td class="num">${escapeHtml(number.format(row.caseSize || 1))}</td>
         <td class="num">${escapeHtml(currency.format(row.unitCost || 0))}</td>
         <td class="num">${escapeHtml(currency.format(row.totalCost || 0))}</td>
       </tr>`).join("")}</tbody>
@@ -11314,13 +11340,13 @@ function buildVendorPoEmail(vendorName, rows, options = {}) {
   const fileVendor = poSafeFilenamePart(vendorName);
   const poNumber = Number(options.poNumber || 0) || "";
   const poLabel = poNumber ? `PO# ${poNumber}` : "PO";
-  const header = ["CODE", "ITEM", "QTY", "CASES", "CASE SIZE", "UNIT COST", "TOTAL COST"];
+  const header = ["CODE", "PLU", "ITEM", "QTY", "CASES", "UNIT COST", "TOTAL COST"];
   const lines = rows.map((row) => [
     row.code,
+    row.plu || "",
     row.product,
     number.format(row.qty || 0),
     number.format(row.cases || 0),
-    number.format(row.caseSize || 1),
     currency.format(row.unitCost || 0),
     currency.format(row.totalCost || 0),
   ].join(" | "));
@@ -11341,16 +11367,16 @@ function buildVendorPoEmail(vendorName, rows, options = {}) {
     html: `
       <p><b>Purchase Order:</b> ${escapeHtml(vendorName || "Vendor")}</p>
       <p>${poNumber ? `<b>PO#:</b> ${escapeHtml(poNumber)}<br>` : ""}<b>Date:</b> ${escapeHtml(today)}<br><b>Items:</b> ${number.format(rows.length)}<br><b>Grand Total:</b> ${escapeHtml(currency.format(grandTotal))}</p>
-      <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;font-family:Arial,sans-serif;font-size:13px;">
-        <thead><tr>${header.map((label) => `<th>${escapeHtml(label)}</th>`).join("")}</tr></thead>
+      <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;font-family:Arial,sans-serif;font-size:13px;color:#111;">
+        <thead><tr>${header.map((label) => `<th style="background:#f3e7c3;color:#111;">${escapeHtml(label)}</th>`).join("")}</tr></thead>
         <tbody>${rows.map((row) => `<tr>
-          <td>${escapeHtml(row.code)}</td>
-          <td>${escapeHtml(row.product)}</td>
-          <td>${escapeHtml(number.format(row.qty || 0))}</td>
-          <td>${escapeHtml(number.format(row.cases || 0))}</td>
-          <td>${escapeHtml(number.format(row.caseSize || 1))}</td>
-          <td>${escapeHtml(currency.format(row.unitCost || 0))}</td>
-          <td>${escapeHtml(currency.format(row.totalCost || 0))}</td>
+          <td style="color:#111;">${escapeHtml(row.code)}</td>
+          <td style="color:#111;">${escapeHtml(row.plu || "")}</td>
+          <td style="color:#111;">${escapeHtml(row.product)}</td>
+          <td style="color:#111;">${escapeHtml(number.format(row.qty || 0))}</td>
+          <td style="color:#111;">${escapeHtml(number.format(row.cases || 0))}</td>
+          <td style="color:#111;">${escapeHtml(currency.format(row.unitCost || 0))}</td>
+          <td style="color:#111;">${escapeHtml(currency.format(row.totalCost || 0))}</td>
         </tr>`).join("")}</tbody>
       </table>
       <p>Copy sent to: ${escapeHtml(DEFAULT_PO_COPY_EMAIL)}</p>`,
@@ -11423,7 +11449,7 @@ async function emailVendorPo(vendorName, options = {}) {
   }
   try {
     await sendPoEmailBackend(vendorName, rows, { poNumber: options.poNumber });
-    if (!options.silent) showToast(`PO emailed for ${vendorName || "vendor"} with CSV/PDF attachments.`, 3200, "success");
+    if (!options.silent) showToast(`PO emailed for ${vendorName || "vendor"} with Excel/PDF attachments.`, 3200, "success");
     return true;
   } catch (error) {
     console.warn("Backend PO email failed", error);
@@ -11518,6 +11544,7 @@ function openPoHistoryDetail(poId) {
         .filter((item) => (po.codes || []).includes(codeKey(item.code)))
         .map((item) => ({
           code: item.code,
+          plu: item.plu || "",
           product: item.product,
           vendor: item.vendor,
           recommendedOrder: item.recommendedOrder,
@@ -11534,11 +11561,11 @@ function openPoHistoryDetail(poId) {
     <span><b>Status</b> ${po.cleared ? "Cleared" : "Pending"}</span>`;
   body.innerHTML = fallbackItems.map((item) => `<tr>
     <td>${escapeHtml(item.code)}</td>
+    <td>${escapeHtml(item.plu || "-")}</td>
     <td class="sku-name">${escapeHtml(item.product)}</td>
     <td>${escapeHtml(item.vendor || po.vendor)}</td>
     <td class="num">${number.format(item.recommendedOrder || 0)}</td>
     <td class="num">${number.format(item.caseOrder || 0)}</td>
-    <td class="num">${number.format(item.caseSize || 1)}</td>
     <td class="num">${currency.format(item.totalCost || 0)}</td>
   </tr>`).join("") || `<tr><td colspan="7" class="empty-cell">No stored PO detail for this order.</td></tr>`;
   modal.hidden = false;
