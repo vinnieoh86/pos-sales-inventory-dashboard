@@ -5462,6 +5462,100 @@ body[data-active-tab="multi"] .sticky-pills {
   display: none !important;
 }
 
+/* Product table fit pass: remove the old PO column, keep item names readable, and avoid right-scroll creep. */
+#inventory,
+#inventoryBody {
+  width: 100% !important;
+  min-width: 100% !important;
+  max-width: 100% !important;
+  table-layout: fixed !important;
+}
+
+#inventory th[data-col="product"],
+#inventoryBody td[data-col="product"] {
+  width: 30% !important;
+  min-width: 30% !important;
+  font-size: 0.72rem !important;
+  letter-spacing: -0.018em;
+}
+
+#inventoryBody td[data-col="product"] {
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+#inventory th[data-col="code"],
+#inventoryBody td[data-col="code"] {
+  width: 7.6rem !important;
+  min-width: 7.6rem !important;
+  max-width: 7.6rem !important;
+}
+
+#inventory th[data-col="vendor"],
+#inventoryBody td[data-col="vendor"],
+#inventory th[data-col="category"],
+#inventoryBody td[data-col="category"] {
+  width: 5.1rem !important;
+  min-width: 5.1rem !important;
+}
+
+#inventory th[data-col="addDate"],
+#inventoryBody td[data-col="addDate"] {
+  width: 4.7rem !important;
+  min-width: 4.7rem !important;
+  font-size: 0.78rem !important;
+  line-height: 1.2 !important;
+  text-align: center !important;
+  font-variant-numeric: tabular-nums;
+}
+
+#inventory th[data-col="stock"],
+#inventoryBody td[data-col="stock"],
+#inventory th[data-col="units"],
+#inventoryBody td[data-col="units"],
+#inventory th[data-col="velocity"],
+#inventoryBody td[data-col="velocity"],
+#inventory th[data-col="unitCost"],
+#inventoryBody td[data-col="unitCost"],
+#inventory th[data-col="price"],
+#inventoryBody td[data-col="price"] {
+  width: 4.25rem !important;
+  min-width: 4.25rem !important;
+}
+
+#inventory th[data-col="reorderMin"],
+#inventoryBody td[data-col="reorderMin"],
+#inventory th[data-col="reorderMax"],
+#inventoryBody td[data-col="reorderMax"] {
+  width: 3.75rem !important;
+  min-width: 3.75rem !important;
+  max-width: 3.75rem !important;
+}
+
+#inventory th[data-col="caseSize"],
+#inventoryBody td[data-col="caseSize"] {
+  width: 4.25rem !important;
+  min-width: 4.25rem !important;
+  max-width: 4.25rem !important;
+}
+
+#inventoryBody td[data-col="caseSize"] input[data-item-field="caseSize"] {
+  min-width: 0 !important;
+  width: 100% !important;
+}
+
+#inventory th[data-col="needs"],
+#inventoryBody td[data-col="needs"] {
+  width: 4.05rem !important;
+  min-width: 4.05rem !important;
+  max-width: 4.05rem !important;
+}
+
+#inventoryBody td.pending-needs-cell {
+  background: #fff7df !important;
+}
+
 #countSessionModal .count-modal__dialog--workspace {
   position: relative !important;
   inset: auto !important;
