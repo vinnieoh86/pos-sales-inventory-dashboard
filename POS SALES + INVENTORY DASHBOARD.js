@@ -8423,10 +8423,36 @@ function buildProductMetaRowsSnapshot() {
   return [...productMetaRowMap.values()].filter((row) => cleanCell(row.code));
 }
 
+function vendorRuleSyncKey(rule = {}) {
+  return cleanCell(rule.vendor || "").toUpperCase() || cleanCell(rule.id || "");
+}
+
+function vendorRuleUpdatedMs(rule = {}) {
+  return Date.parse(rule.updatedAt || rule.updated_at || "") || 0;
+}
+
 function applySharedVendorRuleRows(rows = []) {
   if (!rows?.length) return 0;
-  state.vendorRules = rows
+  const localByVendor = new Map(
+    (state.vendorRules || [])
+      .filter((rule) => rule?.vendor)
+      .map((rule) => [vendorRuleSyncKey(rule), rule])
+  );
+  const mergedByVendor = new Map();
+  rows
     .map(hydrateVendorRuleFromSupabase)
+    .filter((rule) => rule.vendor)
+    .forEach((remoteRule) => {
+      const key = vendorRuleSyncKey(remoteRule);
+      const localRule = localByVendor.get(key);
+      const localMs = vendorRuleUpdatedMs(localRule);
+      const remoteMs = vendorRuleUpdatedMs(remoteRule);
+      mergedByVendor.set(key, localRule && localMs > remoteMs + 1000 ? localRule : remoteRule);
+    });
+  localByVendor.forEach((localRule, key) => {
+    if (!mergedByVendor.has(key)) mergedByVendor.set(key, localRule);
+  });
+  state.vendorRules = [...mergedByVendor.values()]
     .filter((rule) => rule.vendor)
     .sort((a, b) => compareDisplayValue(a.vendor, b.vendor));
   localStorage.setItem("posDashboardVendorRules:v1", JSON.stringify(state.vendorRules));
@@ -9873,6 +9899,8 @@ async function exportFinalCountReportExcel() {
 // â”€â”€ Vendor Rules (Vendors tab) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function persistVendorRules() {
   localStorage.setItem("posDashboardVendorRules:v1", JSON.stringify(state.vendorRules));
+  bumpDataStamp();
+  queueActiveTabRender();
   scheduleSharedVendorRulesSync();
 }
 
@@ -10256,7 +10284,8 @@ function updateVendorBulkBar() {
 function bulkSetVendorStatus(status) {
   const ids = new Set(getSelectedVendorIds());
   if (!ids.size) return;
-  state.vendorRules = state.vendorRules.map((r) => ids.has(r.id) ? { ...r, status } : r);
+  const updatedAt = new Date().toISOString();
+  state.vendorRules = state.vendorRules.map((r) => ids.has(r.id) ? { ...r, status, updatedAt } : r);
   persistVendorRules();
   renderVendorRules();
   showToast(`${ids.size} vendor${ids.size > 1 ? "s" : ""} set to ${status}`, 2400, "success");
