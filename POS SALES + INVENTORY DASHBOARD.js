@@ -73,6 +73,7 @@
   productPoReviewSort: "rec-desc",
   vendorPoSort: "item-asc",
   uploadLogs: JSON.parse(localStorage.getItem("posDashboardUploadLogs:v1") || "[]"),
+  poBackorderCounts: JSON.parse(localStorage.getItem("posDashboardPoBackorderCounts:v1") || "{}"),
   multiBarcodeMap: JSON.parse(localStorage.getItem("posDashboardMultiBarcodeMap:v1") || "{}"),
   multiBarcodeMasters: JSON.parse(localStorage.getItem("posDashboardMultiBarcodeMasters:v1") || "[]"),
   multiBarcodeFileName: localStorage.getItem("posDashboardMultiBarcodeFileName:v1") || "",
@@ -465,7 +466,7 @@ document.body.append(hoverTooltip);
 
 if (!state.visibleColumns) {
   // Sensible defaults: hide rarely-needed columns to keep table in viewport
-  const defaultOff = new Set(["plu","itemNumber","sizeAttr","subType","containerAttr","addDate","inventoryCost"]);
+  const defaultOff = new Set(["plu","itemNumber","sizeAttr","subType","containerAttr","inventoryCost"]);
   state.visibleColumns = Object.fromEntries(inventoryColumns.map(([key]) => [key, !defaultOff.has(key)]));
 }
 if (!state.columnOrder) {
@@ -477,6 +478,7 @@ validColumnKeys.forEach((key) => {
   if (!state.columnOrder.includes(key)) state.columnOrder.push(key);
   if (!(key in state.visibleColumns)) state.visibleColumns[key] = true;
 });
+state.visibleColumns.addDate = true;
 
 const currency = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
 const number = new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 });
@@ -3192,6 +3194,7 @@ function renderProductPoReviewModal() {
   const allRows = buildInventoryRows()
     .map(applyOrderOverride)
     .filter((item) => item.isOrderable !== false && (item.recommendedOrder > 0 || item.qtyNeeded))
+    .filter((item) => !isPendingOrder(item.code))
     .sort((a, b) => (b.recommendedOrder || 0) - (a.recommendedOrder || 0));
   const vendors = [...new Set(allRows.map((item) => cleanCell(item.vendor)).filter(Boolean))].sort(compareDisplayValue);
   if (state.productPoReviewVendor && !vendors.some((vendor) => vendor.toUpperCase() === state.productPoReviewVendor.toUpperCase())) {
@@ -5230,14 +5233,10 @@ function renderOrders() {
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
       const code = btn.dataset.code;
-      state.pendingOrders = (state.pendingOrders || []).map((po) => {
-        if (po.cleared) return po;
-        const newCodes = (po.codes || []).filter((c) => c !== codeKey(code));
-        return { ...po, codes: newCodes };
-      });
-      savePendingOrders();
+      clearPendingForCode(code, { reason: "manual", backorder: true, render: false });
       renderOrders();
-      showToast("Pending cleared for " + code, 2000);
+      patchInventoryRow(code);
+      showToast("Pending cleared for " + code, 2000, "success");
     });
   });
   // Vendor analysis panel wiring now handled in the banner block above
@@ -5410,9 +5409,12 @@ function inventoryCellHtml(key, item) {
   const minOverridden = override.min != null;
   const maxOverridden = override.max != null;
   const anyOverride = minOverridden || maxOverridden;
+  const hasManualRule = item.orderingRuleMode === "custom";
+  const manualRuleTitle = hasManualRule ? `Manual safety/DOI override: ${number.format(item.effectiveSafetyDays || 0)}/${number.format(item.effectiveDaysOfInventory || 0)}` : "";
+  const backorderCount = poBackorderCountForCode(item.code);
   const values = {
     code: `<td data-col="code" class="copy-code full-code-cell" data-copy-code="${escapeHtml(item.code)}" title="Click code to copy">${escapeHtml(item.code)}</td>`,
-    product: `<td data-col="product" class="sku-name">${escapeHtml(item.product)}</td>`,
+    product: `<td data-col="product" class="sku-name${hasManualRule ? " manual-rule-item" : ""}" title="${escapeHtml([manualRuleTitle, item.product].filter(Boolean).join(" - "))}">${escapeHtml(item.product)}</td>`,
     plu: `<td data-col="plu">${escapeHtml(item.plu || "-")}</td>`,
     itemNumber: `<td data-col="itemNumber">${escapeHtml(item.itemNumber || "-")}</td>`,
     subType: `<td data-col="subType">${escapeHtml(item.subType || "-")}</td>`,
@@ -5420,7 +5422,7 @@ function inventoryCellHtml(key, item) {
     containerAttr: `<td data-col="containerAttr">${escapeHtml(item.containerAttr || "-")}</td>`,
     category: `<td data-col="category">${escapeHtml(item.category || "-")}</td>`,
     vendor: `<td data-col="vendor">${escapeHtml(item.vendor || "-")}</td>`,
-    state: `<td data-col="state" class="inventory-edit-cell">${inventoryStateSelectHtml(item)}</td>`,
+    state: `<td data-col="state" class="inventory-edit-cell inventory-state-cell">${inventoryStateSelectHtml(item)}${backorderCount ? `<span class="po-backorder-count" title="Backordered ${number.format(backorderCount)} time${backorderCount === 1 ? "" : "s"}">${number.format(backorderCount)}</span>` : ""}</td>`,
     addDate: `<td data-col="addDate">${escapeHtml(formatShortDisplayDate(item.addDate))}</td>`,
     stock: `<td data-col="stock" class="num stock-col stock-clickable" title="Click to adjust stock">${number.format(item.stock)}</td>`,
     units: `<td data-col="units" class="num sold-col">${number.format(item.units)}</td>`,
@@ -5481,12 +5483,7 @@ function wireInventoryRowInteractions(row) {
     btn.addEventListener("click", (event) => {
       event.stopPropagation();
       const code = btn.dataset.code;
-      state.pendingOrders = (state.pendingOrders || []).map((po) => {
-        if (po.cleared) return po;
-        const newCodes = (po.codes || []).filter((c) => c !== codeKey(code));
-        return { ...po, codes: newCodes };
-      });
-      savePendingOrders();
+      clearPendingForCode(code, { reason: "manual", backorder: true, render: false });
       patchInventoryRow(code);
       renderOrders();
       showToast("Pending cleared for " + code, 2000, "success");
@@ -5653,6 +5650,8 @@ function renderInventorySummary(rows) {
   const quickValue = els.inventoryQuickFilter?.value || "";
   const showOverridesOnly = quickValue.includes("overrides");
   const showNeedsOnly = quickValue.includes("needs");
+  const showPendingOnly = quickValue.includes("pending");
+  const pendingCount = rows.filter((item) => isPendingOrder(item.code)).length;
   const totals = rows.reduce(
     (sum, item) => ({
       items: sum.items + 1,
@@ -5673,22 +5672,28 @@ function renderInventorySummary(rows) {
     <span data-cost-summary><b>${currency.format(totals.inventoryCost)}</b> stock cost</span>
     <label class="inventory-toggle-chip"><input type="checkbox" id="inventoryQuickOverrides"${showOverridesOnly ? " checked" : ""} />Overrides</label>
     <label class="inventory-toggle-chip"><input type="checkbox" id="inventoryQuickNeeds"${showNeedsOnly ? " checked" : ""} />Order needed</label>
+    <label class="inventory-toggle-chip"><input type="checkbox" id="inventoryQuickPending"${showPendingOnly ? " checked" : ""} />PO pending${pendingCount ? ` (${number.format(pendingCount)})` : ""}</label>
+    ${pendingCount ? `<button type="button" class="secondary-button inventory-clear-pending-button" id="inventoryClearAllPendingButton">Clear all PO pending</button>` : ""}
     ${selectedCount ? `<button type="button" class="secondary-button inventory-selected-button" id="inventorySelectedActionsButton">Selected (${number.format(selectedCount)})</button>` : ""}`;
   applyRoleRestrictions(true);
   document.querySelector("#inventorySelectedActionsButton")?.addEventListener("click", openInventoryBulkActionsModal);
+  document.querySelector("#inventoryClearAllPendingButton")?.addEventListener("click", clearAllPendingPo);
   const syncQuickChecks = () => {
     const overrides = !!document.querySelector("#inventoryQuickOverrides")?.checked;
     const needs = !!document.querySelector("#inventoryQuickNeeds")?.checked;
+    const pending = !!document.querySelector("#inventoryQuickPending")?.checked;
     if (els.inventoryQuickFilter) {
-      els.inventoryQuickFilter.value = overrides && needs ? "overrides+needs"
-        : overrides ? "overrides"
-        : needs ? "needs"
-        : "";
+      const parts = [];
+      if (overrides) parts.push("overrides");
+      if (needs) parts.push("needs");
+      if (pending) parts.push("pending");
+      els.inventoryQuickFilter.value = parts.join("+");
     }
     renderInventory();
   };
   document.querySelector("#inventoryQuickOverrides")?.addEventListener("change", syncQuickChecks);
   document.querySelector("#inventoryQuickNeeds")?.addEventListener("change", syncQuickChecks);
+  document.querySelector("#inventoryQuickPending")?.addEventListener("change", syncQuickChecks);
 }
 
 function buildInventoryRows(options = {}) {
@@ -5809,8 +5814,9 @@ function buildInventoryRows(options = {}) {
       if (els.vendorFilter.value && item.vendor !== els.vendorFilter.value) return false;
       if (els.colorFilter.value && item.color !== els.colorFilter.value && item.subType !== els.colorFilter.value) return false;
     }
-    if (quickFilter === "overrides" && !item.isOverridden) return false;
-    if (quickFilter === "needs" && !(item.recommendedOrder > 0)) return false;
+    if (quickFilter.includes("overrides") && !item.isOverridden) return false;
+    if (quickFilter.includes("needs") && !(item.recommendedOrder > 0)) return false;
+    if (quickFilter.includes("pending") && !isPendingOrder(item.code)) return false;
     return true;
   }).sort(compareInventoryRows);
 }
@@ -8165,6 +8171,8 @@ async function savePersistedState() {
     inventoryRows: [...state.latestInventory.values()],
     excelRows: [...state.excelItems.values()],
     loadedFileSignatures: [...state._loadedFileSignatures],
+    pendingOrders: state.pendingOrders || [],
+    poBackorderCounts: state.poBackorderCounts || {},
   };
   try {
     localStorage.setItem(LOCAL_SNAPSHOT_KEY, JSON.stringify({
@@ -8206,6 +8214,14 @@ async function restorePersistedState() {
     state.excelItems = new Map();
     (saved.excelRows || []).forEach((item) => addExcelIndex(item));
     rebuildExcelIndexes();
+    if (Array.isArray(saved.pendingOrders)) {
+      state.pendingOrders = saved.pendingOrders;
+      savePendingOrders();
+    }
+    if (saved.poBackorderCounts && typeof saved.poBackorderCounts === "object") {
+      state.poBackorderCounts = saved.poBackorderCounts;
+      savePoBackorderCounts();
+    }
     const dbItemMeta = await readDbValue(DB_ITEM_META_KEY);
     let legacyItemMeta = {};
     if (!dbItemMeta) {
@@ -9635,6 +9651,7 @@ function finalizeStockAdjust(reason) {
   state._localProductMetaEdits.set(key, Date.now());
   patchInventoryModelStock(item.code, after);
   patchVisibleStockCell(item.code, after);
+  recordPendingReceiptIfNeeded(item.code, before, after);
   // Record in log
   state.adjustmentLog.unshift({
     recordedAt: new Date().toISOString(),
@@ -10416,6 +10433,11 @@ function savePendingOrders() {
 }
 if (!state.pendingOrders) state.pendingOrders = loadPendingOrders();
 
+function savePoBackorderCounts() {
+  state.poBackorderCounts = state.poBackorderCounts || {};
+  localStorage.setItem("posDashboardPoBackorderCounts:v1", JSON.stringify(state.poBackorderCounts));
+}
+
 function pendingVendorNames() {
   return new Set(
     (state.pendingOrders || [])
@@ -10428,6 +10450,68 @@ function pendingVendorNames() {
 function isPendingOrder(code) {
   if (!state.pendingOrders?.length) return false;
   return state.pendingOrders.some((po) => !po.cleared && (po.codes||[]).includes(codeKey(code)));
+}
+
+function poBackorderCountForCode(code) {
+  const count = Math.round(toNumber(state.poBackorderCounts?.[codeKey(code)]) || 0);
+  return count > 0 ? count : 0;
+}
+
+function incrementPoBackorderForCodes(codes = [], options = {}) {
+  state.poBackorderCounts = state.poBackorderCounts || {};
+  [...new Set(codes.map(codeKey).filter(Boolean))].forEach((key) => {
+    state.poBackorderCounts[key] = poBackorderCountForCode(key) + 1;
+  });
+  if (options.save !== false) savePoBackorderCounts();
+}
+
+function resetPoBackorderForCode(code, options = {}) {
+  const key = codeKey(code);
+  if (!key || !state.poBackorderCounts?.[key]) return;
+  delete state.poBackorderCounts[key];
+  if (options.save !== false) savePoBackorderCounts();
+}
+
+function clearPendingForCode(code, options = {}) {
+  const key = codeKey(code);
+  if (!key || !state.pendingOrders?.length) return false;
+  let changed = false;
+  state.pendingOrders = state.pendingOrders.map((po) => {
+    if (po.cleared) return po;
+    const oldCodes = (po.codes || []).map(codeKey).filter(Boolean);
+    if (!oldCodes.includes(key)) return po;
+    changed = true;
+    const nextCodes = oldCodes.filter((entry) => entry !== key);
+    return {
+      ...po,
+      codes: nextCodes,
+      cleared: nextCodes.length === 0,
+      clearedAt: nextCodes.length === 0 ? new Date().toISOString() : po.clearedAt,
+      clearReason: nextCodes.length === 0 ? (options.reason || "manual") : po.clearReason,
+    };
+  });
+  if (!changed) return false;
+  if (options.backorder) incrementPoBackorderForCodes([key], { save: false });
+  if (options.received) resetPoBackorderForCode(key, { save: false });
+  savePendingOrders();
+  savePoBackorderCounts();
+  if (options.persist !== false) void savePersistedState();
+  if (options.render) {
+    patchInventoryRow(code);
+    renderOrders();
+  }
+  return true;
+}
+
+function recordPendingReceiptIfNeeded(code, before, after) {
+  if ((toNumber(after) - toNumber(before)) <= 2 || !isPendingOrder(code)) return false;
+  const cleared = clearPendingForCode(code, { reason: "received", received: true, backorder: false, render: false });
+  if (cleared) {
+    patchInventoryRow(code);
+    if (activeTabName() === "ordering") renderOrders();
+    showToast(`PO pending cleared for ${code} - stock received.`, 2600, "success");
+  }
+  return cleared;
 }
 
 function closeOrderVendorMenu() {
@@ -10521,6 +10605,7 @@ function submitVendorPo(vendorName, options = {}) {
   };
   state.pendingOrders = [...(state.pendingOrders||[]), po];
   savePendingOrders();
+  void savePersistedState();
   state.adjustmentLog.unshift({
     recordedAt: new Date().toISOString(),
     user: currentAuditUser(),
@@ -10568,11 +10653,20 @@ function clearExpiredPendingOrders() {
   if (!state.pendingOrders?.length) return;
   const now = Date.now();
   let changed = false;
+  const expiredCodes = [];
   state.pendingOrders = state.pendingOrders.map((po) => {
-    if (!po.cleared && po.clearAt && now > po.clearAt) { changed = true; return { ...po, cleared: true }; }
+    if (!po.cleared && po.clearAt && now > po.clearAt) {
+      changed = true;
+      expiredCodes.push(...(po.codes || []));
+      return { ...po, cleared: true, clearedAt: new Date().toISOString(), clearReason: "expired" };
+    }
     return po;
   });
-  if (changed) savePendingOrders();
+  if (expiredCodes.length) incrementPoBackorderForCodes(expiredCodes, { save: false });
+  if (changed) {
+    savePendingOrders();
+    savePoBackorderCounts();
+  }
 }
 // Run on load
 clearExpiredPendingOrders();
@@ -10850,12 +10944,23 @@ document.querySelector("#vpmCloseButton") && document.querySelector("#vpmCloseBu
   document.querySelector("#vendorPoModal").hidden = true;
 });
 
-function clearVendorPending(vendorName) {
+function clearVendorPending(vendorName, options = {}) {
   if (!state.pendingOrders?.length) return;
-  state.pendingOrders = state.pendingOrders.map((po) =>
-    po.vendor === vendorName ? { ...po, cleared: true, clearedAt: new Date().toISOString() } : po
-  );
+  const target = String(vendorName || "").toUpperCase();
+  const clearedCodes = [];
+  let changed = false;
+  state.pendingOrders = state.pendingOrders.map((po) => {
+    if (po.cleared || String(po.vendor || "").toUpperCase() !== target) return po;
+    changed = true;
+    clearedCodes.push(...(po.codes || []));
+    return { ...po, cleared: true, clearedAt: new Date().toISOString(), clearReason: options.reason || "manual" };
+  });
+  if (!changed) return;
+  if (options.backorder !== false) incrementPoBackorderForCodes(clearedCodes, { save: false });
   savePendingOrders();
+  savePoBackorderCounts();
+  void savePersistedState();
+  renderInventory();
   renderOrders();
   showToast(`Pending cleared for ${vendorName}`, 2400, "success");
 }
@@ -11664,9 +11769,14 @@ function clearAllPendingPo() {
     return;
   }
   if (!confirm(`Clear ${activePos.length} pending PO${activePos.length === 1 ? "" : "s"}?`)) return;
-  state.pendingOrders = (state.pendingOrders || []).map((po) => po.cleared ? po : { ...po, cleared: true, clearedAt: new Date().toISOString() });
+  const clearedCodes = activePos.flatMap((po) => po.codes || []);
+  state.pendingOrders = (state.pendingOrders || []).map((po) => po.cleared ? po : { ...po, cleared: true, clearedAt: new Date().toISOString(), clearReason: "manual-all" });
+  if (clearedCodes.length) incrementPoBackorderForCodes(clearedCodes, { save: false });
   savePendingOrders();
+  savePoBackorderCounts();
+  void savePersistedState();
   renderPoHistory();
+  renderInventory();
   renderOrders();
   showToast("All pending PO statuses cleared.", 2400, "success");
 }
