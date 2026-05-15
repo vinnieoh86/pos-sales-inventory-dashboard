@@ -6314,3 +6314,162 @@ body {
     min-width: 780px !important;
   }
 }
+
+/* Final stable product-grid pass: fixed controls, resizable columns, lighter first paint. */
+.tab-view[data-tab-view="inventory"] .table-wrap {
+  max-height: calc(100vh - 17rem) !important;
+  overflow: auto !important;
+  -webkit-overflow-scrolling: touch !important;
+}
+
+.tab-view[data-tab-view="inventory"] #inventory thead th {
+  position: sticky !important;
+  top: 0 !important;
+  z-index: 28 !important;
+  background: #f4f8f5 !important;
+}
+
+.inventory-summary {
+  grid-template-columns: repeat(10, max-content) !important;
+  justify-content: start !important;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  max-height: none !important;
+  scrollbar-width: thin !important;
+}
+
+.inventory-summary .inventory-toggle-chip {
+  min-width: 7.2rem !important;
+  max-width: 8.8rem !important;
+  justify-content: center !important;
+}
+
+.inventory-quick-tools .inventory-quick-tools__row,
+.inventory-quick-tools--inventory .inventory-quick-tools__row {
+  grid-template-columns: repeat(auto-fit, minmax(5rem, max-content)) !important;
+  justify-content: start !important;
+}
+
+.inventory-quick-tools__row #arrangeColumnsButton,
+.inventory-quick-tools__row #resizeColumnsButton,
+.inventory-quick-tools__row #downloadInventory,
+.inventory-quick-tools__row #createPoShortcut,
+.inventory-quick-tools__row .column-picker > summary {
+  width: auto !important;
+  min-width: 5.2rem !important;
+  max-width: 8.6rem !important;
+  white-space: nowrap !important;
+}
+
+#inventory th {
+  position: relative !important;
+}
+
+.inventory-header-label {
+  display: inline-block;
+  max-width: calc(100% - 0.35rem);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+}
+
+.column-resize-handle {
+  display: none;
+  position: absolute;
+  top: 0;
+  right: -2px;
+  width: 8px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 40;
+}
+
+#inventory th.is-resizable .column-resize-handle {
+  display: block;
+}
+
+#inventory th.is-resizable {
+  cursor: default !important;
+}
+
+.rule-col {
+  color: #111827 !important;
+  background: transparent !important;
+  font-weight: 800 !important;
+  font-size: 0.7rem !important;
+  cursor: pointer !important;
+}
+
+.rule-col--manual {
+  color: #b91c1c !important;
+  background: #fff1f2 !important;
+}
+
+#inventoryBody td[data-col="product"].manual-rule-item {
+  color: inherit !important;
+  background: transparent !important;
+}
+
+.item-rule-popover {
+  position: fixed;
+  z-index: 5000;
+  width: 250px;
+  padding: 0.75rem;
+  border: 1px solid #cbd8d1;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.22);
+}
+
+.item-rule-popover__title {
+  font-size: 0.78rem;
+  font-weight: 900;
+  color: #047857;
+  text-transform: uppercase;
+}
+
+.item-rule-popover__item {
+  margin: 0.15rem 0 0.55rem;
+  font-weight: 800;
+  line-height: 1.1;
+}
+
+.item-rule-popover__grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.45rem;
+}
+
+.item-rule-popover__grid label {
+  display: grid;
+  gap: 0.22rem;
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.item-rule-popover__grid input {
+  width: 100%;
+  height: 2rem;
+  border: 1px solid #cbd8d1;
+  border-radius: 6px;
+  padding: 0 0.45rem;
+  font-weight: 800;
+}
+
+.item-rule-popover__hint {
+  margin-top: 0.45rem;
+  color: #5f6d68;
+  font-size: 0.72rem;
+}
+
+.item-rule-popover__actions {
+  display: flex;
+  gap: 0.45rem;
+  margin-top: 0.65rem;
+}
+
+.item-rule-popover__actions button {
+  flex: 1;
+  min-height: 2rem;
+  padding: 0.25rem 0.5rem;
+}

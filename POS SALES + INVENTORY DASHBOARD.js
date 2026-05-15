@@ -9,7 +9,9 @@
   itemMeta: {},
   visibleColumns: JSON.parse(localStorage.getItem("posDashboardVisibleColumns:v3") || "null"),
   columnOrder: JSON.parse(localStorage.getItem("posDashboardColumnOrder:v3") || "null"),
+  columnWidths: JSON.parse(localStorage.getItem("posDashboardColumnWidths:v1") || "{}"),
   arrangeColumns: false,
+  resizeColumns: false,
   detailOrder: JSON.parse(localStorage.getItem("posDashboardDetailOrder:v1") || "null"),
   detailFilters: JSON.parse(localStorage.getItem("posDashboardDetailFilters:v1") || "null"),
   parentRules: JSON.parse(localStorage.getItem("posDashboardParentRules:v1") || "[]"),
@@ -1231,6 +1233,9 @@ document.addEventListener("click", (event) => {
   if (!event.target.closest("#datePresets")) {
     closeDatePickerPopup();
   }
+  if (!event.target.closest("#itemRulePopover") && !event.target.closest("td[data-col='rule']")) {
+    closeRulePopover();
+  }
 });
 
 els.downloadOrder.addEventListener("click", () => {
@@ -1256,6 +1261,12 @@ els.inventoryBody?.addEventListener("click", (event) => {
   if (copyButton) {
     event.stopPropagation();
     copyText(copyButton.dataset.copyCode || copyButton.textContent.trim(), copyButton);
+    return;
+  }
+  const ruleCell = event.target.closest("td[data-col='rule']");
+  if (ruleCell) {
+    event.stopPropagation();
+    openRulePopover(ruleCell.dataset.code || ruleCell.closest("tr[data-item-code]")?.dataset.itemCode, ruleCell);
     return;
   }
   if (event.target.closest(".mini-input, .reset-override, [data-item-field]")) return;
@@ -2450,10 +2461,28 @@ function mountInventoryQuickTools() {
   renderSharedQuickTools(activeTabName());
 }
 
+function ensureResizeColumnsButton() {
+  let button = document.querySelector("#resizeColumnsButton");
+  if (button) return button;
+  button = document.createElement("button");
+  button.type = "button";
+  button.id = "resizeColumnsButton";
+  button.className = "secondary-button";
+  button.textContent = "Resize columns";
+  button.addEventListener("click", () => {
+    state.resizeColumns = !state.resizeColumns;
+    button.classList.toggle("active-edit", state.resizeColumns);
+    button.textContent = state.resizeColumns ? "Done resizing" : "Resize columns";
+    renderInventoryHeader();
+  });
+  return button;
+}
+
 function renderSharedQuickTools(tab = activeTabName()) {
   if (!els.inventoryQuickTools) return;
   const row = els.inventoryQuickTools.querySelector(".inventory-quick-tools__row");
   if (!row) return;
+  const resizeColumnsButton = ensureResizeColumnsButton();
   const inventoryColumnPicker = document.querySelector(".column-picker");
   const orderColumnPicker = document.querySelector("#orderColumnPicker");
   const orderArrangeButton = document.querySelector("#orderArrangeColumnsButton");
@@ -2495,9 +2524,12 @@ function renderSharedQuickTools(tab = activeTabName()) {
   }
 
   if (isInventory) {
+    resizeColumnsButton.classList.toggle("active-edit", state.resizeColumns);
+    resizeColumnsButton.textContent = state.resizeColumns ? "Done resizing" : "Resize columns";
     row.replaceChildren(...[
       els.inventoryStateFilter,
       els.arrangeColumnsButton,
+      resizeColumnsButton,
       inventoryColumnPicker,
       els.downloadInventory,
       els.createPoShortcut,
@@ -3596,7 +3628,10 @@ function findCountMatch(query) {
 
 function currentSelectedCountItem() {
   if (!state.selectedCountItemCode) return null;
-  return filteredCountCandidateRows().find((item) => codeKey(item.code) === codeKey(state.selectedCountItemCode)) || null;
+  const selectedKey = codeKey(state.selectedCountItemCode);
+  return filteredCountCandidateRows().find((item) => codeKey(item.code) === selectedKey)
+    || allCountCandidateRows().find((item) => codeKey(item.code) === selectedKey)
+    || null;
 }
 
 function renderSelectedCountItem() {
@@ -3644,18 +3679,7 @@ function handleCountLookup() {
   }
   const inScope = filteredCountCandidateRows().some((item) => codeKey(item.code) === codeKey(match.code));
   if (!inScope) {
-    state.selectedCountItemCode = "";
-    state.countStage = "search";
-    state.countQtyBuffer = "0";
-    renderSelectedCountItem();
-    renderCountQuantity();
-    if (els.countSearchInput) {
-      els.countSearchInput.classList.add("count-search-error");
-      setTimeout(() => els.countSearchInput && els.countSearchInput.classList.remove("count-search-error"), 1200);
-    }
-    focusCountSearch();
-    showToast("Item is outside the selected vendor/category scope.", 3400, "warning");
-    return;
+    showToast("Item is outside the selected count filters, but it was found in the item master and can be counted.", 4200, "warning");
   }
   state.selectedCountItemCode = match.code;
   state.countStage = "qty";
@@ -3837,9 +3861,9 @@ function renderCountDropdown(query) {
     }).join("");
   }
   if (outScopeMatches.length) {
-    html += `<div class="count-dd-group-label count-dd-out-label">âœ— Outside scope</div>`;
+    html += `<div class="count-dd-group-label count-dd-out-label">Outside scope - can still count</div>`;
     html += outScopeMatches.map(({ item }) => `
-      <div class="count-dd-item count-dd-out" title="Not in this session's scope">
+      <div class="count-dd-item count-dd-out" data-code="${escapeHtml(item.code)}" title="Outside this session's filters; click to count anyway">
         <span class="count-dd-name">${escapeHtml(item.product)}</span>
         <span class="count-dd-meta">${escapeHtml(item.code)}${item.vendor ? ` Â· ${escapeHtml(item.vendor)}` : ""}</span>
       </div>`).join("");
@@ -3848,7 +3872,7 @@ function renderCountDropdown(query) {
   dd.innerHTML = html;
   dd.hidden = false;
 
-  dd.querySelectorAll(".count-dd-item:not(.count-dd-out)").forEach((el) => {
+  dd.querySelectorAll(".count-dd-item[data-code]").forEach((el) => {
     el.addEventListener("mousedown", (e) => {
       e.preventDefault();
       selectCountDropdownItem(el.dataset.code);
@@ -3859,9 +3883,11 @@ function renderCountDropdown(query) {
 function selectCountDropdownItem(code) {
   hideCountDropdown();
   if (!state.activeCountSession) return;
-  // Find item in filtered pool
-  const item = filteredCountCandidateRows().find((r) => codeKey(r.code) === codeKey(code));
-  if (!item) { showToast("Item not in session scope.", 2800, "warning"); return; }
+  const key = codeKey(code);
+  const filteredItem = filteredCountCandidateRows().find((r) => codeKey(r.code) === key);
+  const item = filteredItem || allCountCandidateRows().find((r) => codeKey(r.code) === key);
+  if (!item) { showToast("Item not found in the item master.", 2800, "warning"); return; }
+  if (!filteredItem) showToast("Item is outside the selected count filters, but it was found and can be counted.", 3600, "warning");
   if (els.countSearchInput) els.countSearchInput.value = item.product;
   state.selectedCountItemCode = item.code;
   state.countStage = "qty";
@@ -4143,20 +4169,43 @@ function sessionMatchesPeriodFilter(session, period) {
   return true;
 }
 
+function countSessionDisplayKey(session) {
+  if (!session) return "";
+  return [
+    cleanCell(session.date),
+    cleanCell(session.vendor || session.department || "All"),
+    cleanCell(session.category || "All"),
+    cleanCell(session.status || "All"),
+    cleanCell(session.startedAt),
+  ].join("|");
+}
+
+function dedupeCountSessionsForDisplay(sessions = []) {
+  const merged = new Map();
+  sessions.forEach((session) => {
+    const key = countSessionDisplayKey(session) || cleanCell(session.id);
+    if (!key) return;
+    const existing = merged.get(key);
+    const currentTime = Date.parse(session.updatedAt || session.submittedAt || session.startedAt || 0) || 0;
+    const existingTime = Date.parse(existing?.updatedAt || existing?.submittedAt || existing?.startedAt || 0) || 0;
+    if (!existing || currentTime >= existingTime) merged.set(key, session);
+  });
+  return [...merged.values()];
+}
+
 function renderCountSessionRows() {
   if (!els.countSessionBody) return;
   const vendorFilter = els.sessionHistoryVendorFilter?.value || "";
   const periodFilter = els.sessionHistoryPeriodFilter?.value || "";
 
-  const filtered = [...new Map(state.countSessions
+  const filtered = dedupeCountSessionsForDisplay(state.countSessions
     .slice()
     .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")))
     .filter((s) => {
       if (vendorFilter && (s.vendor || s.department || "") !== vendorFilter) return false;
       if (!sessionMatchesPeriodFilter(s, periodFilter)) return false;
       return true;
-    })
-    .map((session) => [cleanCell(session.id) || `${session.startedAt}|${session.date}|${session.vendor}|${session.category}`, session])).values()];
+    }));
 
   if (!filtered.length) {
     els.countSessionBody.innerHTML = `<tr><td colspan="11" class="empty-cell">${state.countSessions.length ? "No sessions match filters." : "No physical count sessions saved yet."}</td></tr>`;
@@ -5318,6 +5367,17 @@ function renderTable() {
 function renderInventory() {
   renderSharedQuickTools("inventory");
   const rows = currentInventoryRows();
+  const filterKey = JSON.stringify({
+    search: els.searchInput?.value || "",
+    state: els.inventoryStateFilter?.value || "",
+    quick: els.inventoryQuickFilter?.value || "",
+    order: state.columnOrder,
+    sort: state.inventorySort,
+  });
+  if (state._inventoryVisibleFilterKey !== filterKey) {
+    state._inventoryVisibleFilterKey = filterKey;
+    state._inventoryVisibleLimit = 200;
+  }
   const renderToken = (state._inventoryRenderToken || 0) + 1;
   state._inventoryRenderToken = renderToken;
   els.inventoryBody.innerHTML = "";
@@ -5331,7 +5391,8 @@ function renderInventory() {
   // Chunked rendering â€” build DOM in batches via requestAnimationFrame so the
   // browser stays responsive. Tooltip HTML is deferred until mouseover.
   const CHUNK = 80;
-  const visible = rows.slice(0, 1200);
+  const visibleLimit = Math.max(200, Math.min(rows.length, state._inventoryVisibleLimit || 200));
+  const visible = rows.slice(0, visibleLimit);
   let offset = 0;
 
   function renderChunk() {
@@ -5350,6 +5411,8 @@ function renderInventory() {
       if (renderToken !== state._inventoryRenderToken) return;
       els.inventoryBody.querySelectorAll("tr[data-item-code]").forEach((entry) => wireInventoryRowInteractions(entry));
       applyColumnVisibility();
+      applyInventoryColumnWidths();
+      wireInventoryInfiniteScroll();
       syncInventoryHeaderOffset();
     }
   }
@@ -5361,6 +5424,70 @@ function syncInventoryHeaderOffset() {
   root.style.setProperty("--inventory-summary-height", "0px");
 }
 
+function applyInventoryColumnWidths() {
+  let style = document.querySelector("#inventoryColumnWidthStyle");
+  if (!style) {
+    style = document.createElement("style");
+    style.id = "inventoryColumnWidthStyle";
+    document.head.append(style);
+  }
+  const rules = Object.entries(state.columnWidths || {})
+    .filter(([, width]) => Number(width) >= 42)
+    .map(([key, width]) => {
+      const safeKey = CSS.escape(key);
+      const px = Math.round(Number(width));
+      return `#inventory th[data-col="${safeKey}"],#inventoryBody td[data-col="${safeKey}"]{width:${px}px!important;min-width:${px}px!important;max-width:${px}px!important;}`;
+    });
+  style.textContent = rules.join("\n");
+}
+
+function autoFitInventoryColumn(key) {
+  if (!key) return;
+  const header = document.querySelector(`#inventory th[data-col="${CSS.escape(key)}"]`);
+  const cells = [...document.querySelectorAll(`#inventoryBody td[data-col="${CSS.escape(key)}"]`)].slice(0, 120);
+  const sampleText = [header?.textContent || "", ...cells.map((cell) => cell.textContent || "")]
+    .reduce((longest, text) => (text.trim().length > longest.length ? text.trim() : longest), "");
+  const width = Math.max(48, Math.min(520, Math.ceil(sampleText.length * 7.4) + 34));
+  state.columnWidths[key] = width;
+  localStorage.setItem("posDashboardColumnWidths:v1", JSON.stringify(state.columnWidths));
+  applyInventoryColumnWidths();
+}
+
+function startInventoryColumnResize(event, key) {
+  event.preventDefault();
+  event.stopPropagation();
+  const header = event.currentTarget.closest("th");
+  if (!header || !key) return;
+  const startX = event.clientX;
+  const startWidth = header.getBoundingClientRect().width;
+  const onMove = (moveEvent) => {
+    const nextWidth = Math.max(42, Math.min(620, Math.round(startWidth + moveEvent.clientX - startX)));
+    state.columnWidths[key] = nextWidth;
+    applyInventoryColumnWidths();
+  };
+  const onUp = () => {
+    localStorage.setItem("posDashboardColumnWidths:v1", JSON.stringify(state.columnWidths));
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+  };
+  document.addEventListener("mousemove", onMove);
+  document.addEventListener("mouseup", onUp, { once: true });
+}
+
+function wireInventoryInfiniteScroll() {
+  const scroller = els.inventoryBody?.closest(".table-wrap") || els.inventoryBody?.parentElement;
+  if (!scroller || scroller.dataset.infiniteInventoryWired === "true") return;
+  scroller.dataset.infiniteInventoryWired = "true";
+  scroller.addEventListener("scroll", () => {
+    const totalRows = (state.inventoryRows || []).length;
+    if ((state._inventoryVisibleLimit || 200) >= totalRows) return;
+    const remaining = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+    if (remaining > 220) return;
+    state._inventoryVisibleLimit = Math.min(totalRows, (state._inventoryVisibleLimit || 200) + 200);
+    renderInventory();
+  }, { passive: true });
+}
+
 function renderInventoryHeader() {
   const row = document.querySelector("#inventory thead tr");
   if (!row) return;
@@ -5368,8 +5495,9 @@ function renderInventoryHeader() {
   // Always start with the checkbox th, then data columns
   row.innerHTML = `<th class="checkbox-col" style="width:28px;min-width:28px;max-width:28px"><input type="checkbox" id="selectAllInventory" title="Select / deselect all" /></th>` +
     state.columnOrder.map((key) => `
-    <th data-col="${key}" data-sort="${key}" ${state.arrangeColumns ? 'draggable="true"' : ""}>
-      ${escapeHtml(labels[key] || key)}
+    <th data-col="${key}" data-sort="${key}" class="${state.resizeColumns ? "is-resizable" : ""}" ${state.arrangeColumns ? 'draggable="true"' : ""}>
+      <span class="inventory-header-label">${escapeHtml(labels[key] || key)}</span>
+      <span class="column-resize-handle" data-resize-col="${key}" title="Drag to resize. Double-click to fit."></span>
     </th>`).join("");
   // Re-wire select-all after rebuild
   const cb = row.querySelector("#selectAllInventory");
@@ -5405,7 +5533,20 @@ function renderInventoryHeader() {
       moveColumn(event.dataTransfer.getData("text/plain"), header.dataset.col);
     });
   });
+  row.querySelectorAll("[data-resize-col]").forEach((handle) => {
+    handle.addEventListener("mousedown", (event) => startInventoryColumnResize(event, handle.dataset.resizeCol));
+    handle.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    handle.addEventListener("dblclick", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      autoFitInventoryColumn(handle.dataset.resizeCol);
+    });
+  });
   applyColumnVisibility();
+  applyInventoryColumnWidths();
   updateSortHeaders();
 }
 
@@ -5438,20 +5579,21 @@ function inventoryCellHtml(key, item) {
   const maxOverridden = override.max != null;
   const anyOverride = minOverridden || maxOverridden;
   const hasManualRule = item.orderingRuleMode === "custom";
-  const manualRuleTitle = hasManualRule ? `Manual safety/DOI override: ${number.format(item.effectiveSafetyDays || 0)}/${number.format(item.effectiveDaysOfInventory || 0)}` : "";
+  const ruleText = `${number.format(item.effectiveSafetyDays || 0)}/${number.format(item.effectiveDaysOfInventory || 0)}`;
+  const ruleTitle = hasManualRule ? `Manual safety/DOI override: ${ruleText}` : `Vendor/default safety/DOI rule: ${ruleText}`;
   const backorderCount = poBackorderCountForCode(item.code);
   const values = {
     code: `<td data-col="code" class="copy-code full-code-cell" data-copy-code="${escapeHtml(item.code)}" title="Click code to copy">${escapeHtml(item.code)}</td>`,
-    product: `<td data-col="product" class="sku-name${hasManualRule ? " manual-rule-item" : ""}" title="${escapeHtml([manualRuleTitle, item.product].filter(Boolean).join(" - "))}"><span class="sku-name-text">${escapeHtml(item.product)}</span></td>`,
+    product: `<td data-col="product" class="sku-name" title="${escapeHtml(item.product)}"><span class="sku-name-text">${escapeHtml(item.product)}</span></td>`,
     plu: `<td data-col="plu">${escapeHtml(item.plu || "-")}</td>`,
-    rule: `<td data-col="rule" class="rule-col" title="${escapeHtml(manualRuleTitle || "Uses vendor/default safety and DOI rule")}">${hasManualRule ? `${number.format(item.effectiveSafetyDays || 0)}/${number.format(item.effectiveDaysOfInventory || 0)}` : ""}</td>`,
+    rule: `<td data-col="rule" class="rule-col${hasManualRule ? " rule-col--manual" : ""}" data-code="${escapeHtml(item.code)}" title="${escapeHtml(ruleTitle)}">${ruleText}</td>`,
     itemNumber: `<td data-col="itemNumber">${escapeHtml(item.itemNumber || "-")}</td>`,
     subType: `<td data-col="subType">${escapeHtml(item.subType || "-")}</td>`,
     sizeAttr: `<td data-col="sizeAttr">${escapeHtml(item.sizeAttr || "-")}</td>`,
     containerAttr: `<td data-col="containerAttr">${escapeHtml(item.containerAttr || "-")}</td>`,
     category: `<td data-col="category">${escapeHtml(item.category || "-")}</td>`,
     vendor: `<td data-col="vendor">${escapeHtml(item.vendor || "-")}</td>`,
-    state: `<td data-col="state" class="inventory-edit-cell inventory-state-cell">${inventoryStateSelectHtml(item)}${backorderCount >= 3 ? `<span class="state-badge state-backorder" title="Backordered ${number.format(backorderCount)} times">Backorder</span>` : ""}${backorderCount ? `<span class="po-backorder-count" title="Backordered ${number.format(backorderCount)} time${backorderCount === 1 ? "" : "s"}">${number.format(backorderCount)}</span>` : ""}</td>`,
+    state: `<td data-col="state" class="inventory-edit-cell inventory-state-cell">${inventoryStateSelectHtml(item)}${backorderCount >= 3 ? `<span class="state-badge state-backorder" title="Backordered ${number.format(backorderCount)} times">B/O</span>` : ""}${backorderCount ? `<span class="po-backorder-count" title="Backordered ${number.format(backorderCount)} time${backorderCount === 1 ? "" : "s"}">${number.format(backorderCount)}</span>` : ""}</td>`,
     addDate: `<td data-col="addDate">${escapeHtml(formatShortDisplayDate(item.addDate))}</td>`,
     stock: `<td data-col="stock" class="num stock-col stock-clickable" title="Click to adjust stock">${number.format(item.stock)}</td>`,
     units: `<td data-col="units" class="num sold-col">${number.format(item.units)}</td>`,
@@ -5518,6 +5660,62 @@ function wireInventoryRowInteractions(row) {
       showToast("Pending cleared for " + code, 2000, "success");
     });
   });
+}
+
+function closeRulePopover() {
+  document.querySelector("#itemRulePopover")?.remove();
+}
+
+function openRulePopover(code, anchor) {
+  closeRulePopover();
+  const item = findCurrentItemByCode(code) || state._inventoryRowIndex?.get?.(codeKey(code));
+  if (!item || isUserRole()) return;
+  const rule = effectiveItemRule(item);
+  const popover = document.createElement("div");
+  popover.id = "itemRulePopover";
+  popover.className = "item-rule-popover";
+  popover.innerHTML = `
+    <div class="item-rule-popover__title">SD / DOI</div>
+    <div class="item-rule-popover__item">${escapeHtml(item.product || item.code)}</div>
+    <div class="item-rule-popover__grid">
+      <label><span>SD</span><input type="number" min="0" step="1" data-popover-safety value="${escapeHtml(String(rule.safetyDays || 0))}" /></label>
+      <label><span>DOI</span><input type="number" min="0" step="1" data-popover-doi value="${escapeHtml(String(rule.daysOfInventory || 0))}" /></label>
+    </div>
+    <div class="item-rule-popover__hint">Vendor/default: ${number.format(rule.vendorSafety || 0)} / ${number.format(rule.vendorDoi || 0)}</div>
+    <div class="item-rule-popover__actions">
+      <button type="button" class="count-submit-btn" data-popover-save>Save</button>
+      <button type="button" class="secondary-button" data-popover-vendor>Use vendor</button>
+    </div>`;
+  document.body.append(popover);
+  const rect = anchor.getBoundingClientRect();
+  popover.style.left = `${Math.min(window.innerWidth - 260, Math.max(8, rect.left))}px`;
+  popover.style.top = `${Math.min(window.innerHeight - 190, rect.bottom + 8)}px`;
+  const refreshAfterRuleChange = (message) => {
+    const refreshedItem = refreshVisibleInventoryRowByCode(item.code) || patchInventoryRowFromCache(item.code) || item;
+    if (state._activeDetailCode && codeKey(state._activeDetailCode) === codeKey(item.code)) showDetail(refreshedItem, { preserveTab: true });
+    renderInventorySummary(state.inventoryRows || currentInventoryRows());
+    closeRulePopover();
+    showToast(message, 2200, "success");
+  };
+  popover.querySelector("[data-popover-save]")?.addEventListener("click", () => {
+    const safety = Math.max(0, Math.round(toNumber(popover.querySelector("[data-popover-safety]")?.value) || 0));
+    const doi = Math.max(0, Math.round(toNumber(popover.querySelector("[data-popover-doi]")?.value) || 0));
+    setItemMeta(item.code, {
+      orderingRuleMode: "custom",
+      safetyDaysOverride: safety,
+      daysOfInventoryOverride: doi,
+    });
+    refreshAfterRuleChange(`Saved SD/DOI for ${item.code}`);
+  });
+  popover.querySelector("[data-popover-vendor]")?.addEventListener("click", () => {
+    setItemMeta(item.code, {
+      orderingRuleMode: "vendor",
+      safetyDaysOverride: null,
+      daysOfInventoryOverride: null,
+    });
+    refreshAfterRuleChange(`Reverted ${item.code} to vendor SD/DOI`);
+  });
+  popover.querySelector("input")?.focus();
 }
 
 function patchInventoryRow(code) {
@@ -6439,25 +6637,6 @@ function showDetail(item, options = {}) {
       </div>
       <div class="detail-grid">
         ${sortedFields.map(([key, label, section, value]) => `<span draggable="false" data-detail-key="${key}" data-detail-section="${section}" style="${visibleFields.has(key) ? "" : "display:none;"}">${label} ${value}</span>`).join("")}
-      </div>
-      <div class="bulk-editor-modal" style="margin-top:16px;padding:16px;display:block;">
-        <h3 style="margin:0 0 10px;">Item ordering override</h3>
-        <div class="summary-strip">
-          <span><b>Vendor default</b> ${number.format(itemRule.vendorSafety || 0)} / ${number.format(itemRule.vendorDoi || 0)}</span>
-          <span><b>Effective</b> ${number.format(itemRule.safetyDays || 0)} / ${number.format(itemRule.daysOfInventory || 0)}</span>
-        </div>
-        <label style="display:flex;align-items:center;gap:8px;margin:12px 0;">
-          <input type="checkbox" data-item-rule-custom ${itemRule.mode === "custom" ? "checked" : ""} />
-          <span>Use custom safety / days-of-inventory for this item</span>
-        </label>
-        <div class="bulk-editor-grid">
-          <label><span>Safety days override</span><input type="number" min="0" step="1" value="${itemRule.mode === "custom" ? escapeHtml(String(itemRule.customSafety || 0)) : ""}" data-item-rule-safety placeholder="${number.format(itemRule.vendorSafety || 0)}" /></label>
-          <label><span>Days of inventory override</span><input type="number" min="0" step="1" value="${itemRule.mode === "custom" ? escapeHtml(String(itemRule.customDoi || 0)) : ""}" data-item-rule-doi placeholder="${number.format(itemRule.vendorDoi || 0)}" /></label>
-        </div>
-        <div class="detail-multi-actions" style="margin-top:12px;">
-          <button type="button" class="count-submit-btn" data-save-item-rule>Save Item Rule</button>
-          <button type="button" class="secondary-button" data-clear-item-rule>Use Vendor Rule</button>
-        </div>
       </div>
     </section>
     <section class="detail-panel detail-multi-panel"${activeDetailTab === "multi" ? "" : " hidden"}>
@@ -8914,7 +9093,8 @@ function applySharedCountSessionRows(rows = []) {
     savedById.delete(remoteActiveId);
     savedSessions.unshift({ ...activeSession, remoteActive: true });
   }
-  state.countSessions = savedSessions.sort((a, b) => String(b.updatedAt || b.submittedAt || "").localeCompare(String(a.updatedAt || a.submittedAt || "")));
+  state.countSessions = dedupeCountSessionsForDisplay(savedSessions)
+    .sort((a, b) => String(b.updatedAt || b.submittedAt || "").localeCompare(String(a.updatedAt || a.submittedAt || "")));
   if (localActiveId) {
     state.activeCountSession = remoteActiveId === localActiveId ? activeSession : state.activeCountSession;
   } else {
