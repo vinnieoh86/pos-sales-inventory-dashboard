@@ -6377,15 +6377,17 @@ body {
   display: none;
   position: absolute;
   top: 0;
-  right: -2px;
-  width: 8px;
+  right: 0;
+  width: 12px;
   height: 100%;
   cursor: col-resize;
   z-index: 40;
+  touch-action: none;
 }
 
 #inventory th.is-resizable .column-resize-handle {
   display: block;
+  background: linear-gradient(90deg, transparent 0 4px, #0f766e 4px 6px, transparent 6px 100%);
 }
 
 #inventory th.is-resizable {
@@ -6472,4 +6474,105 @@ body {
   flex: 1;
   min-height: 2rem;
   padding: 0.25rem 0.5rem;
+}
+
+.controls-grid label:has(#safetyDays),
+.controls-grid label:has(#daysOfInventory) {
+  display: none !important;
+}
+
+#inventory th,
+#inventoryBody td {
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+#inventoryBody td[data-col="state"] {
+  padding-left: 0.18rem !important;
+  padding-right: 0.18rem !important;
+}
+
+#inventoryBody td[data-col="state"] .inventory-edit-select,
+#inventoryBody td[data-col="state"] select {
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  padding-left: 0.35rem !important;
+  padding-right: 1rem !important;
+  font-size: clamp(0.58rem, 0.8vw, 0.74rem) !important;
+}
+
+.inventory-state-cell {
+  gap: 0.16rem !important;
+  justify-content: flex-start !important;
+}
+
+.state-backorder {
+  margin-left: 0 !important;
+  transform: translateX(-2px);
+  background: #4b5563 !important;
+  color: #fff !important;
+  border-color: #374151 !important;
+  min-width: 1.65rem !important;
+  padding-left: 0.22rem !important;
+  padding-right: 0.22rem !important;
+  text-align: center !important;
+}
+
+.inventory-loading-more {
+  position: sticky;
+  left: 0;
+  bottom: 0;
+  z-index: 35;
+  margin: 0.35rem auto;
+  width: max-content;
+  max-width: 100%;
+  padding: 0.35rem 0.75rem;
+  border: 1px solid #cbd8d1;
+  border-radius: 999px;
+  background: #fff;
+  color: #1f332d;
+  font-size: 0.75rem;
+  font-weight: 800;
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.12);
+}
+
+html,
+body,
+.app,
+main,
+.tab-view,
+.panel {
+  overflow-x: auto !important;
+  -webkit-overflow-scrolling: touch !important;
+  touch-action: pan-x pan-y !important;
+}
+
+.sticky-pills,
+.tab-row,
+.compact-uploader {
+  overflow-x: auto !important;
+  -webkit-overflow-scrolling: touch !important;
+  touch-action: pan-x pan-y !important;
+}
+
+#inventory {
+  min-width: 1180px !important;
+}
+
+@media (pointer: coarse), (max-width: 900px) {
+  body {
+    overflow-x: auto !important;
+  }
+
+  .app {
+    min-width: 1060px !important;
+  }
+
+  .tab-view[data-tab-view="inventory"] .table-wrap,
+  .order-table-wrap,
+  .vpm-table-wrap {
+    overflow: auto !important;
+    touch-action: pan-x pan-y !important;
+  }
 }

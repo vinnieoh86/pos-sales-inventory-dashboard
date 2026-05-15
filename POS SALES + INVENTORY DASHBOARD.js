@@ -406,6 +406,14 @@ const els = {
   countComparisonViewButton: document.querySelector("#countComparisonViewButton"),
 };
 
+[els.safetyDays, els.daysOfInventory].filter(Boolean).forEach((input) => {
+  const label = input.closest("label");
+  if (label) {
+    label.hidden = true;
+    label.style.display = "none";
+  }
+});
+
 const inventoryColumns = [
   ["code", "Code"],
   ["product", "Item"],
@@ -676,7 +684,7 @@ els.countClearSearchButton?.addEventListener("click", clearCountLookup);
 els.countSearchInput?.addEventListener("keydown", (event) => {
   const dropdown = document.querySelector("#countSearchDropdown");
   if (dropdown && !dropdown.hidden) {
-    const items = [...dropdown.querySelectorAll(".count-dd-item:not(.count-dd-out)")];
+    const items = [...dropdown.querySelectorAll(".count-dd-item[data-code]")];
     const active = dropdown.querySelector(".count-dd-item--active");
     if (event.key === "ArrowDown") {
       event.preventDefault();
@@ -1076,6 +1084,21 @@ document.addEventListener("keydown", (event) => {
     return;
   }
   if (!els.countDuplicateModal.hidden) return;
+  if (
+    !els.countSessionModal.hidden &&
+    state.activeCountSession &&
+    state.countStage === "search" &&
+    event.target !== els.countSearchInput &&
+    !event.target.closest?.("input, textarea, select, button") &&
+    (event.key === "Enter" || event.key.length === 1)
+  ) {
+    els.countSearchInput?.focus();
+    if (event.key === "Enter") {
+      event.preventDefault();
+      handleCountLookup();
+      return;
+    }
+  }
   if (!els.countSessionModal.hidden && event.target === els.countSearchInput && event.key === "Enter") return;
   if (!els.countReportModal.hidden) return;
   if (document.querySelector(".tab-button.active")?.dataset.tab === "counts" && state.activeCountSession && state.countStage === "qty") {
@@ -2044,7 +2067,7 @@ function scheduleSharedCountSessionsSync() {
   clearTimeout(sharedCountSessionsTimer);
   sharedCountSessionsTimer = setTimeout(() => {
     syncSharedCountSessionsToSupabase(true).catch(() => {});
-  }, 250);
+  }, 1600);
 }
 
 function allowedItemStates() {
@@ -3712,7 +3735,12 @@ function openDuplicateCountModal(item, qty, existing) {
 function closeDuplicateCountModal() {
   state.pendingDuplicateCount = null;
   els.countDuplicateModal.hidden = true;
-  state.countStage = "qty";
+  state.countStage = "search";
+  state.selectedCountItemCode = "";
+  state.countQtyBuffer = "0";
+  renderSelectedCountItem();
+  renderCountQuantity();
+  focusCountSearch();
 }
 
 function commitCountEntry(item, qty, mode) {
@@ -3750,16 +3778,13 @@ function commitCountEntry(item, qty, mode) {
   if (els.countSearchInput) els.countSearchInput.value = "";
   hideCountDropdown();
   focusCountSearch();
-  // Toast deferred so it doesn't block the next scan
-  requestAnimationFrame(() => showToast(
-    mode === "add"
-      ? `Added ${number.format(qty)} to ${item.code}`
-      : mode === "reset"
-        ? `Reset ${item.code} to ${number.format(qty)}`
-        : `Set ${item.code} to ${number.format(qty)}`,
-    2000,
-    "success",
-  ));
+  if (mode !== "set") {
+    requestAnimationFrame(() => showToast(
+      mode === "add" ? `Added ${number.format(qty)} to ${item.code}` : `Reset ${item.code} to ${number.format(qty)}`,
+      1600,
+      "success",
+    ));
+  }
 }
 
 function resolveDuplicateCount(mode) {
@@ -4202,6 +4227,7 @@ function renderCountSessionRows() {
     .slice()
     .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")))
     .filter((s) => {
+      if (!(s.entries || []).length && !s.savedAt && !s.submittedAt) return false;
       if (vendorFilter && (s.vendor || s.department || "") !== vendorFilter) return false;
       if (!sessionMatchesPeriodFilter(s, periodFilter)) return false;
       return true;
@@ -5483,14 +5509,43 @@ function wireInventoryInfiniteScroll() {
     if ((state._inventoryVisibleLimit || 200) >= totalRows) return;
     const remaining = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
     if (remaining > 220) return;
+    showInventoryLoadingMore();
     state._inventoryVisibleLimit = Math.min(totalRows, (state._inventoryVisibleLimit || 200) + 200);
     renderInventory();
   }, { passive: true });
 }
 
+function showInventoryLoadingMore() {
+  let note = document.querySelector("#inventoryLoadingMore");
+  if (!note) {
+    note = document.createElement("div");
+    note.id = "inventoryLoadingMore";
+    note.className = "inventory-loading-more";
+    note.textContent = "Loading more...";
+    els.inventoryBody?.closest(".table-wrap")?.append(note);
+  }
+  note.hidden = false;
+  clearTimeout(state._inventoryLoadingMoreTimer);
+  state._inventoryLoadingMoreTimer = setTimeout(() => { note.hidden = true; }, 900);
+}
+
 function renderInventoryHeader() {
   const row = document.querySelector("#inventory thead tr");
   if (!row) return;
+  const headerKey = JSON.stringify({
+    order: state.columnOrder,
+    visible: state.visibleColumns,
+    sort: state.inventorySort,
+    arrange: state.arrangeColumns,
+    resize: state.resizeColumns,
+  });
+  if (state._inventoryHeaderKey === headerKey && row.children.length > 1) {
+    applyColumnVisibility();
+    applyInventoryColumnWidths();
+    updateSortHeaders();
+    return;
+  }
+  state._inventoryHeaderKey = headerKey;
   const labels = Object.fromEntries(inventoryColumns);
   // Always start with the checkbox th, then data columns
   row.innerHTML = `<th class="checkbox-col" style="width:28px;min-width:28px;max-width:28px"><input type="checkbox" id="selectAllInventory" title="Select / deselect all" /></th>` +
@@ -5715,7 +5770,13 @@ function openRulePopover(code, anchor) {
     });
     refreshAfterRuleChange(`Reverted ${item.code} to vendor SD/DOI`);
   });
-  popover.querySelector("input")?.focus();
+  popover.querySelectorAll("input").forEach((input) => {
+    input.addEventListener("focus", () => input.select?.());
+    input.addEventListener("click", () => input.select?.());
+  });
+  const firstInput = popover.querySelector("input");
+  firstInput?.focus();
+  firstInput?.select?.();
 }
 
 function patchInventoryRow(code) {
