@@ -5862,3 +5862,455 @@ body {
   padding: 0.22rem 0.58rem !important;
   font-size: 0.76rem !important;
 }
+
+/* Stable layout lock: clamp text inside cells, never the table cells themselves. */
+.inventory-summary {
+  display: grid !important;
+  grid-template-columns: repeat(auto-fit, minmax(6rem, max-content)) !important;
+  grid-auto-rows: 1.68rem !important;
+  gap: 0.32rem !important;
+  align-items: center !important;
+  max-height: 3.72rem !important;
+  overflow: hidden !important;
+}
+
+.inventory-summary > span,
+.inventory-summary .inventory-toggle-chip,
+.inventory-summary .inventory-clear-pending-button,
+.inventory-summary .inventory-selected-button {
+  min-height: 1.58rem !important;
+  height: 1.58rem !important;
+  padding: 0.18rem 0.46rem !important;
+  font-size: 0.68rem !important;
+  line-height: 1 !important;
+  white-space: nowrap !important;
+}
+
+.inventory-quick-tools,
+.inventory-quick-tools--ordering {
+  grid-column: 1 / -1 !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  min-width: 0 !important;
+  overflow: visible !important;
+}
+
+.inventory-quick-tools .inventory-quick-tools__row,
+.inventory-quick-tools--ordering .inventory-quick-tools__row {
+  display: grid !important;
+  grid-template-columns: repeat(auto-fit, minmax(6.6rem, max-content)) !important;
+  gap: 0.36rem !important;
+  justify-content: start !important;
+  align-items: center !important;
+  max-width: 100% !important;
+}
+
+.inventory-quick-tools .inventory-quick-tools__row > *,
+.inventory-quick-tools--ordering .inventory-quick-tools__row > *,
+.inventory-quick-tools--ordering .inventory-quick-tools__row button,
+.inventory-quick-tools--ordering .inventory-quick-tools__row summary,
+.inventory-quick-tools--ordering .inventory-quick-tools__row select {
+  min-width: 0 !important;
+  max-width: 100% !important;
+  height: 1.82rem !important;
+  min-height: 1.82rem !important;
+  padding: 0.22rem 0.58rem !important;
+  font-size: 0.74rem !important;
+  white-space: nowrap !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+}
+
+#inventoryBody td[data-col="product"],
+.order-table .sku-name,
+.vpm-table .sku-name {
+  display: table-cell !important;
+  vertical-align: top !important;
+  white-space: normal !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+  font-weight: 500 !important;
+  line-height: 1.08 !important;
+}
+
+#inventoryBody td[data-col="product"] .sku-name-text,
+.order-table .sku-name .sku-name-text,
+.vpm-table .sku-name .sku-name-text {
+  display: -webkit-box !important;
+  -webkit-box-orient: vertical !important;
+  -webkit-line-clamp: 2 !important;
+  overflow: hidden !important;
+  line-height: 1.08 !important;
+  font-weight: 500 !important;
+  letter-spacing: -0.01em !important;
+}
+
+#inventory th[data-col="product"],
+#inventoryBody td[data-col="product"] {
+  width: 27% !important;
+  min-width: 14rem !important;
+}
+
+#inventory th[data-col="plu"],
+#inventoryBody td[data-col="plu"] {
+  width: 4.55rem !important;
+  min-width: 4.55rem !important;
+  max-width: 4.55rem !important;
+}
+
+#inventory th[data-col="rule"],
+#inventoryBody td[data-col="rule"] {
+  width: 3.55rem !important;
+  min-width: 3.55rem !important;
+  max-width: 3.55rem !important;
+  text-align: center !important;
+}
+
+.rule-col {
+  color: #92400e !important;
+  background: #fff7ed !important;
+  font-weight: 800 !important;
+  font-size: 0.7rem !important;
+}
+
+#inventory th[data-col="addDate"],
+#inventoryBody td[data-col="addDate"] {
+  width: 3.85rem !important;
+  min-width: 3.85rem !important;
+  max-width: 3.85rem !important;
+  font-size: 0.72rem !important;
+  text-align: center !important;
+  vertical-align: middle !important;
+}
+
+.state-backorder {
+  background: #111827 !important;
+  color: #facc15 !important;
+  border: 1px solid #92400e !important;
+}
+
+.order-table {
+  table-layout: fixed !important;
+  width: 100% !important;
+  min-width: 0 !important;
+}
+
+.order-table .sku-name {
+  min-width: 0 !important;
+  max-width: none !important;
+  text-align: left !important;
+}
+
+/* Final no-drift pass: keep controls and table cells stable across tab refreshes. */
+.inventory-quick-tools,
+.inventory-quick-tools--ordering {
+  position: static !important;
+  transform: none !important;
+  margin: 0 !important;
+  justify-self: stretch !important;
+  align-self: start !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  overflow: visible !important;
+}
+
+.inventory-quick-tools .inventory-quick-tools__row,
+.inventory-quick-tools--ordering .inventory-quick-tools__row {
+  display: grid !important;
+  grid-template-columns: repeat(auto-fit, minmax(5.6rem, max-content)) !important;
+  grid-auto-rows: 1.7rem !important;
+  gap: 0.3rem !important;
+  justify-content: start !important;
+  align-content: start !important;
+  max-height: 3.7rem !important;
+  overflow: visible !important;
+}
+
+.inventory-quick-tools__row .primary-button,
+.inventory-quick-tools__row .secondary-button,
+.inventory-quick-tools__row button,
+.inventory-quick-tools__row summary,
+.inventory-quick-tools__row select {
+  line-height: 1 !important;
+  min-width: 5.6rem !important;
+  height: 1.7rem !important;
+  min-height: 1.7rem !important;
+  padding: 0.18rem 0.5rem !important;
+  font-size: 0.72rem !important;
+}
+
+.inventory-summary {
+  grid-template-columns: repeat(auto-fit, minmax(5.4rem, max-content)) !important;
+  grid-auto-rows: 1.5rem !important;
+}
+
+.inventory-summary > span,
+.inventory-summary .inventory-toggle-chip,
+.inventory-summary .inventory-clear-pending-button,
+.inventory-summary .inventory-selected-button {
+  min-height: 1.46rem !important;
+  height: 1.46rem !important;
+  padding: 0.14rem 0.4rem !important;
+  font-size: 0.66rem !important;
+}
+
+#inventoryBody td[data-col="product"],
+.order-table.order-table--fixed td[data-col="product"],
+.vpm-table .sku-name {
+  display: table-cell !important;
+  vertical-align: top !important;
+  white-space: normal !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+  font-weight: 500 !important;
+  line-height: 1.08 !important;
+}
+
+#inventoryBody td[data-col="product"] .sku-name-text,
+.order-table.order-table--fixed td[data-col="product"] .sku-name-text,
+.vpm-table .sku-name .sku-name-text {
+  display: -webkit-box !important;
+  -webkit-box-orient: vertical !important;
+  -webkit-line-clamp: 2 !important;
+  overflow: hidden !important;
+  white-space: normal !important;
+  line-height: 1.08 !important;
+  font-weight: 500 !important;
+}
+
+#inventory th[data-col="product"],
+#inventoryBody td[data-col="product"] {
+  width: 30% !important;
+  min-width: 16rem !important;
+}
+
+#inventory th[data-col="plu"],
+#inventoryBody td[data-col="plu"] {
+  width: 4.9rem !important;
+  min-width: 4.9rem !important;
+  max-width: 4.9rem !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+#inventory th[data-col="addDate"],
+#inventoryBody td[data-col="addDate"] {
+  width: 3.55rem !important;
+  min-width: 3.55rem !important;
+  max-width: 3.55rem !important;
+  font-size: 0.74rem !important;
+  line-height: 1 !important;
+  text-align: center !important;
+  vertical-align: middle !important;
+}
+
+.order-table.order-table--fixed {
+  table-layout: fixed !important;
+  width: 100% !important;
+  min-width: 0 !important;
+}
+
+.order-table.order-table--fixed th,
+.order-table.order-table--fixed td {
+  vertical-align: top !important;
+  line-height: 1.12 !important;
+  padding-top: 0.34rem !important;
+  padding-bottom: 0.34rem !important;
+}
+
+.order-table.order-table--fixed th[data-col="product"],
+.order-table.order-table--fixed td[data-col="product"] {
+  width: 30% !important;
+  min-width: 14rem !important;
+  text-align: left !important;
+}
+
+.order-table.order-table--fixed th[data-col="plu"],
+.order-table.order-table--fixed td[data-col="plu"] {
+  width: 5.2rem !important;
+  min-width: 5.2rem !important;
+  max-width: 5.2rem !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+.order-table.order-table--fixed th[data-col="code"],
+.order-table.order-table--fixed td[data-col="code"] {
+  width: 7.2rem !important;
+  min-width: 7.2rem !important;
+}
+
+.order-table.order-table--fixed th[data-col="status"],
+.order-table.order-table--fixed td[data-col="status"],
+.order-table.order-table--fixed th[data-col="pending"],
+.order-table.order-table--fixed td[data-col="pending"] {
+  width: 4.6rem !important;
+  min-width: 4.6rem !important;
+}
+
+.order-table.order-table--fixed th[data-col="recommendedOrder"],
+.order-table.order-table--fixed td[data-col="recommendedOrder"] {
+  width: 5.2rem !important;
+}
+
+.order-table.order-table--fixed th[data-col="caseOrder"],
+.order-table.order-table--fixed td[data-col="caseOrder"],
+.order-table.order-table--fixed th[data-col="caseSize"],
+.order-table.order-table--fixed td[data-col="caseSize"] {
+  width: 4.2rem !important;
+}
+
+/* Final viewport lock: override older table minimums that caused right drift. */
+body {
+  overflow-x: hidden !important;
+}
+
+.tab-view,
+.panel,
+.table-wrap,
+.inventory-table-wrap,
+.order-table-wrap,
+.vpm-table-wrap,
+.inventory-quick-tools,
+.inventory-quick-tools--ordering {
+  max-width: 100% !important;
+  min-width: 0 !important;
+  box-sizing: border-box !important;
+}
+
+#inventory,
+.order-table,
+.order-table.order-table--fixed {
+  width: 100% !important;
+  min-width: 0 !important;
+  table-layout: fixed !important;
+}
+
+.inventory-quick-tools,
+.inventory-quick-tools--ordering {
+  grid-column: 1 / -1 !important;
+  grid-row: auto !important;
+  width: 100% !important;
+}
+
+.inventory-quick-tools .inventory-quick-tools__row,
+.inventory-quick-tools--ordering .inventory-quick-tools__row {
+  grid-template-columns: repeat(auto-fit, minmax(5.1rem, 1fr)) !important;
+  max-height: none !important;
+}
+
+.inventory-summary {
+  display: grid !important;
+  grid-template-columns: repeat(auto-fit, minmax(4.9rem, 1fr)) !important;
+  grid-auto-rows: 1.45rem !important;
+  max-height: 3.05rem !important;
+  overflow: hidden !important;
+  align-content: start !important;
+}
+
+#inventory th[data-col="product"],
+#inventoryBody td[data-col="product"],
+.order-table.order-table--fixed th[data-col="product"],
+.order-table.order-table--fixed td[data-col="product"] {
+  width: auto !important;
+  min-width: 0 !important;
+}
+
+#inventory th[data-col="plu"],
+#inventoryBody td[data-col="plu"] {
+  width: 5rem !important;
+  min-width: 5rem !important;
+  max-width: 5rem !important;
+}
+
+#inventory th[data-col="rule"],
+#inventoryBody td[data-col="rule"] {
+  width: 3.5rem !important;
+  min-width: 3.5rem !important;
+  max-width: 3.5rem !important;
+}
+
+#inventory th[data-col="addDate"],
+#inventoryBody td[data-col="addDate"] {
+  width: 3.5rem !important;
+  min-width: 3.5rem !important;
+  max-width: 3.5rem !important;
+}
+
+/* Final product readability + mobile scroll pass. */
+#inventoryBody td[data-col="product"] {
+  padding-top: 0.22rem !important;
+  padding-bottom: 0.22rem !important;
+  line-height: 1.02 !important;
+}
+
+#inventoryBody td[data-col="product"] .sku-name-text,
+.order-table.order-table--fixed td[data-col="product"] .sku-name-text,
+.vpm-table .sku-name .sku-name-text {
+  display: block !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  white-space: normal !important;
+  overflow-wrap: normal !important;
+  word-break: normal !important;
+  line-height: 1.02 !important;
+  max-height: 2.15em !important;
+  overflow: hidden !important;
+  -webkit-line-clamp: unset !important;
+  -webkit-box-orient: unset !important;
+}
+
+#inventory th[data-col="plu"],
+#inventoryBody td[data-col="plu"] {
+  width: 5.8rem !important;
+  min-width: 5.8rem !important;
+  max-width: 5.8rem !important;
+  font-size: 0.78rem !important;
+}
+
+#inventory th[data-col="code"],
+#inventoryBody td[data-col="code"] {
+  width: 8.2rem !important;
+  min-width: 8.2rem !important;
+  max-width: 8.2rem !important;
+}
+
+#countSessionModal.count-modal:not([hidden]),
+#sessionHistoryModal.count-modal:not([hidden]),
+#countReportModal.count-modal:not([hidden]),
+#reportCountModal.count-modal:not([hidden]),
+#reportLogsModal.count-modal:not([hidden]),
+#reportPoModal.count-modal:not([hidden]),
+#reportAdjustModal.count-modal:not([hidden]) {
+  overflow: auto !important;
+  -webkit-overflow-scrolling: touch !important;
+  touch-action: pan-x pan-y !important;
+}
+
+#countSessionModal .count-modal__dialog--workspace,
+#sessionHistoryModal .count-modal__dialog,
+#countReportModal .count-modal__dialog,
+#reportCountModal .count-modal__dialog,
+#reportLogsModal .count-modal__dialog,
+#reportPoModal .count-modal__dialog,
+#reportAdjustModal .count-modal__dialog {
+  max-height: none !important;
+  overflow: visible !important;
+}
+
+@media (pointer: coarse) {
+  #countSessionModal .count-modal__dialog--workspace {
+    min-width: 960px !important;
+  }
+
+  #countSessionModal .count-workspace__grid {
+    grid-template-columns: minmax(30rem, 1.15fr) minmax(24rem, 0.9fr) !important;
+  }
+
+  .count-report-table,
+  .inner-auto-table {
+    min-width: 780px !important;
+  }
+}

@@ -408,6 +408,7 @@ const inventoryColumns = [
   ["code", "Code"],
   ["product", "Item"],
   ["plu", "PLU"],
+  ["rule", "SD/DOI"],
   ["itemNumber", "Item #"],
   ["sizeAttr", "Sub"],
   ["subType", "Type"],
@@ -415,7 +416,7 @@ const inventoryColumns = [
   ["category", "Category"],
   ["vendor", "Vendor"],
   ["state", "State"],
-  ["addDate", "Add Date"],
+  ["addDate", "DATE"],
   ["stock", "Stock"],
   ["units", "Sold"],
   ["velocity", "SV/day"],
@@ -433,8 +434,8 @@ const orderColumns = [
   { key: "pending",          label: "Pending",     defaultOn: true  },
   { key: "code",             label: "Code",        defaultOn: true  },
   { key: "product",          label: "Item",        defaultOn: true  },
+  { key: "plu",              label: "PLU",         defaultOn: true  },
   { key: "vendor",           label: "Vendor",      defaultOn: true  },
-  { key: "plu",              label: "PLU",         defaultOn: false },
   { key: "velocity",         label: "SV/day",      defaultOn: true  },
   { key: "units",            label: "Sold",        defaultOn: true  },
   { key: "stock",            label: "Stock",       defaultOn: true  },
@@ -446,6 +447,12 @@ const orderColumns = [
   { key: "unitCost",         label: "Unit Cost",   defaultOn: false },
   { key: "totalCost",        label: "Total Cost",  defaultOn: true  },
 ];
+function placeColumnAfter(order, key, afterKey) {
+  const next = (order || []).filter((entry) => entry !== key);
+  const index = next.indexOf(afterKey);
+  next.splice(index >= 0 ? index + 1 : next.length, 0, key);
+  return next;
+}
 if (!state.orderVisibleColumns) {
   state.orderVisibleColumns = Object.fromEntries(orderColumns.map((c) => [c.key, c.defaultOn]));
 }
@@ -458,6 +465,9 @@ validOrderColumnKeys.forEach((key) => {
   if (!state.orderColumnOrder.includes(key)) state.orderColumnOrder.push(key);
   if (!(key in state.orderVisibleColumns)) state.orderVisibleColumns[key] = true;
 });
+state.orderColumnOrder = placeColumnAfter(state.orderColumnOrder, "product", "code");
+state.orderColumnOrder = placeColumnAfter(state.orderColumnOrder, "plu", "product");
+state.orderVisibleColumns.plu = true;
 
 const hoverTooltip = document.createElement("div");
 hoverTooltip.className = "row-hover-tooltip";
@@ -478,6 +488,11 @@ validColumnKeys.forEach((key) => {
   if (!state.columnOrder.includes(key)) state.columnOrder.push(key);
   if (!(key in state.visibleColumns)) state.visibleColumns[key] = true;
 });
+state.columnOrder = placeColumnAfter(state.columnOrder, "product", "code");
+state.columnOrder = placeColumnAfter(state.columnOrder, "plu", "product");
+state.columnOrder = placeColumnAfter(state.columnOrder, "rule", "plu");
+state.visibleColumns.plu = true;
+state.visibleColumns.rule = true;
 state.visibleColumns.addDate = true;
 
 const currency = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
@@ -1644,6 +1659,7 @@ async function loadFiles(fileList) {
   try {
     let selectedInventory = null;
     const previousCodes = new Set([...state.latestInventory.keys()]);
+    const previousStockByCode = new Map([...state.latestInventory.entries()].map(([key, row]) => [key, toNumber(row.stock)]));
     const touchedSalesDates = new Set();
     let skippedDuplicates = 0;
     let processedFiles = 0;
@@ -1691,6 +1707,17 @@ async function loadFiles(fileList) {
       // newer timestamp such as a test/debug row.
       state.inventories = new Map([[selectedInventory.date, selectedInventory.rows]]);
       registerInventorySnapshotMeta(selectedInventory.date, selectedInventory.rows, previousCodes);
+      let receivedPendingClears = 0;
+      selectedInventory.rows.forEach((row) => {
+        const key = codeKey(row.code);
+        if (!key || !previousStockByCode.has(key)) return;
+        if (recordPendingReceiptIfNeeded(key, previousStockByCode.get(key), row.stock, { render: false, patch: false, toast: false, persist: false })) {
+          receivedPendingClears += 1;
+        }
+      });
+      if (receivedPendingClears) {
+        showToast(`Cleared ${number.format(receivedPendingClears)} PO pending item${receivedPendingClears === 1 ? "" : "s"} from current inventory receipt.`, 3400, "success");
+      }
     }
     state.dates = [...new Set(state.rawSales.map((row) => row.date))].sort();
     buildLatestInventory();
@@ -2006,7 +2033,7 @@ function scheduleSharedCountSessionsSync() {
   clearTimeout(sharedCountSessionsTimer);
   sharedCountSessionsTimer = setTimeout(() => {
     syncSharedCountSessionsToSupabase(true).catch(() => {});
-  }, 900);
+  }, 250);
 }
 
 function allowedItemStates() {
@@ -3237,8 +3264,8 @@ function renderProductPoReviewModal() {
   els.productPoReviewBody.innerHTML = rows.map((item) => `<tr>
     <td>${escapeHtml(item.vendor || "-")}</td>
     <td>${escapeHtml(item.code)}</td>
+    <td class="sku-name" title="${escapeHtml(item.product)}"><span class="sku-name-text">${escapeHtml(item.product)}</span></td>
     <td>${escapeHtml(item.plu || "-")}</td>
-    <td class="sku-name">${escapeHtml(item.product)}</td>
     <td class="num">${number.format(item.stock || 0)}</td>
     <td class="num">${number.format(item.reorderMin || 0)}</td>
     <td class="num">${number.format(item.reorderMax || 0)}</td>
@@ -3351,7 +3378,7 @@ function persistActiveCountSession() {
   _persistCountTimer = setTimeout(() => {
     localStorage.setItem("posDashboardActiveCountSession:v1", JSON.stringify(state.activeCountSession));
     scheduleSharedCountSessionsSync();
-  }, 300);
+  }, 120);
 }
 
 function allCountCandidateRows() {
@@ -3732,7 +3759,7 @@ function applyCountEntry() {
   const qty = Math.max(0, Number(state.countQtyBuffer || "0"));
   const existing = state.activeCountSession.entries?.filter((entry) => codeKey(entry.code) === codeKey(item.code)).at(-1);
   if (existing) {
-    commitCountEntry(item, qty, "reset");
+    openDuplicateCountModal(item, qty, existing);
     return;
   }
   commitCountEntry(item, qty, "set");
@@ -4121,14 +4148,15 @@ function renderCountSessionRows() {
   const vendorFilter = els.sessionHistoryVendorFilter?.value || "";
   const periodFilter = els.sessionHistoryPeriodFilter?.value || "";
 
-  const filtered = state.countSessions
+  const filtered = [...new Map(state.countSessions
     .slice()
     .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")))
     .filter((s) => {
       if (vendorFilter && (s.vendor || s.department || "") !== vendorFilter) return false;
       if (!sessionMatchesPeriodFilter(s, periodFilter)) return false;
       return true;
-    });
+    })
+    .map((session) => [cleanCell(session.id) || `${session.startedAt}|${session.date}|${session.vendor}|${session.category}`, session])).values()];
 
   if (!filtered.length) {
     els.countSessionBody.innerHTML = `<tr><td colspan="11" class="empty-cell">${state.countSessions.length ? "No sessions match filters." : "No physical count sessions saved yet."}</td></tr>`;
@@ -5126,7 +5154,7 @@ function renderOrders() {
   const headerHtml = visibleCols.map((c) => {
     const isActive = c.key === sortKey;
     const arrow = isActive ? (sortDir === "asc" ? " â†‘" : " â†“") : "";
-    return `<th class="order-sortable-th${isActive ? " sort-active" : ""}${state.orderArrangeColumns ? " arrange-column-active" : ""}" data-order-sort="${c.key}" data-order-col-header="${c.key}" draggable="${state.orderArrangeColumns ? "true" : "false"}"><span class="order-arrange-label">${c.label}${state.orderArrangeColumns ? "" : arrow}</span></th>`;
+    return `<th class="order-sortable-th${isActive ? " sort-active" : ""}${state.orderArrangeColumns ? " arrange-column-active" : ""}" data-col="${c.key}" data-order-sort="${c.key}" data-order-col-header="${c.key}" draggable="${state.orderArrangeColumns ? "true" : "false"}"><span class="order-arrange-label">${c.label}${state.orderArrangeColumns ? "" : arrow}</span></th>`;
   }).join("");
 
   els.orderCards.innerHTML = `
@@ -5143,22 +5171,22 @@ function renderOrders() {
           ${sorted.map((sku) => {
             const isPend = isPendingOrder(sku.code);
             const cellMap = {
-              status:           `<td>${stateBadgeHtml(sku)}</td>`,
-              pending:          `<td class="pending-col">${isPend ? `<button type="button" class="pending-clear-btn pending-inline-btn" data-code="${escapeHtml(sku.code)}" title="Click to clear pending"><span class="pending-icon">&#x1F550;</span></button>` : ""}</td>`,
-              code:             `<td class="copy-code" data-copy-code="${escapeHtml(sku.code)}" style="color:#2470c4;font-weight:700;cursor:pointer">${escapeHtml(sku.code)}</td>`,
-              product:          `<td class="sku-name" title="${escapeHtml(sku.product)}">${escapeHtml(sku.product)}</td>`,
-              vendor:           `<td>${escapeHtml(sku.vendor || "-")}</td>`,
-              plu:              `<td>${escapeHtml(sku.plu || "-")}</td>`,
-              velocity:         `<td class="num order-velocity-col">${formatVelocity(sku.velocity || 0)}</td>`,
-              units:            `<td class="num order-sold-col">${number.format(sku.units || 0)}</td>`,
-              stock:            `<td class="num order-stock-col ${(sku.stock||0) < 0 ? "entry-negative" : ""}">${number.format(sku.stock || 0)}</td>`,
-              reorderMin:       `<td class="num">${number.format(sku.reorderMin || 0)}</td>`,
-              reorderMax:       `<td class="num">${number.format(sku.reorderMax || 0)}</td>`,
-              recommendedOrder: `<td class="num order-highlight"><input type="number" class="order-rec-input mini-input" data-code="${escapeHtml(sku.code)}" value="${sku.recommendedOrder || sku.qtyNeeded || 0}" min="0" style="width:3.8rem;text-align:center;font-weight:700" /></td>`,
-              caseOrder:        `<td class="num order-highlight"><b>${number.format(sku.caseOrder || 0)}</b></td>`,
-              caseSize:         `<td class="num">${number.format(sku.caseSize || 1)}</td>`,
-              unitCost:         `<td class="num">${currency.format(sku.unitCost || 0)}</td>`,
-              totalCost:        `<td class="num">${currency.format(orderLineCost(sku))}</td>`,
+              status:           `<td data-col="status">${stateBadgeHtml(sku)}</td>`,
+              pending:          `<td data-col="pending" class="pending-col">${isPend ? `<button type="button" class="pending-clear-btn pending-inline-btn" data-code="${escapeHtml(sku.code)}" title="Click to clear pending"><span class="pending-icon">&#x1F550;</span></button>` : ""}</td>`,
+              code:             `<td data-col="code" class="copy-code" data-copy-code="${escapeHtml(sku.code)}" style="color:#2470c4;font-weight:700;cursor:pointer">${escapeHtml(sku.code)}</td>`,
+              product:          `<td data-col="product" class="sku-name" title="${escapeHtml(sku.product)}"><span class="sku-name-text">${escapeHtml(sku.product)}</span></td>`,
+              vendor:           `<td data-col="vendor">${escapeHtml(sku.vendor || "-")}</td>`,
+              plu:              `<td data-col="plu">${escapeHtml(sku.plu || "-")}</td>`,
+              velocity:         `<td data-col="velocity" class="num order-velocity-col">${formatVelocity(sku.velocity || 0)}</td>`,
+              units:            `<td data-col="units" class="num order-sold-col">${number.format(sku.units || 0)}</td>`,
+              stock:            `<td data-col="stock" class="num order-stock-col ${(sku.stock||0) < 0 ? "entry-negative" : ""}">${number.format(sku.stock || 0)}</td>`,
+              reorderMin:       `<td data-col="reorderMin" class="num">${number.format(sku.reorderMin || 0)}</td>`,
+              reorderMax:       `<td data-col="reorderMax" class="num">${number.format(sku.reorderMax || 0)}</td>`,
+              recommendedOrder: `<td data-col="recommendedOrder" class="num order-highlight"><input type="number" class="order-rec-input mini-input" data-code="${escapeHtml(sku.code)}" value="${sku.recommendedOrder || sku.qtyNeeded || 0}" min="0" style="width:3.8rem;text-align:center;font-weight:700" /></td>`,
+              caseOrder:        `<td data-col="caseOrder" class="num order-highlight"><b>${number.format(sku.caseOrder || 0)}</b></td>`,
+              caseSize:         `<td data-col="caseSize" class="num">${number.format(sku.caseSize || 1)}</td>`,
+              unitCost:         `<td data-col="unitCost" class="num">${currency.format(sku.unitCost || 0)}</td>`,
+              totalCost:        `<td data-col="totalCost" class="num">${currency.format(orderLineCost(sku))}</td>`,
             };
             return `<tr data-detail-code="${escapeHtml(sku.code)}">
               <td class="checkbox-col"><input type="checkbox" class="row-checkbox order-checkbox" data-code="${escapeHtml(sku.code)}" ${state.selectedSkuCodes.has(sku.code) ? "checked" : ""}></td>
@@ -5258,7 +5286,7 @@ function renderTable() {
       <td class="checkbox-col"><input type="checkbox" class="row-checkbox" data-code="${escapeHtml(sku.code)}" ${isChecked ? "checked" : ""}></td>
       <td><span class="badge ${sku.status}">${labelStatus(sku.status)}</span></td>
       <td>${escapeHtml(sku.code)}</td>
-      <td class="sku-name">${escapeHtml(sku.product)}</td>
+      <td class="sku-name" title="${escapeHtml(sku.product)}"><span class="sku-name-text">${escapeHtml(sku.product)}</span></td>
       <td>${escapeHtml(sku.plu || "-")}</td>
       <td>${escapeHtml(sku.itemNumber || "-")}</td>
       <td>${escapeHtml(sku.department)}</td>
@@ -5414,15 +5442,16 @@ function inventoryCellHtml(key, item) {
   const backorderCount = poBackorderCountForCode(item.code);
   const values = {
     code: `<td data-col="code" class="copy-code full-code-cell" data-copy-code="${escapeHtml(item.code)}" title="Click code to copy">${escapeHtml(item.code)}</td>`,
-    product: `<td data-col="product" class="sku-name${hasManualRule ? " manual-rule-item" : ""}" title="${escapeHtml([manualRuleTitle, item.product].filter(Boolean).join(" - "))}">${escapeHtml(item.product)}</td>`,
+    product: `<td data-col="product" class="sku-name${hasManualRule ? " manual-rule-item" : ""}" title="${escapeHtml([manualRuleTitle, item.product].filter(Boolean).join(" - "))}"><span class="sku-name-text">${escapeHtml(item.product)}</span></td>`,
     plu: `<td data-col="plu">${escapeHtml(item.plu || "-")}</td>`,
+    rule: `<td data-col="rule" class="rule-col" title="${escapeHtml(manualRuleTitle || "Uses vendor/default safety and DOI rule")}">${hasManualRule ? `${number.format(item.effectiveSafetyDays || 0)}/${number.format(item.effectiveDaysOfInventory || 0)}` : ""}</td>`,
     itemNumber: `<td data-col="itemNumber">${escapeHtml(item.itemNumber || "-")}</td>`,
     subType: `<td data-col="subType">${escapeHtml(item.subType || "-")}</td>`,
     sizeAttr: `<td data-col="sizeAttr">${escapeHtml(item.sizeAttr || "-")}</td>`,
     containerAttr: `<td data-col="containerAttr">${escapeHtml(item.containerAttr || "-")}</td>`,
     category: `<td data-col="category">${escapeHtml(item.category || "-")}</td>`,
     vendor: `<td data-col="vendor">${escapeHtml(item.vendor || "-")}</td>`,
-    state: `<td data-col="state" class="inventory-edit-cell inventory-state-cell">${inventoryStateSelectHtml(item)}${backorderCount ? `<span class="po-backorder-count" title="Backordered ${number.format(backorderCount)} time${backorderCount === 1 ? "" : "s"}">${number.format(backorderCount)}</span>` : ""}</td>`,
+    state: `<td data-col="state" class="inventory-edit-cell inventory-state-cell">${inventoryStateSelectHtml(item)}${backorderCount >= 3 ? `<span class="state-badge state-backorder" title="Backordered ${number.format(backorderCount)} times">Backorder</span>` : ""}${backorderCount ? `<span class="po-backorder-count" title="Backordered ${number.format(backorderCount)} time${backorderCount === 1 ? "" : "s"}">${number.format(backorderCount)}</span>` : ""}</td>`,
     addDate: `<td data-col="addDate">${escapeHtml(formatShortDisplayDate(item.addDate))}</td>`,
     stock: `<td data-col="stock" class="num stock-col stock-clickable" title="Click to adjust stock">${number.format(item.stock)}</td>`,
     units: `<td data-col="units" class="num sold-col">${number.format(item.units)}</td>`,
@@ -5645,13 +5674,16 @@ function moveDetailField(from, to) {
 }
 
 function renderInventorySummary(rows) {
+  const summaryBaseRows = buildInventoryRows({ ignoreQuickFilter: true });
   const selectedKeys = new Set([...(state.selectedInventoryCodes || [])].map((code) => codeKey(code)));
   const selectedCount = rows.filter((item) => selectedKeys.has(codeKey(item.code))).length;
   const quickValue = els.inventoryQuickFilter?.value || "";
   const showOverridesOnly = quickValue.includes("overrides");
+  const showRuleOverridesOnly = quickValue.includes("ruleOverrides");
   const showNeedsOnly = quickValue.includes("needs");
   const showPendingOnly = quickValue.includes("pending");
-  const pendingCount = rows.filter((item) => isPendingOrder(item.code)).length;
+  const pendingCount = summaryBaseRows.filter((item) => isPendingOrder(item.code)).length;
+  const ruleOverrideCount = summaryBaseRows.filter((item) => item.orderingRuleMode === "custom").length;
   const totals = rows.reduce(
     (sum, item) => ({
       items: sum.items + 1,
@@ -5671,6 +5703,7 @@ function renderInventorySummary(rows) {
     <span data-cost-summary><b>${currency.format(totals.unitCost)}</b> cost sum</span>
     <span data-cost-summary><b>${currency.format(totals.inventoryCost)}</b> stock cost</span>
     <label class="inventory-toggle-chip"><input type="checkbox" id="inventoryQuickOverrides"${showOverridesOnly ? " checked" : ""} />Overrides</label>
+    <label class="inventory-toggle-chip"><input type="checkbox" id="inventoryQuickRuleOverrides"${showRuleOverridesOnly ? " checked" : ""} />DOI/SV${ruleOverrideCount ? ` (${number.format(ruleOverrideCount)})` : ""}</label>
     <label class="inventory-toggle-chip"><input type="checkbox" id="inventoryQuickNeeds"${showNeedsOnly ? " checked" : ""} />Order needed</label>
     <label class="inventory-toggle-chip"><input type="checkbox" id="inventoryQuickPending"${showPendingOnly ? " checked" : ""} />PO pending${pendingCount ? ` (${number.format(pendingCount)})` : ""}</label>
     ${pendingCount ? `<button type="button" class="secondary-button inventory-clear-pending-button" id="inventoryClearAllPendingButton">Clear all PO pending</button>` : ""}
@@ -5680,11 +5713,18 @@ function renderInventorySummary(rows) {
   document.querySelector("#inventoryClearAllPendingButton")?.addEventListener("click", clearAllPendingPo);
   const syncQuickChecks = () => {
     const overrides = !!document.querySelector("#inventoryQuickOverrides")?.checked;
-    const needs = !!document.querySelector("#inventoryQuickNeeds")?.checked;
+    const ruleOverrides = !!document.querySelector("#inventoryQuickRuleOverrides")?.checked;
+    const needsBox = document.querySelector("#inventoryQuickNeeds");
+    let needs = !!needsBox?.checked;
     const pending = !!document.querySelector("#inventoryQuickPending")?.checked;
+    if (pending && needsBox) {
+      needsBox.checked = false;
+      needs = false;
+    }
     if (els.inventoryQuickFilter) {
       const parts = [];
       if (overrides) parts.push("overrides");
+      if (ruleOverrides) parts.push("ruleOverrides");
       if (needs) parts.push("needs");
       if (pending) parts.push("pending");
       els.inventoryQuickFilter.value = parts.join("+");
@@ -5692,6 +5732,7 @@ function renderInventorySummary(rows) {
     renderInventory();
   };
   document.querySelector("#inventoryQuickOverrides")?.addEventListener("change", syncQuickChecks);
+  document.querySelector("#inventoryQuickRuleOverrides")?.addEventListener("change", syncQuickChecks);
   document.querySelector("#inventoryQuickNeeds")?.addEventListener("change", syncQuickChecks);
   document.querySelector("#inventoryQuickPending")?.addEventListener("change", syncQuickChecks);
 }
@@ -5814,9 +5855,11 @@ function buildInventoryRows(options = {}) {
       if (els.vendorFilter.value && item.vendor !== els.vendorFilter.value) return false;
       if (els.colorFilter.value && item.color !== els.colorFilter.value && item.subType !== els.colorFilter.value) return false;
     }
+    const pendingOnly = quickFilter.includes("pending");
     if (quickFilter.includes("overrides") && !item.isOverridden) return false;
-    if (quickFilter.includes("needs") && !(item.recommendedOrder > 0)) return false;
-    if (quickFilter.includes("pending") && !isPendingOrder(item.code)) return false;
+    if (quickFilter.includes("ruleOverrides") && item.orderingRuleMode !== "custom") return false;
+    if (!pendingOnly && quickFilter.includes("needs") && !(item.recommendedOrder > 0)) return false;
+    if (pendingOnly && !isPendingOrder(item.code)) return false;
     return true;
   }).sort(compareInventoryRows);
 }
@@ -6300,26 +6343,31 @@ function showDetail(item, options = {}) {
     .filter((row) => codeKey(row.code) === codeKey(item.code))
     .sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")))
     .slice(0, 90);
-  const countHistoryRows = (state.countSessions || []).flatMap((session) => {
-    const latestByCode = new Map();
-    (session.entries || []).forEach((entry) => latestByCode.set(codeKey(entry.code), entry));
-    const entry = latestByCode.get(codeKey(item.code));
-    if (!entry) return [];
-    const before = session.preCountSnapshot?.[codeKey(item.code)] ?? entry.originalQty ?? 0;
-    const after = Number(entry.countedQty || 0);
-    return [{
-      recordedAt: session.submittedAt || entry.recordedAt || session.updatedAt || "",
-      code: entry.code || item.code,
-      product: entry.product || item.product || "",
-      vendor: entry.vendor || item.vendor || "",
-      category: entry.category || item.category || "",
-      action: session.submittedAt ? "PHYSICAL COUNT" : "COUNT ENTRY",
-      qtyChange: after - before,
-      qtyBefore: before,
-      qtyAfter: after,
-      user: entry.user || session.user || "System",
-      reason: `${session.submittedAt ? "Submitted physical count" : "Saved count entry"}: ${countSessionLabel(session)}`,
-    }];
+  const detailCountSessions = [
+    ...(state.activeCountSession?.id ? [state.activeCountSession] : []),
+    ...(state.countSessions || []).filter((session) => session?.id !== state.activeCountSession?.id),
+  ];
+  const countHistoryRows = detailCountSessions.flatMap((session) => {
+    let previousForCode = session.preCountSnapshot?.[codeKey(item.code)];
+    return (session.entries || []).flatMap((entry) => {
+      if (codeKey(entry.code) !== codeKey(item.code)) return [];
+      const before = previousForCode ?? entry.originalQty ?? 0;
+      const after = Number(entry.countedQty || 0);
+      previousForCode = after;
+      return [{
+        recordedAt: entry.recordedAt || session.submittedAt || session.updatedAt || "",
+        code: entry.code || item.code,
+        product: entry.product || item.product || "",
+        vendor: entry.vendor || item.vendor || "",
+        category: entry.category || item.category || "",
+        action: session.submittedAt ? "PHYSICAL COUNT" : "COUNT ENTRY",
+        qtyChange: after - Number(before || 0),
+        qtyBefore: before,
+        qtyAfter: after,
+        user: entry.user || session.user || "System",
+        reason: `${session.submittedAt ? "Submitted physical count" : "Saved count entry"}: ${countSessionLabel(session)} (${entry.mode || "set"})`,
+      }];
+    });
   });
   const historyRows = [...(state.adjustmentLog || []), ...countHistoryRows]
     .filter((entry) => codeKey(entry.code) === codeKey(item.code))
@@ -8863,6 +8911,7 @@ function applySharedCountSessionRows(rows = []) {
   savedSessions.push(...savedById.values());
   const remoteActiveId = cleanCell(activeSession?.id);
   if (activeSession && remoteActiveId && remoteActiveId !== localActiveId) {
+    savedById.delete(remoteActiveId);
     savedSessions.unshift({ ...activeSession, remoteActive: true });
   }
   state.countSessions = savedSessions.sort((a, b) => String(b.updatedAt || b.submittedAt || "").localeCompare(String(a.updatedAt || a.submittedAt || "")));
@@ -9651,7 +9700,6 @@ function finalizeStockAdjust(reason) {
   state._localProductMetaEdits.set(key, Date.now());
   patchInventoryModelStock(item.code, after);
   patchVisibleStockCell(item.code, after);
-  recordPendingReceiptIfNeeded(item.code, before, after);
   // Record in log
   state.adjustmentLog.unshift({
     recordedAt: new Date().toISOString(),
@@ -10449,7 +10497,8 @@ function pendingVendorNames() {
 
 function isPendingOrder(code) {
   if (!state.pendingOrders?.length) return false;
-  return state.pendingOrders.some((po) => !po.cleared && (po.codes||[]).includes(codeKey(code)));
+  const key = codeKey(code);
+  return state.pendingOrders.some((po) => !po.cleared && (po.codes || []).map(codeKey).includes(key));
 }
 
 function poBackorderCountForCode(code) {
@@ -10503,13 +10552,13 @@ function clearPendingForCode(code, options = {}) {
   return true;
 }
 
-function recordPendingReceiptIfNeeded(code, before, after) {
+function recordPendingReceiptIfNeeded(code, before, after, options = {}) {
   if ((toNumber(after) - toNumber(before)) <= 2 || !isPendingOrder(code)) return false;
-  const cleared = clearPendingForCode(code, { reason: "received", received: true, backorder: false, render: false });
+  const cleared = clearPendingForCode(code, { reason: "received", received: true, backorder: false, render: false, persist: options.persist });
   if (cleared) {
-    patchInventoryRow(code);
-    if (activeTabName() === "ordering") renderOrders();
-    showToast(`PO pending cleared for ${code} - stock received.`, 2600, "success");
+    if (options.patch !== false) patchInventoryRow(code);
+    if (options.render !== false && activeTabName() === "ordering") renderOrders();
+    if (options.toast !== false) showToast(`PO pending cleared for ${code} - stock received.`, 2600, "success");
   }
   return cleared;
 }
@@ -10842,7 +10891,7 @@ function openVendorAnalysisPanel(vendorName) {
       return "<tr data-vpm-code='" + sku.code + "'>" +
         "<td style='color:#2470c4;font-weight:700;white-space:nowrap'>" + escapeHtml(sku.code) + "</td>" +
         "<td style='white-space:nowrap'>" + escapeHtml(sku.plu || "") + "</td>" +
-        "<td class='sku-name' title='" + escapeHtml(sku.product) + "'>" + escapeHtml(sku.product) + "</td>" +
+        "<td class='sku-name' title='" + escapeHtml(sku.product) + "'><span class='sku-name-text'>" + escapeHtml(sku.product) + "</span></td>" +
         "<td class='num " + ((sku.stock||0)<0?"entry-negative":"") + "'>" + number.format(sku.stock||0) + "</td>" +
         "<td class='num'>" + formatVelocity(sku.velocity||0) + "</td>" +
         "<td class='num'>" + number.format(sku.reorderMin||0) + "</td>" +
@@ -11696,7 +11745,10 @@ async function emailVendorPo(vendorName, options = {}) {
     return true;
   } catch (error) {
     console.warn("Backend PO email failed", error);
-    if (!options.silent) showToast("PO email was not sent. Check Supabase function logs/secrets.", 5200, "warning");
+    if (!options.silent) {
+      const message = (error?.message || "Unknown email error").replace(/\s+/g, " ").slice(0, 220);
+      showToast(`PO email was not sent: ${message}`, 7600, "warning");
+    }
     return false;
   }
 }
@@ -11812,7 +11864,7 @@ function openPoHistoryDetail(poId) {
   body.innerHTML = fallbackItems.map((item) => `<tr>
     <td>${escapeHtml(item.code)}</td>
     <td>${escapeHtml(item.plu || "-")}</td>
-    <td class="sku-name">${escapeHtml(item.product)}</td>
+    <td class="sku-name" title="${escapeHtml(item.product)}"><span class="sku-name-text">${escapeHtml(item.product)}</span></td>
     <td>${escapeHtml(item.vendor || po.vendor)}</td>
     <td class="num">${number.format(item.recommendedOrder || 0)}</td>
     <td class="num">${number.format(item.caseOrder || 0)}</td>

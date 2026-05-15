@@ -92,7 +92,9 @@
         <select id="inventoryQuickFilter">
           <option value="">All items</option>
           <option value="overrides">Override only</option>
+          <option value="ruleOverrides">DOI/SV override</option>
           <option value="needs">Order needed</option>
+          <option value="pending">PO pending</option>
         </select>
         <div id="inventoryQuickTools" class="inventory-quick-tools" hidden></div>
       </section>
@@ -287,7 +289,7 @@
               <thead>
                 <tr>
                   <!-- checkbox th injected by renderInventoryHeader -->
-                  <th data-col="code" data-sort="code">Code</th><th data-col="product" data-sort="product">Item</th><th data-col="plu" data-sort="plu">PLU</th><th data-col="itemNumber" data-sort="itemNumber">Item #</th><th data-col="subType" data-sort="subType">Sub/Type</th><th data-col="category" data-sort="category">Category</th><th data-col="vendor" data-sort="vendor">Vendor</th><th data-col="state" data-sort="state">State</th><th data-col="addDate" data-sort="addDate">Add Date</th>
+                  <th data-col="code" data-sort="code">Code</th><th data-col="product" data-sort="product">Item</th><th data-col="plu" data-sort="plu">PLU</th><th data-col="itemNumber" data-sort="itemNumber">Item #</th><th data-col="subType" data-sort="subType">Sub/Type</th><th data-col="category" data-sort="category">Category</th><th data-col="vendor" data-sort="vendor">Vendor</th><th data-col="state" data-sort="state">State</th><th data-col="addDate" data-sort="addDate">Date</th>
                   <th data-col="stock" data-sort="stock">Stock</th><th data-col="units" data-sort="units">Sold</th><th data-col="velocity" data-sort="velocity">SV/day</th><th data-col="unitCost" data-sort="unitCost">Cost</th><th data-col="price" data-sort="price">Price</th><th data-col="inventoryCost" data-sort="inventoryCost">Cost Total</th><th data-col="caseSize" data-sort="caseSize">Case</th><th data-col="reorderMin" data-sort="reorderMin">Min</th><th data-col="reorderMax" data-sort="reorderMax">Max</th>
                 </tr>
               </thead>
@@ -561,8 +563,8 @@
             </div>
           </div>
           <div class="table-wrap"><table class="count-report-table">
-            <thead><tr><th>Date</th><th>Vendor</th><th>Items</th><th>Total</th><th>Status</th><th>Action</th></tr></thead>
-            <tbody id="poHistoryBody"><tr><td colspan="6" class="empty-cell">No POs submitted yet.</td></tr></tbody>
+            <thead><tr><th>Date</th><th>PO #</th><th>Vendor</th><th>Items</th><th>Total</th><th>Status</th><th>Action</th></tr></thead>
+            <tbody id="poHistoryBody"><tr><td colspan="7" class="empty-cell">No POs submitted yet.</td></tr></tbody>
           </table></div>
         </div>
       </div>
@@ -1090,7 +1092,7 @@
           <table class="order-table vpm-table">
             <thead>
               <tr>
-                <th>Vendor</th><th>Code</th><th>PLU</th><th>Item</th><th>Stock</th><th>Min</th><th>Max</th><th>Rec. Order</th>
+                <th>Vendor</th><th>Code</th><th>Item</th><th>PLU</th><th>Stock</th><th>Min</th><th>Max</th><th>Rec. Order</th>
                 <th class="order-highlight">Cases to Order</th><th>Total Cost</th>
               </tr>
             </thead>
