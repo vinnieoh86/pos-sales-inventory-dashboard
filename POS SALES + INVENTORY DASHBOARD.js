@@ -728,6 +728,33 @@ els.countSearchInput?.addEventListener("input", () => {
 });
 els.countSearchInput?.addEventListener("focus", () => els.countSearchInput.select?.());
 els.countSearchInput?.addEventListener("click", () => els.countSearchInput.select?.());
+document.addEventListener("keydown", (event) => {
+  if (els.countSessionModal?.hidden || !state.activeCountSession || state.countStage !== "search") return;
+  if (els.countDuplicateModal && !els.countDuplicateModal.hidden) return;
+  if (!els.countSearchInput || event.target === els.countSearchInput) return;
+  const target = event.target;
+  if (target?.closest?.("textarea, select")) return;
+  if (event.key === "Enter") {
+    event.preventDefault();
+    event.stopPropagation();
+    handleCountLookup();
+    return;
+  }
+  if (event.key === "Backspace") {
+    event.preventDefault();
+    event.stopPropagation();
+    els.countSearchInput.value = els.countSearchInput.value.slice(0, -1);
+    renderCountDropdownDebounced(els.countSearchInput.value);
+    focusCountSearch();
+    return;
+  }
+  if (event.key.length !== 1 || event.ctrlKey || event.altKey || event.metaKey) return;
+  event.preventDefault();
+  event.stopPropagation();
+  els.countSearchInput.value = `${els.countSearchInput.value || ""}${event.key}`;
+  renderCountDropdownDebounced(els.countSearchInput.value);
+  focusCountSearch();
+}, true);
 els.priceCheckSearchButton?.addEventListener("click", () => {
   const query = cleanCell(els.priceCheckSearchInput?.value || "");
   if (!query && prefersPhoneBarcodeScanner()) {
@@ -3730,6 +3757,7 @@ function openDuplicateCountModal(item, qty, existing) {
     els.countDuplicateMessage.textContent = `${item.product} was already counted as ${number.format(existing?.countedQty || 0)}. Add this new quantity or reset it?`;
   }
   els.countDuplicateModal.hidden = false;
+  setTimeout(() => els.countDuplicateAddButton?.focus(), 0);
 }
 
 function closeDuplicateCountModal() {

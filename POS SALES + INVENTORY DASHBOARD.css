@@ -6576,3 +6576,151 @@ main,
     touch-action: pan-x pan-y !important;
   }
 }
+
+/* Final product page layout repair: compact filters, stable toolbar, no floating totals. */
+.controls.sticky-filters {
+  display: grid !important;
+  grid-template-columns: minmax(12rem, 1.35fr) minmax(7rem, 0.8fr) minmax(7rem, 0.8fr) minmax(7rem, 0.8fr) minmax(28rem, 3fr) !important;
+  grid-auto-rows: auto !important;
+  align-items: end !important;
+  gap: 0.38rem 0.5rem !important;
+  min-height: 0 !important;
+  padding: 0.42rem 0.45rem !important;
+}
+
+.controls.sticky-filters > label:has(#searchInput) {
+  grid-column: 1 !important;
+  grid-row: 1 !important;
+}
+
+.controls.sticky-filters > label:has(#departmentFilter) {
+  grid-column: 2 !important;
+  grid-row: 1 !important;
+}
+
+.controls.sticky-filters > label:has(#categoryFilter) {
+  grid-column: 3 !important;
+  grid-row: 1 !important;
+}
+
+.controls.sticky-filters > label:has(#vendorFilter) {
+  grid-column: 4 !important;
+  grid-row: 1 !important;
+}
+
+.controls.sticky-filters .clear-filters-button {
+  grid-column: 1 !important;
+  grid-row: 2 !important;
+  width: 10rem !important;
+  justify-self: center !important;
+}
+
+.controls.sticky-filters .inventory-quick-tools {
+  grid-column: 2 / -1 !important;
+  grid-row: 2 !important;
+  align-self: center !important;
+  width: 100% !important;
+}
+
+.inventory-quick-tools .inventory-quick-tools__row,
+.inventory-quick-tools--inventory .inventory-quick-tools__row {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  gap: 0.35rem !important;
+  justify-content: flex-start !important;
+  align-items: center !important;
+  width: 100% !important;
+}
+
+.inventory-quick-tools .inventory-quick-tools__row > *,
+.inventory-quick-tools--inventory .inventory-quick-tools__row > * {
+  flex: 0 0 auto !important;
+  height: 1.85rem !important;
+  min-height: 1.85rem !important;
+}
+
+.inventory-quick-tools__row #inventoryStateFilter {
+  width: 7rem !important;
+  min-width: 7rem !important;
+}
+
+.inventory-quick-tools__row #arrangeColumnsButton,
+.inventory-quick-tools__row #resizeColumnsButton,
+.inventory-quick-tools__row .column-picker > summary {
+  width: 6.8rem !important;
+  min-width: 6.8rem !important;
+}
+
+.inventory-quick-tools__row #downloadInventory,
+.inventory-quick-tools__row #createPoShortcut {
+  width: 9.2rem !important;
+  min-width: 9.2rem !important;
+}
+
+#inventorySummary {
+  position: static !important;
+  top: auto !important;
+  z-index: 5 !important;
+  margin: 0.45rem 0 0.5rem !important;
+  padding: 0.25rem 0 !important;
+  background: transparent !important;
+  backdrop-filter: none !important;
+  overflow-x: auto !important;
+}
+
+#inventory th,
+#inventoryBody td {
+  text-align: center !important;
+  vertical-align: middle !important;
+}
+
+#inventory th[data-col="code"],
+#inventoryBody td[data-col="code"],
+#inventory th[data-col="product"],
+#inventoryBody td[data-col="product"] {
+  text-align: left !important;
+}
+
+#inventoryBody td[data-col="code"] {
+  padding-left: 0.48rem !important;
+}
+
+#inventoryBody td[data-col="product"] {
+  padding-left: 0.6rem !important;
+}
+
+#inventoryBody td[data-col="reorderMin"],
+#inventoryBody td[data-col="reorderMax"],
+#inventoryBody td[data-col="caseSize"] {
+  padding-left: 0.16rem !important;
+  padding-right: 0.16rem !important;
+}
+
+.minmax-cell {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 0.16rem !important;
+  width: 100% !important;
+}
+
+.minmax-cell .mini-input,
+#inventoryBody td[data-col="reorderMin"] .mini-input,
+#inventoryBody td[data-col="reorderMax"] .mini-input,
+#inventoryBody td[data-col="caseSize"] .mini-input {
+  display: block !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  margin: 0 auto !important;
+  text-align: center !important;
+  padding-left: 0.12rem !important;
+  padding-right: 0.12rem !important;
+}
+
+.minmax-cell .reset-override {
+  flex: 0 0 1rem !important;
+  width: 1rem !important;
+  min-width: 1rem !important;
+  padding: 0 !important;
+}
