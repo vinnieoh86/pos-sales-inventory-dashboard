@@ -2204,6 +2204,7 @@ function setItemMeta(code, patch = {}) {
   if (!key) return;
   state.itemMeta = state.itemMeta || {};
   state.itemMeta[key] = { ...(state.itemMeta[key] || {}), ...patch };
+  state._localProductMetaEdits?.set?.(key, Date.now());
   saveItemMeta();
   scheduleSharedProductSync(key);
 }
@@ -3693,8 +3694,9 @@ function closeActiveCountSession() {
   renderCountsWorkspace();
 }
 
-function saveCountSession() {
+async function saveCountSession() {
   if (!state.activeCountSession) return;
+  await restoreSharedProductsOnlyFromSupabase({ silent: true }).catch(() => false);
   const session = {
     ...state.activeCountSession,
     savedAt: new Date().toISOString(),
@@ -3755,10 +3757,17 @@ function saveCountSession() {
   renderCountsWorkspace();
   // Defer the expensive full render until after modal closes
   setTimeout(() => render(), 50);
-  void syncSharedCountSessionsToSupabase(true);
-  void syncSharedProductsByCodes([...latestByCode.keys()], { silent: true });
-  void syncSharedInventoryFactsByCodes([...latestByCode.keys()], { silent: true, updateSyncState: false });
+  void syncCountStockAndSession([...latestByCode.keys()]);
   showToast(`Count saved Â· ${updatedCount} item stock quantities updated`, 3200, "success");
+}
+
+async function syncCountStockAndSession(codes = []) {
+  const uniqueCodes = [...new Set((codes || []).map((code) => codeKey(code)).filter(Boolean))];
+  if (uniqueCodes.length) {
+    await syncSharedInventoryFactsByCodes(uniqueCodes, { silent: true, updateSyncState: false });
+  }
+  await syncSharedCountSessionsToSupabase(true);
+  await updateSharedSyncState("count-stock");
 }
 
 function deleteCountSession() {
@@ -6204,7 +6213,9 @@ function renderInventorySummary(rows) {
   const showRuleOverridesOnly = quickValue.includes("ruleOverrides");
   const showNeedsOnly = quickValue.includes("needs");
   const showPendingOnly = quickValue.includes("pending");
+  const showBackorderOnly = quickValue.includes("backorder");
   const pendingCount = summaryBaseRows.filter((item) => isPendingOrder(item.code)).length;
+  const backorderItemCount = summaryBaseRows.filter((item) => poBackorderCountForCode(item.code) > 0).length;
   const ruleOverrideCount = summaryBaseRows.filter((item) => item.orderingRuleMode === "custom").length;
   const totals = rows.reduce(
     (sum, item) => ({
@@ -6229,6 +6240,7 @@ function renderInventorySummary(rows) {
     <label class="inventory-toggle-chip"><input type="checkbox" id="inventoryQuickRuleOverrides"${showRuleOverridesOnly ? " checked" : ""} />SD/DOI${ruleOverrideCount ? ` (${number.format(ruleOverrideCount)})` : ""}</label>
     <label class="inventory-toggle-chip"><input type="checkbox" id="inventoryQuickNeeds"${showNeedsOnly ? " checked" : ""} />Order needed</label>
     <label class="inventory-toggle-chip"><input type="checkbox" id="inventoryQuickPending"${showPendingOnly ? " checked" : ""} />PO pending${pendingCount ? ` (${number.format(pendingCount)})` : ""}</label>
+    <label class="inventory-toggle-chip"><input type="checkbox" id="inventoryQuickBackorder"${showBackorderOnly ? " checked" : ""} />B/O${backorderItemCount ? ` (${number.format(backorderItemCount)})` : ""}</label>
     ${pendingCount ? `<button type="button" class="secondary-button inventory-clear-pending-button" id="inventoryClearAllPendingButton">Clear all PO pending</button>` : ""}
     ${selectedCount ? `<button type="button" class="secondary-button inventory-selected-button" id="inventorySelectedActionsButton">Selected (${number.format(selectedCount)})</button>` : ""}`;
   const totalsTarget = ensureInventoryTotalsInline();
@@ -9553,6 +9565,15 @@ async function restoreSharedCountSessionsOnlyFromSupabase(options = {}) {
   }
 }
 
+async function restoreSharedCountAndProductMetaFromSupabase(options = {}) {
+  const [productsRestored, countsRestored] = await Promise.all([
+    restoreSharedProductsOnlyFromSupabase({ silent: true }),
+    restoreSharedCountSessionsOnlyFromSupabase({ silent: true }),
+  ]);
+  if (!options.silent && (productsRestored || countsRestored)) showToast("Shared count and stock updates loaded.", 2200, "success");
+  return productsRestored || countsRestored;
+}
+
 async function updateSharedSyncState(kind = "products") {
   if (!ENABLE_SHARED_SYNC) return false;
   try {
@@ -9778,8 +9799,9 @@ async function restoreSharedDataFromSupabase(options = {}) {
     mergedProductRows.forEach((row) => {
       const code = normalizeCode(row.code);
       if (!code) return;
-      const existingMeta = nextItemMeta[code] || {};
-      nextItemMeta[code] = {
+      const key = codeKey(code);
+      const existingMeta = nextItemMeta[key] || {};
+      nextItemMeta[key] = {
         ...existingMeta,
         ...(row.state != null ? { state: cleanCell(row.state), stateManual: true } : {}),
         ...(row.case_size != null ? { caseSize: normalizedCaseSize(row.case_size), caseSizeManual: existingMeta.caseSizeManual === true } : {}),
@@ -9791,7 +9813,7 @@ async function restoreSharedDataFromSupabase(options = {}) {
       const overrideMin = row.reorder_min_override;
       const overrideMax = row.reorder_max_override;
       if (overrideMin != null || overrideMax != null) {
-        nextOverrides[code] = {
+        nextOverrides[key] = {
           ...(overrideMin != null ? { min: toNumber(overrideMin) } : {}),
           ...(overrideMax != null ? { max: toNumber(overrideMax) } : {}),
         };
@@ -10062,18 +10084,17 @@ function restorePreviousCount(sessionId) {
   renderCountsWorkspace();
   render();
   renderAdjustLog();
-  void syncSharedCountSessionsToSupabase(true);
-  void syncSharedProductsByCodes(Object.keys(session.preCountSnapshot || {}), { silent: true });
-  void syncSharedInventoryFactsByCodes(Object.keys(session.preCountSnapshot || {}), { silent: true, updateSyncState: false });
+  void syncCountStockAndSession(Object.keys(session.preCountSnapshot || {}));
   showToast(`Restored â€” ${restored} stock values reverted`, 3200, "success");
 }
 
-function submitAndApplyCount() {
+async function submitAndApplyCount() {
   const sessionId = state.pendingSubmitSessionId;
   state.pendingSubmitSessionId = null;
   document.querySelector("#confirmSubmitCountModal").hidden = true;
   const session = findCountSessionById(sessionId);
   if (!session) { showToast("Session not found.", 3000, "warning"); return; }
+  await restoreSharedProductsOnlyFromSupabase({ silent: true }).catch(() => false);
   const entries = session.entries || [];
   const latestByCode = new Map();
   entries.forEach((entry) => latestByCode.set(codeKey(entry.code), entry));
@@ -10120,9 +10141,7 @@ function submitAndApplyCount() {
   render();
   renderAdjustLog();
   generateFinalCountExport(session, candidates, latestByCode, snapshot);
-  void syncSharedCountSessionsToSupabase(true);
-  void syncSharedProductsByCodes([...scopeCodes], { silent: true });
-  void syncSharedInventoryFactsByCodes([...scopeCodes], { silent: true, updateSyncState: false });
+  void syncCountStockAndSession([...scopeCodes]);
   showToast(`Submitted â€” ${updated} stock values updated`, 3200, "success");
 }
 
@@ -12595,13 +12614,13 @@ if (!state.authRequired || !loadUsers().length) {
       const isProductsOnly = syncKind === "products" || syncKind === "product-meta";
       const isVendorRulesOnly = syncKind === "vendor-rules";
       const isImportsOnly = syncKind === "imports";
-      const isCountsOnly = syncKind === "counts";
+      const isCountsOnly = syncKind === "counts" || syncKind === "count-stock";
       const restored = isVendorRulesOnly
         ? await restoreSharedVendorRulesOnlyFromSupabase({ silent: true })
         : isImportsOnly
           ? await restoreSharedDataFromSupabase({ silent: true, preferCurrentState: false })
           : isCountsOnly
-            ? await restoreSharedCountSessionsOnlyFromSupabase({ silent: true })
+            ? await restoreSharedCountAndProductMetaFromSupabase({ silent: true })
         : isProductsOnly
           ? await restoreSharedProductsOnlyFromSupabase({ silent: true })
           : await restoreSharedDataFromSupabase({ silent: true, preferCurrentState: false });

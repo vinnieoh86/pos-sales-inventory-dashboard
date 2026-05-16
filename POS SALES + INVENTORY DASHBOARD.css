@@ -7507,3 +7507,48 @@ body[data-active-tab="ordering"] .order-table td[data-col="code"] * {
     padding: 0.22rem 0.28rem !important;
   }
 }
+
+/* Sync-test layout repairs: keep pills, drawers, and ordering headers usable. */
+body[data-active-tab="inventory"] .tab-view[data-tab-view="inventory"] .panel-heading h2 {
+  display: none !important;
+}
+
+body[data-active-tab="inventory"] #datePresets,
+body[data-active-tab="ordering"] #datePresets {
+  position: sticky !important;
+  top: calc(1.35rem + var(--command-bar-height, 4.5rem) + var(--filters-height, 5.2rem)) !important;
+  z-index: 83 !important;
+  background: rgba(246, 250, 247, 0.98) !important;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.22) !important;
+}
+
+.detail-drawer {
+  z-index: 180 !important;
+  top: calc(1.35rem + var(--command-bar-height, 4.5rem) + 0.4rem) !important;
+  bottom: 0.75rem !important;
+  max-height: none !important;
+}
+
+body[data-active-tab="inventory"] #inventory thead th,
+body[data-active-tab="ordering"] .order-table thead th {
+  position: sticky !important;
+  top: calc(1.35rem + var(--command-bar-height, 4.5rem) + var(--filters-height, 5.2rem) + var(--date-pills-height, 2.3rem)) !important;
+  z-index: 55 !important;
+  background: #f3f8f5 !important;
+}
+
+body[data-active-tab="inventory"] #inventory th[data-col="state"],
+body[data-active-tab="inventory"] #inventoryBody td[data-col="state"] {
+  min-width: 8.2rem !important;
+}
+
+body[data-active-tab="inventory"] .inventory-edit-select--state {
+  min-width: 6.8rem !important;
+}
+
+body[data-active-tab="ordering"] .ordering-vendor-filter-bar {
+  position: sticky !important;
+  top: calc(1.35rem + var(--command-bar-height, 4.5rem) + var(--filters-height, 4.5rem) + var(--date-pills-height, 2.3rem)) !important;
+  z-index: 58 !important;
+  background: rgba(246, 250, 247, 0.98) !important;
+}
