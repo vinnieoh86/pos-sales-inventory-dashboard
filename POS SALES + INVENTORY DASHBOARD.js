@@ -127,9 +127,11 @@ let sharedVendorRulesAvailable = true;
 let sharedProductMetaAvailable = true;
 let sharedImportLogsAvailable = true;
 let sharedCountSessionsAvailable = true;
-const SHARED_SYNC_POLL_MS = 2000;
+const SHARED_SYNC_POLL_MS = 1200;
 const SHARED_SYNC_INITIAL_DELAY_MS = 1200;
 const SHARED_PRODUCT_META_PULL_LIMIT = 500;
+let sharedForegroundRefreshInFlight = false;
+let lastSharedForegroundRefreshAt = 0;
 
 // Increment this whenever raw data changes to bust the SKU cache
 function bumpDataStamp() {
@@ -2205,6 +2207,7 @@ function setItemMeta(code, patch = {}) {
   state.itemMeta = state.itemMeta || {};
   state.itemMeta[key] = { ...(state.itemMeta[key] || {}), ...patch };
   state._localProductMetaEdits?.set?.(key, Date.now());
+  bumpDataStamp();
   saveItemMeta();
   scheduleSharedProductSync(key);
 }
@@ -3784,10 +3787,6 @@ function deleteCountSession() {
   persistCountSessions();
   renderCountsWorkspace();
   void (async () => {
-    if (deletedId && ENABLE_SHARED_SYNC && sharedCountSessionsAvailable) {
-      await supabaseDeleteRowsByValues("count_sessions", "id", [deletedId]);
-      await updateSharedSyncState("counts");
-    }
     await syncSharedCountSessionsToSupabase(true);
   })().catch(() => {});
   showToast(`Deleted unsaved count: ${label}`, 3200, "warning");
@@ -6215,7 +6214,7 @@ function renderInventorySummary(rows) {
   const showPendingOnly = quickValue.includes("pending");
   const showBackorderOnly = quickValue.includes("backorder");
   const pendingCount = summaryBaseRows.filter((item) => isPendingOrder(item.code)).length;
-  const backorderItemCount = summaryBaseRows.filter((item) => poBackorderCountForCode(item.code) > 0).length;
+  const backorderItemCount = summaryBaseRows.filter((item) => isBackorderItem(item)).length;
   const ruleOverrideCount = summaryBaseRows.filter((item) => item.orderingRuleMode === "custom").length;
   const totals = rows.reduce(
     (sum, item) => ({
@@ -6316,7 +6315,9 @@ function buildInventoryRows(options = {}) {
       const displayState = meta.stateManual
         ? meta.state
         : (normalizeItemState(excel.state) || normalizeItemState(meta.state) || normalizeItemState(inventory.state) || "");
-      const stateLabel = normalizeItemState(displayState || "Active") || "Active";
+      const stateLabel = poBackorderCountForCode(itemCode) >= 3
+        ? "Back Order"
+        : (normalizeItemState(displayState || "Active") || "Active");
       const itemState = stateLabel.toLowerCase();
       const isOrderable = !["discontinued", "disabled"].includes(itemState);
       const rule = effectiveItemRule({
@@ -6409,7 +6410,7 @@ function buildInventoryRows(options = {}) {
     if (quickFilter.includes("ruleOverrides") && item.orderingRuleMode !== "custom") return false;
     if (!pendingOnly && quickFilter.includes("needs") && !(item.recommendedOrder > 0)) return false;
     if (pendingOnly && !isPendingOrder(item.code)) return false;
-    if (backorderOnly && poBackorderCountForCode(item.code) <= 0) return false;
+    if (backorderOnly && !isBackorderItem(item)) return false;
     return true;
   }).sort(compareInventoryRows);
 }
@@ -8968,7 +8969,8 @@ function productRowForSupabase(item) {
   const excel = findExcelFor(item);
   const normalizedCode = normalizeCode(item.code || excel.code || "");
   const meta = itemMetaFor(normalizedCode);
-  const syncState = normalizeItemState(meta.stateManual ? meta.state : (meta.state || excel.state || item.state || ""));
+  const backorderState = poBackorderCountForCode(normalizedCode) >= 3 ? "Back Order" : "";
+  const syncState = backorderState || normalizeItemState(meta.stateManual ? meta.state : (meta.state || excel.state || item.state || ""));
   const syncCaseSize = meta.caseSizeManual
     ? Math.max(1, Math.round(toNumber(meta.caseSize) || 1))
     : Math.max(1, Math.round(toNumber(excel.caseSize || item.caseSize || meta.caseSize) || 1));
@@ -9079,6 +9081,28 @@ function countSessionRowForSupabase(session = {}, active = false) {
   };
 }
 
+function countSessionDeleteRowForSupabase(sessionId = "") {
+  const id = cleanCell(sessionId);
+  if (!id) return null;
+  return {
+    id,
+    session_kind: "deleted",
+    session_payload: { id, deleted: true },
+    updated_at: new Date().toISOString(),
+  };
+}
+
+function countSessionActiveDeleteRowForSupabase(sessionId = "") {
+  const id = cleanCell(sessionId);
+  if (!id) return null;
+  return {
+    id: `active:${id}`,
+    session_kind: "deleted",
+    session_payload: { id, deleted: true },
+    updated_at: new Date().toISOString(),
+  };
+}
+
 function hydrateCountSessionFromSupabase(row = {}) {
   return row.session_payload && typeof row.session_payload === "object" ? row.session_payload : null;
 }
@@ -9161,7 +9185,8 @@ function productMetaRowForSupabase(source = {}) {
   const sku = state._skuCache?.get?.(codeKey(normalizedCode)) || {};
   const meta = itemMetaFor(normalizedCode);
   const override = reorderOverrideForCode(normalizedCode);
-  const stateValue = normalizeItemState(meta.stateManual ? meta.state : (meta.state || source.state || excel.state || sku.state || ""));
+  const backorderState = poBackorderCountForCode(normalizedCode) >= 3 ? "Back Order" : "";
+  const stateValue = backorderState || normalizeItemState(meta.stateManual ? meta.state : (meta.state || source.state || excel.state || sku.state || ""));
   const caseSize = effectiveCaseSizeFor(source, excel, meta, sku);
   const addDate = normalizeItemDate(meta.addDate || source.addDate || excel.addDate || meta.firstSeenDate || "");
   return {
@@ -9419,6 +9444,11 @@ function applySharedProductMetaRowsLight(rows = []) {
     localStorage.setItem("posDashboardReorderOverrides:v1", JSON.stringify(state.reorderOverrides));
   } catch (_) {}
   saveItemMeta();
+  const inventoryDate = latestInventoryDate() || new Date().toISOString().slice(0, 10);
+  if (state.latestInventory.size) {
+    state.inventories.set(inventoryDate, [...state.latestInventory.values()]);
+  }
+  bumpDataStamp();
   return [...changedCodes];
 }
 
@@ -9441,8 +9471,17 @@ function applySharedImportLogRows(rows = []) {
 
 function applySharedCountSessionRows(rows = []) {
   pruneDeletedCountSessions();
+  (rows || []).forEach((row) => {
+    if (cleanCell(row?.session_kind).toLowerCase() !== "deleted") return;
+    const payloadId = cleanCell(row?.session_payload?.id);
+    const rowId = cleanCell(row?.id || "").replace(/^active:/i, "");
+    markCountSessionDeleted(payloadId || rowId);
+  });
+  pruneDeletedCountSessions({ persist: true });
+  const liveRows = (rows || []).filter((row) => cleanCell(row?.session_kind).toLowerCase() !== "deleted");
+  if (rows?.length && !liveRows.length) return (state.countSessions || []).length + (state.activeCountSession ? 1 : 0);
   const localHoldActive = Date.now() < (state._localCountHoldUntil || 0);
-  if (!rows?.length) {
+  if (!liveRows.length) {
     if (localHoldActive) return (state.countSessions || []).length + (state.activeCountSession ? 1 : 0);
     state.countSessions = [];
     state.activeCountSession = null;
@@ -9457,7 +9496,7 @@ function applySharedCountSessionRows(rows = []) {
     .filter((session) => cleanCell(session?.id) && !countSessionIsDeleted(session.id))
     .map((session) => [cleanCell(session.id), session]));
   const localActiveId = cleanCell(state.activeCountSession?.id);
-  rows.forEach((row) => {
+  liveRows.forEach((row) => {
     const session = hydrateCountSessionFromSupabase(row);
     if (!session) return;
     const sessionId = cleanCell(session.id);
@@ -9574,6 +9613,34 @@ async function restoreSharedCountAndProductMetaFromSupabase(options = {}) {
   return productsRestored || countsRestored;
 }
 
+async function refreshSharedLiveState(reason = "foreground") {
+  if (!ENABLE_SHARED_SYNC || sharedForegroundRefreshInFlight) return false;
+  const now = Date.now();
+  if (now - lastSharedForegroundRefreshAt < 2500) return false;
+  lastSharedForegroundRefreshAt = now;
+  sharedForegroundRefreshInFlight = true;
+  try {
+    const [productsRestored, countsRestored, vendorRulesRestored] = await Promise.all([
+      restoreSharedProductsOnlyFromSupabase({ silent: true }),
+      restoreSharedCountSessionsOnlyFromSupabase({ silent: true }),
+      restoreSharedVendorRulesOnlyFromSupabase({ silent: true }),
+    ]);
+    if (productsRestored || countsRestored || vendorRulesRestored) {
+      if (activeTabName() === "inventory") {
+        renderInventory();
+      } else if (activeTabName() === "ordering") {
+        renderOrders();
+      }
+      refreshDetailDrawer();
+    }
+    return productsRestored || countsRestored || vendorRulesRestored;
+  } catch (_) {
+    return false;
+  } finally {
+    sharedForegroundRefreshInFlight = false;
+  }
+}
+
 async function updateSharedSyncState(kind = "products") {
   if (!ENABLE_SHARED_SYNC) return false;
   try {
@@ -9661,11 +9728,14 @@ async function syncSharedImportLogsToSupabase(silent = false) {
 async function syncSharedCountSessionsToSupabase(silent = false) {
   if (!ENABLE_SHARED_SYNC || !sharedCountSessionsAvailable) return false;
   try {
+    const remoteDeletedRows = await supabaseSelectRowsSafe("count_sessions", { select: "id,session_kind,session_payload,updated_at", session_kind: "eq.deleted" });
+    if (remoteDeletedRows.length) applySharedCountSessionRows(remoteDeletedRows);
     const deletedIds = [...(state._deletedCountSessionIds || [])].filter(Boolean).slice(-500);
-    if (deletedIds.length) {
-      await supabaseDeleteRowsByValues("count_sessions", "id", deletedIds);
-    }
+    const deleteRows = deletedIds
+      .flatMap((id) => [countSessionDeleteRowForSupabase(id), countSessionActiveDeleteRowForSupabase(id)])
+      .filter(Boolean);
     const rows = [
+      ...deleteRows,
       ...(state.countSessions || [])
         .filter((session) => cleanCell(session?.id) && !countSessionIsDeleted(session.id))
         .map((session) => countSessionRowForSupabase(session, false)),
@@ -10000,10 +10070,6 @@ function confirmDeleteSavedSession() {
   persistCountSessions();
   renderCountSessionRows();
   void (async () => {
-    if (ENABLE_SHARED_SYNC && sharedCountSessionsAvailable) {
-      await supabaseDeleteRowsByValues("count_sessions", "id", [id]);
-      await updateSharedSyncState("counts");
-    }
     await syncSharedCountSessionsToSupabase(true);
   })().catch(() => {});
   showToast("Saved count deleted.", 2400, "warning");
@@ -11097,11 +11163,31 @@ function poBackorderCountForCode(code) {
   return count > 0 ? count : 0;
 }
 
+function isBackorderItem(item = {}) {
+  const key = codeKey(item.code);
+  const meta = itemMetaFor(key);
+  return poBackorderCountForCode(key) >= 3
+    || normalizeItemState(item.state || "") === "Back Order"
+    || normalizeItemState(meta.state || "") === "Back Order";
+}
+
+function enforceBackorderStateForCodes(codes = []) {
+  [...new Set((codes || []).map(codeKey).filter(Boolean))].forEach((key) => {
+    if (poBackorderCountForCode(key) < 3) return;
+    const meta = itemMetaFor(key);
+    if (normalizeItemState(meta.state) === "Back Order" && meta.stateManual) return;
+    setItemMeta(key, { state: "Back Order", stateManual: true });
+  });
+}
+
 function incrementPoBackorderForCodes(codes = [], options = {}) {
   state.poBackorderCounts = state.poBackorderCounts || {};
-  [...new Set(codes.map(codeKey).filter(Boolean))].forEach((key) => {
+  const keys = [...new Set(codes.map(codeKey).filter(Boolean))];
+  keys.forEach((key) => {
     state.poBackorderCounts[key] = poBackorderCountForCode(key) + 1;
   });
+  enforceBackorderStateForCodes(keys);
+  bumpDataStamp();
   if (options.save !== false) savePoBackorderCounts();
 }
 
@@ -11109,6 +11195,7 @@ function resetPoBackorderForCode(code, options = {}) {
   const key = codeKey(code);
   if (!key || !state.poBackorderCounts?.[key]) return;
   delete state.poBackorderCounts[key];
+  bumpDataStamp();
   if (options.save !== false) savePoBackorderCounts();
 }
 
@@ -12625,6 +12712,11 @@ if (!state.authRequired || !loadUsers().length) {
           ? await restoreSharedProductsOnlyFromSupabase({ silent: true })
           : await restoreSharedDataFromSupabase({ silent: true, preferCurrentState: false });
       if (restored) {
+        if (isProductsOnly || isCountsOnly) {
+          if (activeTabName() === "inventory") renderInventory();
+          else if (activeTabName() === "ordering") renderOrders();
+          refreshDetailDrawer();
+        }
         if (!isProductsOnly && !isCountsOnly && !state.activeCountSession) {
           showToast(
             isVendorRulesOnly
@@ -12642,6 +12734,11 @@ if (!state.authRequired || !loadUsers().length) {
     } catch (_) { /* silent fail on file:// */ }
   }
   setTimeout(() => { poll(); setInterval(poll, SHARED_SYNC_POLL_MS); }, SHARED_SYNC_INITIAL_DELAY_MS);
+  window.addEventListener("focus", () => { refreshSharedLiveState("focus").catch(() => {}); });
+  window.addEventListener("pageshow", () => { refreshSharedLiveState("pageshow").catch(() => {}); });
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) refreshSharedLiveState("visible").catch(() => {});
+  });
 })();
 
 
