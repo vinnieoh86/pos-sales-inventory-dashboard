@@ -34,7 +34,7 @@
   _localProductMetaEdits: new Map(),
   _localImportHoldUntil: 0,
   _localCountHoldUntil: 0,
-  _deletedCountSessionIds: new Set(),
+  _deletedCountSessionIds: new Set(JSON.parse(localStorage.getItem("posDashboardDeletedCountSessionIds:v1") || "[]")),
   _priceCheckExactIndex: null,
   _priceCheckExactIndexStamp: 0,
   _filteredSkuIndex: new Map(),
@@ -62,6 +62,7 @@
   selectedCountItemCode: "",
   countStage: "search",
   pendingDuplicateCount: null,
+  pendingDuplicateMode: null,
   countReportMode: "input",
   metricsPinned: JSON.parse(localStorage.getItem("posDashboardMetricsPinned:v1") || "false"),
   orderVendorQuickFilter: "",
@@ -123,7 +124,7 @@ let sharedVendorRulesAvailable = true;
 let sharedProductMetaAvailable = true;
 let sharedImportLogsAvailable = true;
 let sharedCountSessionsAvailable = true;
-const SHARED_SYNC_POLL_MS = 3000;
+const SHARED_SYNC_POLL_MS = 2000;
 const SHARED_SYNC_INITIAL_DELAY_MS = 1200;
 const SHARED_PRODUCT_META_PULL_LIMIT = 500;
 
@@ -1128,24 +1129,28 @@ document.addEventListener("keydown", (event) => {
   }
   if (!els.countSessionModal.hidden && event.target === els.countSearchInput && event.key === "Enter") return;
   if (!els.countReportModal.hidden) return;
-  if (document.querySelector(".tab-button.active")?.dataset.tab === "counts" && state.activeCountSession && state.countStage === "qty") {
+  if (!els.countSessionModal.hidden && state.activeCountSession && state.countStage === "qty") {
     if (/^\d$/.test(event.key)) {
       event.preventDefault();
+      event.stopPropagation();
       handleCountKey(event.key);
       return;
     }
     if (event.key === "Backspace") {
       event.preventDefault();
+      event.stopPropagation();
       handleCountKey("back");
       return;
     }
     if (event.key === ".") {
       event.preventDefault();
+      event.stopPropagation();
       handleCountKey(".");
       return;
     }
     if (event.key === "Enter") {
       event.preventDefault();
+      event.stopPropagation();
       applyCountEntry();
       return;
     }
@@ -2094,7 +2099,7 @@ function scheduleSharedCountSessionsSync() {
   clearTimeout(sharedCountSessionsTimer);
   sharedCountSessionsTimer = setTimeout(() => {
     syncSharedCountSessionsToSupabase(true).catch(() => {});
-  }, 1600);
+  }, 650);
 }
 
 function allowedItemStates() {
@@ -2528,6 +2533,26 @@ function ensureResizeColumnsButton() {
   return button;
 }
 
+function ensureInventoryTotalsInline() {
+  let node = document.querySelector("#inventoryTotalsInline");
+  if (node) return node;
+  node = document.createElement("div");
+  node.id = "inventoryTotalsInline";
+  node.className = "inventory-totals-inline";
+  return node;
+}
+
+function ensureInventoryQuickChipsInline() {
+  let node = document.querySelector("#inventoryQuickChipsInline");
+  if (node) return node;
+  node = document.createElement("div");
+  node.id = "inventoryQuickChipsInline";
+  node.className = "inventory-quick-chips-inline";
+  const datePresets = document.querySelector("#datePresets");
+  if (datePresets) datePresets.append(node);
+  return node;
+}
+
 function renderSharedQuickTools(tab = activeTabName()) {
   if (!els.inventoryQuickTools) return;
   const row = els.inventoryQuickTools.querySelector(".inventory-quick-tools__row");
@@ -2576,6 +2601,7 @@ function renderSharedQuickTools(tab = activeTabName()) {
   if (isInventory) {
     resizeColumnsButton.classList.toggle("active-edit", state.resizeColumns);
     resizeColumnsButton.textContent = state.resizeColumns ? "Done resizing" : "Resize columns";
+    const totalsInline = ensureInventoryTotalsInline();
     row.replaceChildren(...[
       els.inventoryStateFilter,
       els.arrangeColumnsButton,
@@ -2583,6 +2609,7 @@ function renderSharedQuickTools(tab = activeTabName()) {
       inventoryColumnPicker,
       els.downloadInventory,
       els.createPoShortcut,
+      totalsInline,
     ].filter(Boolean));
     return;
   }
@@ -3453,9 +3480,63 @@ function persistCountSessions() {
   scheduleSharedCountSessionsSync();
 }
 
+function persistDeletedCountSessionIds() {
+  localStorage.setItem("posDashboardDeletedCountSessionIds:v1", JSON.stringify([...state._deletedCountSessionIds].filter(Boolean).slice(-500)));
+}
+
+function countSessionIsDeleted(sessionId) {
+  const id = cleanCell(sessionId);
+  return !!id && !!state._deletedCountSessionIds?.has?.(id);
+}
+
+function markCountSessionDeleted(sessionId) {
+  const id = cleanCell(sessionId);
+  if (!id) return "";
+  state._deletedCountSessionIds.add(id);
+  persistDeletedCountSessionIds();
+  return id;
+}
+
+function archiveCountSessionEntriesToAdjustmentLog(session) {
+  if (!session?.id || !(session.entries || []).length) return 0;
+  let added = 0;
+  const previousByCode = { ...(session.preCountSnapshot || {}) };
+  (session.entries || []).forEach((entry) => {
+    const key = codeKey(entry.code);
+    if (!key) return;
+    const duplicate = (state.adjustmentLog || []).some((log) =>
+      cleanCell(log.countSessionId) === cleanCell(session.id) &&
+      codeKey(log.code) === key &&
+      cleanCell(log.recordedAt) === cleanCell(entry.recordedAt)
+    );
+    if (duplicate) return;
+    const before = previousByCode[key] ?? entry.originalQty ?? 0;
+    const after = Number(entry.countedQty || 0);
+    previousByCode[key] = after;
+    state.adjustmentLog.unshift({
+      recordedAt: entry.recordedAt || session.updatedAt || new Date().toISOString(),
+      user: entry.user || session.user || currentAuditUser(),
+      code: entry.code,
+      product: entry.product || "",
+      vendor: entry.vendor || "",
+      category: entry.category || "",
+      action: "COUNT ENTRY",
+      qtyChange: after - Number(before || 0),
+      qtyBefore: Number(before || 0),
+      qtyAfter: after,
+      reason: `Archived physical count: ${countSessionLabel(session)} (${entry.mode || "reset"})`,
+      countSessionId: session.id,
+    });
+    added++;
+  });
+  if (added) localStorage.setItem("posDashboardAdjustLog:v1", JSON.stringify(state.adjustmentLog));
+  return added;
+}
+
 let _persistCountTimer = null;
 function persistActiveCountSession() {
   // Defer localStorage write off the critical path â€” batches rapid scans
+  state._localCountHoldUntil = Date.now() + 90000;
   clearTimeout(_persistCountTimer);
   _persistCountTimer = setTimeout(() => {
     localStorage.setItem("posDashboardActiveCountSession:v1", JSON.stringify(state.activeCountSession));
@@ -3549,6 +3630,7 @@ function startCountSessionFromModal() {
   state.selectedCountItemCode = "";
   state.countStage = "search";
   state.pendingDuplicateCount = null;
+  state.pendingDuplicateMode = null;
   persistActiveCountSession();
   closeCountSetupModal();
   buildCountSearchIndex();
@@ -3563,6 +3645,7 @@ function closeActiveCountSession() {
   state.countQtyBuffer = "0";
   state.countStage = "search";
   state.pendingDuplicateCount = null;
+  state.pendingDuplicateMode = null;
   persistCountSessions();
   renderCountsWorkspace();
 }
@@ -3586,7 +3669,25 @@ function saveCountSession() {
     const existing = state.latestInventory.get(key);
     state._localProductMetaEdits.set(key, Date.now());
     if (existing) {
-      existing.stock = Number(entry.countedQty || 0);
+      const beforeStock = Number(existing.stock || 0);
+      const afterStock = Number(entry.countedQty || 0);
+      if (beforeStock !== afterStock) {
+        state.adjustmentLog.unshift({
+          recordedAt: entry.recordedAt || new Date().toISOString(),
+          user: currentAuditUser(),
+          code: existing.code || entry.code,
+          product: existing.product || entry.product || "",
+          vendor: existing.vendor || entry.vendor || "",
+          category: existing.category || entry.category || "",
+          action: "COUNT ENTRY",
+          qtyChange: afterStock - beforeStock,
+          qtyBefore: beforeStock,
+          qtyAfter: afterStock,
+          reason: `Physical count saved: ${countSessionLabel(session)} (${entry.mode || "reset"})`,
+          countSessionId: session.id,
+        });
+      }
+      existing.stock = afterStock;
       state.latestInventory.set(key, existing);
       updatedCount++;
     } else {
@@ -3604,7 +3705,9 @@ function saveCountSession() {
   state.countQtyBuffer = "0";
   state.countStage = "search";
   state.pendingDuplicateCount = null;
+  state.pendingDuplicateMode = null;
   bumpDataStamp();
+  localStorage.setItem("posDashboardAdjustLog:v1", JSON.stringify(state.adjustmentLog));
   persistCountSessions();
   renderCountsWorkspace();
   // Defer the expensive full render until after modal closes
@@ -3618,14 +3721,23 @@ function saveCountSession() {
 function deleteCountSession() {
   if (!state.activeCountSession) return;
   const label = countSessionLabel(state.activeCountSession);
+  const deletedId = markCountSessionDeleted(state.activeCountSession.id);
   state.activeCountSession = null;
   state.selectedCountItemCode = "";
   state.countQtyBuffer = "0";
   state.countStage = "search";
   state.pendingDuplicateCount = null;
+  state.pendingDuplicateMode = null;
+  state._localCountHoldUntil = Date.now() + 90000;
   persistCountSessions();
   renderCountsWorkspace();
-  void syncSharedCountSessionsToSupabase(true);
+  void (async () => {
+    if (deletedId && ENABLE_SHARED_SYNC && sharedCountSessionsAvailable) {
+      await supabaseDeleteRowsByValues("count_sessions", "id", [deletedId]);
+      await updateSharedSyncState("counts");
+    }
+    await syncSharedCountSessionsToSupabase(true);
+  })().catch(() => {});
   showToast(`Deleted unsaved count: ${label}`, 3200, "warning");
 }
 
@@ -3734,10 +3846,13 @@ function handleCountLookup() {
   state.selectedCountItemCode = match.code;
   state.countStage = "qty";
   state.countQtyBuffer = "0";
+  state.pendingDuplicateMode = null;
   hideCountDropdown();
   els.countSearchInput?.blur();
   renderSelectedCountItem();
   renderCountQuantity();
+  const existing = state.activeCountSession.entries?.filter((entry) => codeKey(entry.code) === codeKey(match.code)).at(-1);
+  if (existing) openDuplicateCountModal(match, null, existing, { chooseBeforeQty: true });
 }
 
 function clearCountLookup() {
@@ -3746,15 +3861,18 @@ function clearCountLookup() {
   state.selectedCountItemCode = "";
   state.countQtyBuffer = "0";
   state.countStage = "search";
+  state.pendingDuplicateMode = null;
   renderCountQuantity();
   renderSelectedCountItem();
   focusCountSearch();
 }
 
-function openDuplicateCountModal(item, qty, existing) {
-  state.pendingDuplicateCount = { item, qty, existing };
+function openDuplicateCountModal(item, qty, existing, options = {}) {
+  state.pendingDuplicateCount = { item, qty, existing, chooseBeforeQty: !!options.chooseBeforeQty };
   if (els.countDuplicateMessage) {
-    els.countDuplicateMessage.textContent = `${item.product} was already counted as ${number.format(existing?.countedQty || 0)}. Add this new quantity or reset it?`;
+    els.countDuplicateMessage.textContent = options.chooseBeforeQty
+      ? `${item.product} was already counted as ${number.format(existing?.countedQty || 0)}. Choose Add or Reset, then enter the quantity.`
+      : `${item.product} was already counted as ${number.format(existing?.countedQty || 0)}. Add this new quantity or reset it?`;
   }
   els.countDuplicateModal.hidden = false;
   setTimeout(() => els.countDuplicateAddButton?.focus(), 0);
@@ -3762,6 +3880,7 @@ function openDuplicateCountModal(item, qty, existing) {
 
 function closeDuplicateCountModal() {
   state.pendingDuplicateCount = null;
+  state.pendingDuplicateMode = null;
   els.countDuplicateModal.hidden = true;
   state.countStage = "search";
   state.selectedCountItemCode = "";
@@ -3797,6 +3916,7 @@ function commitCountEntry(item, qty, mode) {
   state.countQtyBuffer = "0";
   state.countStage = "search";
   state.selectedCountItemCode = "";
+  state.pendingDuplicateMode = null;
   persistActiveCountSession();
   // Fast path: prepend new row, update summary, reset UI â€” no full workspace rebuild
   renderCountEntryRows(true);
@@ -3806,9 +3926,9 @@ function commitCountEntry(item, qty, mode) {
   if (els.countSearchInput) els.countSearchInput.value = "";
   hideCountDropdown();
   focusCountSearch();
-  if (mode !== "set") {
+  if (mode === "add") {
     requestAnimationFrame(() => showToast(
-      mode === "add" ? `Added ${number.format(qty)} to ${item.code}` : `Reset ${item.code} to ${number.format(qty)}`,
+      `Added ${number.format(qty)} to ${item.code}`,
       1600,
       "success",
     ));
@@ -3820,7 +3940,18 @@ function resolveDuplicateCount(mode) {
   if (!pending) return;
   els.countDuplicateModal.hidden = true;
   state.pendingDuplicateCount = null;
-  commitCountEntry(pending.item, pending.qty, mode === "add" ? "add" : "reset");
+  const resolvedMode = mode === "add" ? "add" : "reset";
+  if (pending.chooseBeforeQty || pending.qty == null) {
+    state.pendingDuplicateMode = { code: pending.item.code, mode: resolvedMode };
+    state.selectedCountItemCode = pending.item.code;
+    state.countStage = "qty";
+    state.countQtyBuffer = "0";
+    renderSelectedCountItem();
+    renderCountQuantity();
+    return;
+  }
+  state.pendingDuplicateMode = null;
+  commitCountEntry(pending.item, pending.qty, resolvedMode);
 }
 
 function applyCountEntry() {
@@ -3836,10 +3967,17 @@ function applyCountEntry() {
   const qty = Math.max(0, Number(state.countQtyBuffer || "0"));
   const existing = state.activeCountSession.entries?.filter((entry) => codeKey(entry.code) === codeKey(item.code)).at(-1);
   if (existing) {
+    const chosenMode = state.pendingDuplicateMode && codeKey(state.pendingDuplicateMode.code) === codeKey(item.code)
+      ? state.pendingDuplicateMode.mode
+      : "";
+    if (chosenMode) {
+      commitCountEntry(item, qty, chosenMode);
+      return;
+    }
     openDuplicateCountModal(item, qty, existing);
     return;
   }
-  commitCountEntry(item, qty, "set");
+  commitCountEntry(item, qty, "reset");
 }
 
 function focusCountSearch() {
@@ -3945,12 +4083,17 @@ function selectCountDropdownItem(code) {
   state.selectedCountItemCode = item.code;
   state.countStage = "qty";
   state.countQtyBuffer = "0";
+  state.pendingDuplicateMode = null;
+  els.countSearchInput?.blur();
   renderSelectedCountItem();
   renderCountQuantity();
+  const existing = state.activeCountSession.entries?.filter((entry) => codeKey(entry.code) === codeKey(item.code)).at(-1);
+  if (existing) openDuplicateCountModal(item, null, existing, { chooseBeforeQty: true });
 }
 
 function findCountSessionById(sessionId) {
   if (!sessionId) return null;
+  if (countSessionIsDeleted(sessionId)) return null;
   if (state.activeCountSession?.id === sessionId) return state.activeCountSession;
   return state.countSessions.find((session) => session.id === sessionId) || null;
 }
@@ -4255,6 +4398,7 @@ function renderCountSessionRows() {
     .slice()
     .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")))
     .filter((s) => {
+      if (countSessionIsDeleted(s.id)) return false;
       if (!(s.entries || []).length && !s.savedAt && !s.submittedAt) return false;
       if (vendorFilter && (s.vendor || s.department || "") !== vendorFilter) return false;
       if (!sessionMatchesPeriodFilter(s, periodFilter)) return false;
@@ -5512,10 +5656,13 @@ function startInventoryColumnResize(event, key) {
   event.stopPropagation();
   const header = event.currentTarget.closest("th");
   if (!header || !key) return;
-  const startX = event.clientX;
+  const pointer = event.touches?.[0] || event;
+  const startX = pointer.clientX;
   const startWidth = header.getBoundingClientRect().width;
   const onMove = (moveEvent) => {
-    const nextWidth = Math.max(42, Math.min(620, Math.round(startWidth + moveEvent.clientX - startX)));
+    moveEvent.preventDefault?.();
+    const movePointer = moveEvent.touches?.[0] || moveEvent;
+    const nextWidth = Math.max(42, Math.min(620, Math.round(startWidth + movePointer.clientX - startX)));
     state.columnWidths[key] = nextWidth;
     applyInventoryColumnWidths();
   };
@@ -5523,9 +5670,17 @@ function startInventoryColumnResize(event, key) {
     localStorage.setItem("posDashboardColumnWidths:v1", JSON.stringify(state.columnWidths));
     document.removeEventListener("mousemove", onMove);
     document.removeEventListener("mouseup", onUp);
+    document.removeEventListener("pointermove", onMove);
+    document.removeEventListener("pointerup", onUp);
+    document.removeEventListener("touchmove", onMove);
+    document.removeEventListener("touchend", onUp);
   };
   document.addEventListener("mousemove", onMove);
   document.addEventListener("mouseup", onUp, { once: true });
+  document.addEventListener("pointermove", onMove);
+  document.addEventListener("pointerup", onUp, { once: true });
+  document.addEventListener("touchmove", onMove, { passive: false });
+  document.addEventListener("touchend", onUp, { once: true });
 }
 
 function wireInventoryInfiniteScroll() {
@@ -5594,7 +5749,7 @@ function renderInventoryHeader() {
   });
   row.querySelectorAll("[data-sort]").forEach((header) => {
     header.addEventListener("click", () => {
-      if (state.arrangeColumns) return;
+      if (state.arrangeColumns || state.resizeColumns) return;
       state._pinnedAdjustCode = null;
       const key = header.dataset.sort;
       state.inventorySort = {
@@ -5602,6 +5757,12 @@ function renderInventoryHeader() {
         dir: state.inventorySort.key === key && state.inventorySort.dir === "asc" ? "desc" : "asc",
       };
       renderInventory();
+    });
+    header.addEventListener("dblclick", (event) => {
+      if (!state.resizeColumns) return;
+      event.preventDefault();
+      event.stopPropagation();
+      autoFitInventoryColumn(header.dataset.col);
     });
     header.addEventListener("dragstart", (event) => {
       if (!state.arrangeColumns) return;
@@ -5618,6 +5779,8 @@ function renderInventoryHeader() {
   });
   row.querySelectorAll("[data-resize-col]").forEach((handle) => {
     handle.addEventListener("mousedown", (event) => startInventoryColumnResize(event, handle.dataset.resizeCol));
+    handle.addEventListener("pointerdown", (event) => startInventoryColumnResize(event, handle.dataset.resizeCol));
+    handle.addEventListener("touchstart", (event) => startInventoryColumnResize(event, handle.dataset.resizeCol), { passive: false });
     handle.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -5757,6 +5920,7 @@ function openRulePopover(code, anchor) {
   const popover = document.createElement("div");
   popover.id = "itemRulePopover";
   popover.className = "item-rule-popover";
+  popover.dataset.mode = rule.mode === "custom" ? "custom" : "vendor";
   popover.innerHTML = `
     <div class="item-rule-popover__title">SD / DOI</div>
     <div class="item-rule-popover__item">${escapeHtml(item.product || item.code)}</div>
@@ -5774,33 +5938,55 @@ function openRulePopover(code, anchor) {
   popover.style.left = `${Math.min(window.innerWidth - 260, Math.max(8, rect.left))}px`;
   popover.style.top = `${Math.min(window.innerHeight - 190, rect.bottom + 8)}px`;
   const refreshAfterRuleChange = (message) => {
-    const refreshedItem = refreshVisibleInventoryRowByCode(item.code) || patchInventoryRowFromCache(item.code) || item;
+    const quickValue = els.inventoryQuickFilter?.value || "";
+    const needsFullRuleRefresh = quickValue.includes("ruleOverrides") || state.inventorySort.key === "rule";
+    const refreshedItem = refreshVisibleInventoryRowByCode(item.code, { fullRefresh: needsFullRuleRefresh }) || patchInventoryRowFromCache(item.code) || item;
     if (state._activeDetailCode && codeKey(state._activeDetailCode) === codeKey(item.code)) showDetail(refreshedItem, { preserveTab: true });
-    renderInventorySummary(state.inventoryRows || currentInventoryRows());
     closeRulePopover();
     showToast(message, 2200, "success");
   };
-  popover.querySelector("[data-popover-save]")?.addEventListener("click", () => {
+  const saveRuleFromPopover = () => {
     const safety = Math.max(0, Math.round(toNumber(popover.querySelector("[data-popover-safety]")?.value) || 0));
     const doi = Math.max(0, Math.round(toNumber(popover.querySelector("[data-popover-doi]")?.value) || 0));
+    if (popover.dataset.mode === "vendor") {
+      setItemMeta(item.code, {
+        orderingRuleMode: "vendor",
+        safetyDaysOverride: null,
+        daysOfInventoryOverride: null,
+      });
+      refreshAfterRuleChange(`Reverted ${item.code} to vendor SD/DOI`);
+      return;
+    }
     setItemMeta(item.code, {
       orderingRuleMode: "custom",
       safetyDaysOverride: safety,
       daysOfInventoryOverride: doi,
     });
     refreshAfterRuleChange(`Saved SD/DOI for ${item.code}`);
-  });
+  };
+  popover.querySelector("[data-popover-save]")?.addEventListener("click", saveRuleFromPopover);
   popover.querySelector("[data-popover-vendor]")?.addEventListener("click", () => {
-    setItemMeta(item.code, {
-      orderingRuleMode: "vendor",
-      safetyDaysOverride: null,
-      daysOfInventoryOverride: null,
-    });
-    refreshAfterRuleChange(`Reverted ${item.code} to vendor SD/DOI`);
+    popover.dataset.mode = "vendor";
+    const safetyInput = popover.querySelector("[data-popover-safety]");
+    const doiInput = popover.querySelector("[data-popover-doi]");
+    if (safetyInput) safetyInput.value = String(Math.max(0, Math.round(rule.vendorSafety || 0)));
+    if (doiInput) doiInput.value = String(Math.max(0, Math.round(rule.vendorDoi || 0)));
+    popover.querySelector("[data-popover-save]")?.focus();
   });
   popover.querySelectorAll("input").forEach((input) => {
     input.addEventListener("focus", () => input.select?.());
     input.addEventListener("click", () => input.select?.());
+    input.addEventListener("input", () => { popover.dataset.mode = "custom"; });
+  });
+  popover.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      event.stopPropagation();
+      saveRuleFromPopover();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      closeRulePopover();
+    }
   });
   const firstInput = popover.querySelector("input");
   firstInput?.focus();
@@ -5902,10 +6088,14 @@ function patchInventoryRowFromCache(code) {
   return nextItem;
 }
 
-function refreshVisibleInventoryRowByCode(code) {
+function refreshVisibleInventoryRowByCode(code, options = {}) {
   let refreshed = patchInventoryRowFromCache(code);
-  bumpDataStamp();
-  if (!refreshed) refreshed = patchInventoryRow(code) || findCurrentItemByCode(code);
+  if (options.fullRefresh) {
+    bumpDataStamp();
+    refreshed = patchInventoryRow(code) || findCurrentItemByCode(code) || refreshed;
+  } else if (!refreshed) {
+    refreshed = patchInventoryRow(code) || findCurrentItemByCode(code);
+  }
   renderInventorySummary(state.inventoryRows || []);
   if (activeTabName() === "ordering") renderOrders();
   return refreshed;
@@ -5969,7 +6159,9 @@ function renderInventorySummary(rows) {
   const showRuleOverridesOnly = quickValue.includes("ruleOverrides");
   const showNeedsOnly = quickValue.includes("needs");
   const showPendingOnly = quickValue.includes("pending");
+  const showBackorderOnly = quickValue.includes("backorder");
   const pendingCount = summaryBaseRows.filter((item) => isPendingOrder(item.code)).length;
+  const backorderItemCount = summaryBaseRows.filter((item) => poBackorderCountForCode(item.code) > 0).length;
   const ruleOverrideCount = summaryBaseRows.filter((item) => item.orderingRuleMode === "custom").length;
   const totals = rows.reduce(
     (sum, item) => ({
@@ -5982,19 +6174,27 @@ function renderInventorySummary(rows) {
     }),
     { items: 0, stock: 0, sold: 0, velocity: 0, unitCost: 0, inventoryCost: 0 },
   );
-  els.inventorySummary.innerHTML = `
+  const totalsHtml = `
     <span><b>${number.format(totals.items)}</b> items showing</span>
     <span><b>${number.format(totals.stock)}</b> stock</span>
     <span data-units-summary><b>${number.format(totals.sold)}</b> sold</span>
     <span><b>${formatVelocity(totals.velocity)}</b> avg/day</span>
     <span data-cost-summary><b>${currency.format(totals.unitCost)}</b> cost sum</span>
-    <span data-cost-summary><b>${currency.format(totals.inventoryCost)}</b> stock cost</span>
+    <span data-cost-summary><b>${currency.format(totals.inventoryCost)}</b> stock cost</span>`;
+  const chipsHtml = `
     <label class="inventory-toggle-chip"><input type="checkbox" id="inventoryQuickOverrides"${showOverridesOnly ? " checked" : ""} />Overrides</label>
     <label class="inventory-toggle-chip"><input type="checkbox" id="inventoryQuickRuleOverrides"${showRuleOverridesOnly ? " checked" : ""} />DOI/SV${ruleOverrideCount ? ` (${number.format(ruleOverrideCount)})` : ""}</label>
     <label class="inventory-toggle-chip"><input type="checkbox" id="inventoryQuickNeeds"${showNeedsOnly ? " checked" : ""} />Order needed</label>
     <label class="inventory-toggle-chip"><input type="checkbox" id="inventoryQuickPending"${showPendingOnly ? " checked" : ""} />PO pending${pendingCount ? ` (${number.format(pendingCount)})` : ""}</label>
+    <label class="inventory-toggle-chip"><input type="checkbox" id="inventoryQuickBackorder"${showBackorderOnly ? " checked" : ""} />B/O${backorderItemCount ? ` (${number.format(backorderItemCount)})` : ""}</label>
     ${pendingCount ? `<button type="button" class="secondary-button inventory-clear-pending-button" id="inventoryClearAllPendingButton">Clear all PO pending</button>` : ""}
     ${selectedCount ? `<button type="button" class="secondary-button inventory-selected-button" id="inventorySelectedActionsButton">Selected (${number.format(selectedCount)})</button>` : ""}`;
+  const totalsTarget = ensureInventoryTotalsInline();
+  const chipsTarget = ensureInventoryQuickChipsInline();
+  totalsTarget.innerHTML = totalsHtml;
+  chipsTarget.innerHTML = chipsHtml;
+  els.inventorySummary.innerHTML = "";
+  els.inventorySummary.hidden = true;
   applyRoleRestrictions(true);
   document.querySelector("#inventorySelectedActionsButton")?.addEventListener("click", openInventoryBulkActionsModal);
   document.querySelector("#inventoryClearAllPendingButton")?.addEventListener("click", clearAllPendingPo);
@@ -6004,6 +6204,7 @@ function renderInventorySummary(rows) {
     const needsBox = document.querySelector("#inventoryQuickNeeds");
     let needs = !!needsBox?.checked;
     const pending = !!document.querySelector("#inventoryQuickPending")?.checked;
+    const backorder = !!document.querySelector("#inventoryQuickBackorder")?.checked;
     if (pending && needsBox) {
       needsBox.checked = false;
       needs = false;
@@ -6014,6 +6215,7 @@ function renderInventorySummary(rows) {
       if (ruleOverrides) parts.push("ruleOverrides");
       if (needs) parts.push("needs");
       if (pending) parts.push("pending");
+      if (backorder) parts.push("backorder");
       els.inventoryQuickFilter.value = parts.join("+");
     }
     renderInventory();
@@ -6022,6 +6224,7 @@ function renderInventorySummary(rows) {
   document.querySelector("#inventoryQuickRuleOverrides")?.addEventListener("change", syncQuickChecks);
   document.querySelector("#inventoryQuickNeeds")?.addEventListener("change", syncQuickChecks);
   document.querySelector("#inventoryQuickPending")?.addEventListener("change", syncQuickChecks);
+  document.querySelector("#inventoryQuickBackorder")?.addEventListener("change", syncQuickChecks);
 }
 
 function buildInventoryRows(options = {}) {
@@ -6143,10 +6346,12 @@ function buildInventoryRows(options = {}) {
       if (els.colorFilter.value && item.color !== els.colorFilter.value && item.subType !== els.colorFilter.value) return false;
     }
     const pendingOnly = quickFilter.includes("pending");
+    const backorderOnly = quickFilter.includes("backorder");
     if (quickFilter.includes("overrides") && !item.isOverridden) return false;
     if (quickFilter.includes("ruleOverrides") && item.orderingRuleMode !== "custom") return false;
     if (!pendingOnly && quickFilter.includes("needs") && !(item.recommendedOrder > 0)) return false;
     if (pendingOnly && !isPendingOrder(item.code)) return false;
+    if (backorderOnly && poBackorderCountForCode(item.code) <= 0) return false;
     return true;
   }).sort(compareInventoryRows);
 }
@@ -7696,6 +7901,7 @@ function renderDatePresets() {
   const presets = [
     { label: "1D", days: 1 },
     { label: "7D", days: 7 },
+    { label: "14D", days: 14 },
     { label: "30D", days: 30 },
     { label: "60D", days: 60 },
     { label: "90D", days: 90 },
@@ -9153,10 +9359,11 @@ function applySharedImportLogRows(rows = []) {
 }
 
 function applySharedCountSessionRows(rows = []) {
+  const localHoldActive = Date.now() < (state._localCountHoldUntil || 0);
   if (!rows?.length) {
-    if (Date.now() < (state._localCountHoldUntil || 0)) return (state.countSessions || []).length + (state.activeCountSession ? 1 : 0);
+    if (localHoldActive) return (state.countSessions || []).length + (state.activeCountSession ? 1 : 0);
     state.countSessions = [];
-    if (!state.activeCountSession?.id) state.activeCountSession = null;
+    state.activeCountSession = null;
     localStorage.setItem("posDashboardCountSessions:v1", JSON.stringify(state.countSessions));
     localStorage.setItem("posDashboardActiveCountSession:v1", JSON.stringify(state.activeCountSession));
     if (activeTabName() === "inventory") renderCountsWorkspace();
@@ -9164,15 +9371,15 @@ function applySharedCountSessionRows(rows = []) {
   }
   const savedSessions = [];
   let activeSession = null;
-  const savedById = new Map((state.countSessions || [])
-    .filter((session) => cleanCell(session?.id))
+  const savedById = new Map((localHoldActive ? (state.countSessions || []) : [])
+    .filter((session) => cleanCell(session?.id) && !countSessionIsDeleted(session.id))
     .map((session) => [cleanCell(session.id), session]));
   const localActiveId = cleanCell(state.activeCountSession?.id);
   rows.forEach((row) => {
     const session = hydrateCountSessionFromSupabase(row);
     if (!session) return;
     const sessionId = cleanCell(session.id);
-    if (sessionId && state._deletedCountSessionIds?.has?.(sessionId)) return;
+    if (countSessionIsDeleted(sessionId)) return;
     if (cleanCell(row.session_kind).toLowerCase() === "active") activeSession = session;
     else savedById.set(sessionId, session);
   });
@@ -9183,15 +9390,21 @@ function applySharedCountSessionRows(rows = []) {
     savedSessions.unshift({ ...activeSession, remoteActive: true });
   }
   state.countSessions = dedupeCountSessionsForDisplay(savedSessions)
+    .filter((session) => !countSessionIsDeleted(session.id))
     .sort((a, b) => String(b.updatedAt || b.submittedAt || "").localeCompare(String(a.updatedAt || a.submittedAt || "")));
   if (localActiveId) {
-    state.activeCountSession = remoteActiveId === localActiveId ? activeSession : state.activeCountSession;
+    state.activeCountSession = localHoldActive
+      ? state.activeCountSession
+      : (remoteActiveId === localActiveId ? activeSession : null);
   } else {
     state.activeCountSession = null;
   }
   localStorage.setItem("posDashboardCountSessions:v1", JSON.stringify(state.countSessions));
   localStorage.setItem("posDashboardActiveCountSession:v1", JSON.stringify(state.activeCountSession));
-  if (activeTabName() === "inventory") renderCountsWorkspace();
+  if (activeTabName() === "inventory") {
+    if (state.activeCountSession && Date.now() < (state._localCountHoldUntil || 0)) renderCountSessionRows();
+    else renderCountsWorkspace();
+  }
   return state.countSessions.length + (state.activeCountSession ? 1 : 0);
 }
 
@@ -9357,9 +9570,17 @@ async function syncSharedImportLogsToSupabase(silent = false) {
 async function syncSharedCountSessionsToSupabase(silent = false) {
   if (!ENABLE_SHARED_SYNC || !sharedCountSessionsAvailable) return false;
   try {
+    const deletedIds = [...(state._deletedCountSessionIds || [])].filter(Boolean).slice(-500);
+    if (deletedIds.length) {
+      await supabaseDeleteRowsByValues("count_sessions", "id", deletedIds);
+    }
     const rows = [
-      ...(state.countSessions || []).filter((session) => cleanCell(session?.id)).map((session) => countSessionRowForSupabase(session, false)),
-      ...(state.activeCountSession?.id ? [countSessionRowForSupabase(state.activeCountSession, true)] : []),
+      ...(state.countSessions || [])
+        .filter((session) => cleanCell(session?.id) && !countSessionIsDeleted(session.id))
+        .map((session) => countSessionRowForSupabase(session, false)),
+      ...(state.activeCountSession?.id && !countSessionIsDeleted(state.activeCountSession.id)
+        ? [countSessionRowForSupabase(state.activeCountSession, true)]
+        : []),
     ];
     if (rows.length) {
       await supabaseUpsertRows("count_sessions", rows, "id");
@@ -9629,7 +9850,15 @@ async function initApp() {
   if (ENABLE_SHARED_SYNC) {
     setTimeout(async () => {
       try {
-        const restoredShared = await restoreSharedDataFromSupabase({ silent: true, preferCurrentState: window.location.protocol === "file:" });
+        const hasLocalDataset = !!(state.latestInventory.size || state.excelItems.size || state.rawSales.length);
+        const restoredShared = hasLocalDataset
+          ? (await Promise.all([
+              restoreSharedProductsOnlyFromSupabase({ silent: true }),
+              restoreSharedVendorRulesOnlyFromSupabase({ silent: true }),
+              restoreSharedImportLogsOnlyFromSupabase({ silent: true }),
+              restoreSharedCountSessionsOnlyFromSupabase({ silent: true }),
+            ])).some(Boolean)
+          : await restoreSharedDataFromSupabase({ silent: true, preferCurrentState: window.location.protocol === "file:" });
         if (restoredShared === "kept-local") {
           await syncSharedMetaSnapshotToSupabase({ silent: true, includeVendorRules: true });
         } else if (restoredShared) {
@@ -9670,7 +9899,9 @@ function confirmDeleteSavedSession() {
   state.pendingDeleteSessionId = null;
   document.querySelector("#confirmDeleteSessionModal").hidden = true;
   if (!id) return;
-  state._deletedCountSessionIds.add(cleanCell(id));
+  const session = state.countSessions.find((s) => s.id === id);
+  archiveCountSessionEntriesToAdjustmentLog(session);
+  markCountSessionDeleted(id);
   state.countSessions = state.countSessions.filter((s) => s.id !== id);
   state._localCountHoldUntil = Date.now() + 90000;
   persistCountSessions();
@@ -9697,6 +9928,7 @@ function continueCountFromReport() {
   state.selectedCountItemCode = "";
   state.countStage = "search";
   state.pendingDuplicateCount = null;
+  state.pendingDuplicateMode = null;
   persistCountSessions();
   closeCountReport();
   if (document.querySelector("#reportCountModal")) document.querySelector("#reportCountModal").hidden = true;
@@ -12298,7 +12530,7 @@ if (!state.authRequired || !loadUsers().length) {
           ? await restoreSharedProductsOnlyFromSupabase({ silent: true })
           : await restoreSharedDataFromSupabase({ silent: true, preferCurrentState: false });
       if (restored) {
-        if (!isProductsOnly) {
+        if (!isProductsOnly && !isCountsOnly && !state.activeCountSession) {
           showToast(
             isVendorRulesOnly
               ? "\u21ba Synced shared vendor rules from another device"
