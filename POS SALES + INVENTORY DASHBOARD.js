@@ -111,6 +111,9 @@
 const ENABLE_CUSTOM_PARENT_RULES = true;
 const ENABLE_CUSTOM_ATTRIBUTE_RULES = false;
 const ENABLE_SHARED_SYNC = true;
+const DEFAULT_ORDER_SAFETY_DAYS = 21;
+const DEFAULT_ORDER_DAYS_OF_INVENTORY = 7;
+const COUNT_REMOTE_ACTIVE_HISTORY_TTL_MS = 12 * 60 * 60 * 1000;
 const DEFAULT_PO_COPY_EMAIL = "vinnieoh86@gmail.com";
 const PO_EMAIL_FUNCTION_NAME = "send-po-email";
 const pendingInventoryRefreshTimers = new Map();
@@ -2155,10 +2158,18 @@ function effectiveItemRule(item = {}) {
   const vendorName = (item.vendor || "").toUpperCase();
   const vendorRule = state.vendorRules.find((r) => r.vendor?.toUpperCase() === vendorName && r.status === "Active") || null;
   const mode = cleanCell(meta.orderingRuleMode).toLowerCase() === "custom" ? "custom" : "vendor";
-  const vendorSafety = Math.max(0, toNumber(vendorRule?.safetyDays) || 0);
-  const vendorDoi = Math.max(0, toNumber(vendorRule?.daysOfInventory) || 0);
-  const customSafety = Math.max(0, toNumber(meta.safetyDaysOverride) || 0);
-  const customDoi = Math.max(0, toNumber(meta.daysOfInventoryOverride) || 0);
+  const vendorSafety = vendorRule
+    ? Math.max(0, toNumber(vendorRule.safetyDays) || DEFAULT_ORDER_SAFETY_DAYS)
+    : DEFAULT_ORDER_SAFETY_DAYS;
+  const vendorDoi = vendorRule
+    ? Math.max(0, toNumber(vendorRule.daysOfInventory) || DEFAULT_ORDER_DAYS_OF_INVENTORY)
+    : DEFAULT_ORDER_DAYS_OF_INVENTORY;
+  const customSafety = meta.safetyDaysOverride != null && meta.safetyDaysOverride !== ""
+    ? Math.max(0, toNumber(meta.safetyDaysOverride) || 0)
+    : vendorSafety;
+  const customDoi = meta.daysOfInventoryOverride != null && meta.daysOfInventoryOverride !== ""
+    ? Math.max(0, toNumber(meta.daysOfInventoryOverride) || 0)
+    : vendorDoi;
   const safetyDays = mode === "custom" ? customSafety : vendorSafety;
   const daysOfInventory = mode === "custom" ? customDoi : vendorDoi;
   return {
@@ -2548,8 +2559,6 @@ function ensureInventoryQuickChipsInline() {
   node = document.createElement("div");
   node.id = "inventoryQuickChipsInline";
   node.className = "inventory-quick-chips-inline";
-  const datePresets = document.querySelector("#datePresets");
-  if (datePresets) datePresets.append(node);
   return node;
 }
 
@@ -2601,7 +2610,7 @@ function renderSharedQuickTools(tab = activeTabName()) {
   if (isInventory) {
     resizeColumnsButton.classList.toggle("active-edit", state.resizeColumns);
     resizeColumnsButton.textContent = state.resizeColumns ? "Done resizing" : "Resize columns";
-    const totalsInline = ensureInventoryTotalsInline();
+    const quickChips = ensureInventoryQuickChipsInline();
     row.replaceChildren(...[
       els.inventoryStateFilter,
       els.arrangeColumnsButton,
@@ -2609,7 +2618,7 @@ function renderSharedQuickTools(tab = activeTabName()) {
       inventoryColumnPicker,
       els.downloadInventory,
       els.createPoShortcut,
-      totalsInline,
+      quickChips,
     ].filter(Boolean));
     return;
   }
@@ -3497,6 +3506,23 @@ function markCountSessionDeleted(sessionId) {
   return id;
 }
 
+function pruneDeletedCountSessions(options = {}) {
+  const { persist = false } = options;
+  state.countSessions = (state.countSessions || []).filter((session) => !countSessionIsDeleted(session?.id));
+  if (state.activeCountSession?.id && countSessionIsDeleted(state.activeCountSession.id)) {
+    state.activeCountSession = null;
+    state.selectedCountItemCode = "";
+    state.countQtyBuffer = "0";
+    state.countStage = "search";
+    state.pendingDuplicateCount = null;
+    state.pendingDuplicateMode = null;
+  }
+  if (persist) {
+    localStorage.setItem("posDashboardCountSessions:v1", JSON.stringify(state.countSessions));
+    localStorage.setItem("posDashboardActiveCountSession:v1", JSON.stringify(state.activeCountSession));
+  }
+}
+
 function archiveCountSessionEntriesToAdjustmentLog(session) {
   if (!session?.id || !(session.entries || []).length) return 0;
   let added = 0;
@@ -3851,8 +3877,6 @@ function handleCountLookup() {
   els.countSearchInput?.blur();
   renderSelectedCountItem();
   renderCountQuantity();
-  const existing = state.activeCountSession.entries?.filter((entry) => codeKey(entry.code) === codeKey(match.code)).at(-1);
-  if (existing) openDuplicateCountModal(match, null, existing, { chooseBeforeQty: true });
 }
 
 function clearCountLookup() {
@@ -3870,9 +3894,7 @@ function clearCountLookup() {
 function openDuplicateCountModal(item, qty, existing, options = {}) {
   state.pendingDuplicateCount = { item, qty, existing, chooseBeforeQty: !!options.chooseBeforeQty };
   if (els.countDuplicateMessage) {
-    els.countDuplicateMessage.textContent = options.chooseBeforeQty
-      ? `${item.product} was already counted as ${number.format(existing?.countedQty || 0)}. Choose Add or Reset, then enter the quantity.`
-      : `${item.product} was already counted as ${number.format(existing?.countedQty || 0)}. Add this new quantity or reset it?`;
+    els.countDuplicateMessage.textContent = `${item.product} was already counted as ${number.format(existing?.countedQty || 0)}. Add this new quantity or reset it?`;
   }
   els.countDuplicateModal.hidden = false;
   setTimeout(() => els.countDuplicateAddButton?.focus(), 0);
@@ -3941,15 +3963,7 @@ function resolveDuplicateCount(mode) {
   els.countDuplicateModal.hidden = true;
   state.pendingDuplicateCount = null;
   const resolvedMode = mode === "add" ? "add" : "reset";
-  if (pending.chooseBeforeQty || pending.qty == null) {
-    state.pendingDuplicateMode = { code: pending.item.code, mode: resolvedMode };
-    state.selectedCountItemCode = pending.item.code;
-    state.countStage = "qty";
-    state.countQtyBuffer = "0";
-    renderSelectedCountItem();
-    renderCountQuantity();
-    return;
-  }
+  if (pending.qty == null) return;
   state.pendingDuplicateMode = null;
   commitCountEntry(pending.item, pending.qty, resolvedMode);
 }
@@ -4087,8 +4101,6 @@ function selectCountDropdownItem(code) {
   els.countSearchInput?.blur();
   renderSelectedCountItem();
   renderCountQuantity();
-  const existing = state.activeCountSession.entries?.filter((entry) => codeKey(entry.code) === codeKey(item.code)).at(-1);
-  if (existing) openDuplicateCountModal(item, null, existing, { chooseBeforeQty: true });
 }
 
 function findCountSessionById(sessionId) {
@@ -4376,6 +4388,12 @@ function countSessionDisplayKey(session) {
   ].join("|");
 }
 
+function remoteActiveCountSessionIsFresh(session) {
+  if (!session?.remoteActive) return true;
+  const stamp = Date.parse(session.updatedAt || session.submittedAt || session.startedAt || "");
+  return Number.isFinite(stamp) && Date.now() - stamp <= COUNT_REMOTE_ACTIVE_HISTORY_TTL_MS;
+}
+
 function dedupeCountSessionsForDisplay(sessions = []) {
   const merged = new Map();
   sessions.forEach((session) => {
@@ -4399,6 +4417,7 @@ function renderCountSessionRows() {
     .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")))
     .filter((s) => {
       if (countSessionIsDeleted(s.id)) return false;
+      if (!remoteActiveCountSessionIsFresh(s)) return false;
       if (!(s.entries || []).length && !s.savedAt && !s.submittedAt) return false;
       if (vendorFilter && (s.vendor || s.department || "") !== vendorFilter) return false;
       if (!sessionMatchesPeriodFilter(s, periodFilter)) return false;
@@ -4677,8 +4696,8 @@ function buildSkuRows(options = {}) {
   const color = options.ignoreFilters ? "" : els.colorFilter.value;
   const stateFilter = options.ignoreFilters || options.ignoreStateFilter ? "" : els.inventoryStateFilter.value;
   const leadDays = 0;
-  const safetyDays = Math.max(0, toNumber(els.safetyDays.value) || 7);
-  const daysOfInventory = Math.max(0, toNumber(els.daysOfInventory?.value) || 0);
+  const safetyDays = Math.max(0, toNumber(els.safetyDays.value) || DEFAULT_ORDER_SAFETY_DAYS);
+  const daysOfInventory = Math.max(0, toNumber(els.daysOfInventory?.value) || DEFAULT_ORDER_DAYS_OF_INVENTORY);
 
   // Cache busts on date range OR any ordering parameter change
   const cacheKey = `${start}|${end}|${leadDays}|${safetyDays}|${daysOfInventory}`;
@@ -5271,8 +5290,8 @@ function renderOrders() {
     vendorOrderStats.set(vendorName, current);
   });
   // Show live formula in header
-  const safety = toNumber(els.safetyDays.value) || 7;
-  const doi = toNumber(els.daysOfInventory?.value) || 0;
+  const safety = toNumber(els.safetyDays.value) || DEFAULT_ORDER_SAFETY_DAYS;
+  const doi = toNumber(els.daysOfInventory?.value) || DEFAULT_ORDER_DAYS_OF_INVENTORY;
   const note = document.getElementById("formulaNote");
   if (note) note.textContent = `Min = ceil(SV x ${safety}d)  |  Max = ceil(Min${doi ? ` + (SV x ${doi}d DOI)` : ""})  |  Case rounds order only`;
 
@@ -6183,7 +6202,7 @@ function renderInventorySummary(rows) {
     <span data-cost-summary><b>${currency.format(totals.inventoryCost)}</b> stock cost</span>`;
   const chipsHtml = `
     <label class="inventory-toggle-chip"><input type="checkbox" id="inventoryQuickOverrides"${showOverridesOnly ? " checked" : ""} />Overrides</label>
-    <label class="inventory-toggle-chip"><input type="checkbox" id="inventoryQuickRuleOverrides"${showRuleOverridesOnly ? " checked" : ""} />DOI/SV${ruleOverrideCount ? ` (${number.format(ruleOverrideCount)})` : ""}</label>
+    <label class="inventory-toggle-chip"><input type="checkbox" id="inventoryQuickRuleOverrides"${showRuleOverridesOnly ? " checked" : ""} />SD/DOI${ruleOverrideCount ? ` (${number.format(ruleOverrideCount)})` : ""}</label>
     <label class="inventory-toggle-chip"><input type="checkbox" id="inventoryQuickNeeds"${showNeedsOnly ? " checked" : ""} />Order needed</label>
     <label class="inventory-toggle-chip"><input type="checkbox" id="inventoryQuickPending"${showPendingOnly ? " checked" : ""} />PO pending${pendingCount ? ` (${number.format(pendingCount)})` : ""}</label>
     <label class="inventory-toggle-chip"><input type="checkbox" id="inventoryQuickBackorder"${showBackorderOnly ? " checked" : ""} />B/O${backorderItemCount ? ` (${number.format(backorderItemCount)})` : ""}</label>
@@ -6191,6 +6210,10 @@ function renderInventorySummary(rows) {
     ${selectedCount ? `<button type="button" class="secondary-button inventory-selected-button" id="inventorySelectedActionsButton">Selected (${number.format(selectedCount)})</button>` : ""}`;
   const totalsTarget = ensureInventoryTotalsInline();
   const chipsTarget = ensureInventoryQuickChipsInline();
+  const datePresets = document.querySelector("#datePresets");
+  if (datePresets && totalsTarget.parentElement !== datePresets) {
+    datePresets.append(totalsTarget);
+  }
   totalsTarget.innerHTML = totalsHtml;
   chipsTarget.innerHTML = chipsHtml;
   els.inventorySummary.innerHTML = "";
@@ -6234,8 +6257,8 @@ function buildInventoryRows(options = {}) {
   const start = els.startDate.value || "0000-00-00";
   const end = els.endDate.value || "9999-99-99";
   const leadDays = 0;
-  const safetyDays = Math.max(0, toNumber(els.safetyDays.value) || 7);
-  const daysOfInventory = Math.max(0, toNumber(els.daysOfInventory?.value) || 0);
+  const safetyDays = Math.max(0, toNumber(els.safetyDays.value) || DEFAULT_ORDER_SAFETY_DAYS);
+  const daysOfInventory = Math.max(0, toNumber(els.daysOfInventory?.value) || DEFAULT_ORDER_DAYS_OF_INVENTORY);
   const cacheKey = `${start}|${end}|${leadDays}|${safetyDays}|${daysOfInventory}`;
   if (!state._inventoryCache || state._inventoryCacheStamp !== state._dataCacheStamp || state._inventoryCacheKey !== cacheKey) {
     const inventoryIndex = state.latestInventory;
@@ -9359,6 +9382,7 @@ function applySharedImportLogRows(rows = []) {
 }
 
 function applySharedCountSessionRows(rows = []) {
+  pruneDeletedCountSessions();
   const localHoldActive = Date.now() < (state._localCountHoldUntil || 0);
   if (!rows?.length) {
     if (localHoldActive) return (state.countSessions || []).length + (state.activeCountSession ? 1 : 0);
@@ -9385,7 +9409,7 @@ function applySharedCountSessionRows(rows = []) {
   });
   savedSessions.push(...savedById.values());
   const remoteActiveId = cleanCell(activeSession?.id);
-  if (activeSession && remoteActiveId && remoteActiveId !== localActiveId) {
+  if (activeSession && remoteActiveId && remoteActiveId !== localActiveId && remoteActiveCountSessionIsFresh({ ...activeSession, remoteActive: true })) {
     savedById.delete(remoteActiveId);
     savedSessions.unshift({ ...activeSession, remoteActive: true });
   }
@@ -9833,6 +9857,7 @@ async function initApp() {
   appInitDone = true;
   try {
     await restorePersistedState();
+    pruneDeletedCountSessions({ persist: true });
     ensureVendorRulesFromData();
     if (ENABLE_SHARED_SYNC && state.vendorRules.length) {
       syncSharedVendorRulesToSupabase(true).catch(() => {});
@@ -10548,8 +10573,8 @@ const DAYS_OF_WEEK = ["monday","tuesday","wednesday","thursday","friday","saturd
 const DAY_SHORT = { monday:"Mon",tuesday:"Tue",wednesday:"Wed",thursday:"Thu",friday:"Fri",saturday:"Sat",sunday:"Sun" };
 const DEFAULT_VENDOR_RULE = Object.freeze({
   status: "Active",
-  safetyDays: 21,
-  daysOfInventory: 7,
+  safetyDays: DEFAULT_ORDER_SAFETY_DAYS,
+  daysOfInventory: DEFAULT_ORDER_DAYS_OF_INVENTORY,
   minOrder: 0,
   email: "",
   notes: "",

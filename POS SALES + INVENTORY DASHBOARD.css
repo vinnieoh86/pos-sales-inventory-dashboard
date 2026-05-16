@@ -7047,3 +7047,307 @@ body[data-active-tab="inventory"] #inventory th.is-resizable .column-resize-hand
     grid-template-columns: repeat(3, max-content) !important;
   }
 }
+
+/* Stabilization repair: fixed homes for controls, date pills, quick filters, and totals. */
+body[data-active-tab="inventory"] {
+  --filters-height: unset;
+}
+
+body[data-active-tab="inventory"] .metrics-hover-zone,
+body[data-active-tab="ordering"] .metrics-hover-zone {
+  display: block !important;
+}
+
+body[data-active-tab="inventory"] .controls.sticky-filters {
+  display: grid !important;
+  top: 0 !important;
+  grid-template-columns: minmax(14rem, 17rem) minmax(9rem, 1fr) minmax(9rem, 1fr) minmax(9rem, 1fr) minmax(25rem, 1.6fr) !important;
+  grid-template-rows: auto auto !important;
+  align-items: end !important;
+  gap: 0.32rem 0.48rem !important;
+  min-height: 5.1rem !important;
+  max-height: none !important;
+  padding: 0.42rem 0.5rem 0.38rem !important;
+  overflow: visible !important;
+}
+
+body[data-active-tab="inventory"] .controls.sticky-filters > label:has(#searchInput) {
+  grid-column: 1 !important;
+  grid-row: 1 !important;
+}
+
+body[data-active-tab="inventory"] .controls.sticky-filters > label:has(#departmentFilter) {
+  grid-column: 2 !important;
+  grid-row: 1 !important;
+}
+
+body[data-active-tab="inventory"] .controls.sticky-filters > label:has(#categoryFilter) {
+  grid-column: 3 !important;
+  grid-row: 1 !important;
+}
+
+body[data-active-tab="inventory"] .controls.sticky-filters > label:has(#vendorFilter) {
+  grid-column: 4 !important;
+  grid-row: 1 !important;
+}
+
+body[data-active-tab="inventory"] .controls.sticky-filters > label:has(#safetyDays),
+body[data-active-tab="inventory"] .controls.sticky-filters > label:has(#daysOfInventory),
+body[data-active-tab="inventory"] .controls.sticky-filters > label:has(#leadDays),
+body[data-active-tab="inventory"] .controls.sticky-filters > .date-nav-row,
+body[data-active-tab="inventory"] #inventoryQuickFilter {
+  display: none !important;
+}
+
+body[data-active-tab="inventory"] .controls.sticky-filters .clear-filters-button {
+  grid-column: 1 !important;
+  grid-row: 2 !important;
+  width: 10rem !important;
+  min-width: 10rem !important;
+  justify-self: center !important;
+}
+
+body[data-active-tab="inventory"] .controls.sticky-filters .inventory-quick-tools {
+  grid-column: 2 / 6 !important;
+  grid-row: 2 !important;
+  width: 100% !important;
+  align-self: stretch !important;
+  overflow: visible !important;
+}
+
+body[data-active-tab="inventory"] .inventory-quick-tools .inventory-quick-tools__row {
+  display: grid !important;
+  grid-template-columns: 7.2rem 7.2rem 7.2rem 7.2rem 9.5rem 9.5rem minmax(23rem, 1fr) !important;
+  grid-template-rows: repeat(2, 1.72rem) !important;
+  gap: 0.32rem 0.38rem !important;
+  align-items: center !important;
+  width: 100% !important;
+  max-height: none !important;
+  overflow: visible !important;
+}
+
+body[data-active-tab="inventory"] .inventory-quick-tools__row > * {
+  height: 1.72rem !important;
+  min-height: 1.72rem !important;
+  max-height: 1.72rem !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  padding-top: 0.16rem !important;
+  padding-bottom: 0.16rem !important;
+  font-size: 0.7rem !important;
+  line-height: 1 !important;
+}
+
+body[data-active-tab="inventory"] .inventory-quick-tools__row #inventoryStateFilter {
+  grid-column: 1 !important;
+  grid-row: 1 !important;
+  width: 100% !important;
+}
+
+body[data-active-tab="inventory"] .inventory-quick-tools__row #arrangeColumnsButton {
+  grid-column: 2 !important;
+  grid-row: 1 !important;
+  width: 100% !important;
+}
+
+body[data-active-tab="inventory"] .inventory-quick-tools__row #resizeColumnsButton {
+  grid-column: 3 !important;
+  grid-row: 1 !important;
+  width: 100% !important;
+}
+
+body[data-active-tab="inventory"] .inventory-quick-tools__row .column-picker {
+  grid-column: 1 !important;
+  grid-row: 2 !important;
+  width: 100% !important;
+}
+
+body[data-active-tab="inventory"] .inventory-quick-tools__row .column-picker > summary {
+  width: 100% !important;
+  height: 1.72rem !important;
+  min-height: 1.72rem !important;
+}
+
+body[data-active-tab="inventory"] .inventory-quick-tools__row #downloadInventory {
+  grid-column: 2 / 4 !important;
+  grid-row: 2 !important;
+  width: 100% !important;
+}
+
+body[data-active-tab="inventory"] .inventory-quick-tools__row #createPoShortcut {
+  grid-column: 4 / 6 !important;
+  grid-row: 2 !important;
+  width: 100% !important;
+}
+
+body[data-active-tab="inventory"] #inventoryQuickChipsInline {
+  grid-column: 7 !important;
+  grid-row: 1 / 3 !important;
+  display: grid !important;
+  grid-template-columns: repeat(3, max-content) !important;
+  grid-auto-rows: 1.55rem !important;
+  gap: 0.26rem 0.34rem !important;
+  align-content: center !important;
+  justify-content: end !important;
+  min-width: 0 !important;
+  width: 100% !important;
+  height: auto !important;
+  max-height: none !important;
+  margin: 0 !important;
+  padding-left: 0.5rem !important;
+  border-left: 1px solid rgba(148, 163, 184, 0.28) !important;
+  overflow: visible !important;
+}
+
+body[data-active-tab="inventory"] #inventoryQuickChipsInline .inventory-toggle-chip,
+body[data-active-tab="inventory"] #inventoryQuickChipsInline .inventory-clear-pending-button,
+body[data-active-tab="inventory"] #inventoryQuickChipsInline .inventory-selected-button {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 0.24rem !important;
+  height: 1.55rem !important;
+  min-height: 1.55rem !important;
+  max-height: 1.55rem !important;
+  padding: 0.12rem 0.46rem !important;
+  font-size: 0.66rem !important;
+  line-height: 1 !important;
+  white-space: nowrap !important;
+}
+
+body[data-active-tab="inventory"] #datePresets {
+  position: relative !important;
+  top: auto !important;
+  display: flex !important;
+  flex-wrap: nowrap !important;
+  align-items: center !important;
+  gap: 0.34rem !important;
+  min-height: 2.28rem !important;
+  margin: 0 !important;
+  padding: 0.28rem 0.48rem !important;
+  overflow-x: auto !important;
+  overflow-y: visible !important;
+}
+
+body[data-active-tab="inventory"] #datePresets .date-preset-chip-row,
+body[data-active-tab="inventory"] #datePresets .date-custom-range-group {
+  flex: 0 0 auto !important;
+  flex-wrap: nowrap !important;
+}
+
+body[data-active-tab="inventory"] #datePresets > #inventoryTotalsInline {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  display: flex !important;
+  flex-wrap: nowrap !important;
+  align-items: center !important;
+  gap: 0.28rem !important;
+  margin: 0 0 0 0.48rem !important;
+  padding: 0 !important;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  scrollbar-width: thin !important;
+}
+
+body[data-active-tab="inventory"] #datePresets > #inventoryTotalsInline span {
+  flex: 0 0 auto !important;
+  min-height: 1.48rem !important;
+  padding: 0.16rem 0.42rem !important;
+  font-size: 0.67rem !important;
+}
+
+body:not([data-active-tab="inventory"]) #inventoryTotalsInline {
+  display: none !important;
+}
+
+body[data-active-tab="inventory"] #inventorySummary {
+  display: none !important;
+}
+
+body[data-active-tab="inventory"] .tab-view[data-tab-view="inventory"] .table-wrap {
+  max-height: calc(100vh - 13rem) !important;
+}
+
+body[data-active-tab="inventory"] #inventory th,
+body[data-active-tab="inventory"] #inventoryBody td {
+  text-align: center !important;
+  vertical-align: middle !important;
+  border-right: 1px solid rgba(148, 163, 184, 0.24) !important;
+}
+
+body[data-active-tab="inventory"] #inventory th[data-col="code"],
+body[data-active-tab="inventory"] #inventoryBody td[data-col="code"],
+body[data-active-tab="inventory"] #inventory th[data-col="product"],
+body[data-active-tab="inventory"] #inventoryBody td[data-col="product"],
+body[data-active-tab="inventory"] #inventory th[data-col="plu"],
+body[data-active-tab="inventory"] #inventoryBody td[data-col="plu"],
+body[data-active-tab="inventory"] #inventory th[data-col="itemNumber"],
+body[data-active-tab="inventory"] #inventoryBody td[data-col="itemNumber"] {
+  text-align: left !important;
+}
+
+body[data-active-tab="inventory"] #inventoryBody td[data-col="reorderMin"],
+body[data-active-tab="inventory"] #inventoryBody td[data-col="reorderMax"],
+body[data-active-tab="inventory"] #inventoryBody td[data-col="caseSize"] {
+  text-align: center !important;
+}
+
+body[data-active-tab="inventory"] .minmax-cell {
+  justify-content: center !important;
+}
+
+body[data-active-tab="inventory"] .rule-col {
+  font-weight: 400 !important;
+  color: #111827 !important;
+  background: transparent !important;
+}
+
+body[data-active-tab="inventory"] .rule-col--manual {
+  font-weight: 500 !important;
+  color: #b91c1c !important;
+  background: #fff1f2 !important;
+}
+
+body[data-active-tab="inventory"] .state-backorder {
+  background: #4b5563 !important;
+  border-color: #374151 !important;
+  color: #fff !important;
+  min-width: 1.85rem !important;
+  transform: translateX(-1px) !important;
+}
+
+body[data-active-tab="ordering"] .controls.sticky-filters {
+  top: 0 !important;
+  min-height: 4.5rem !important;
+  overflow: visible !important;
+}
+
+body[data-active-tab="ordering"] #datePresets {
+  position: relative !important;
+  top: auto !important;
+  margin: 0 !important;
+}
+
+body[data-active-tab="ordering"] .inventory-quick-tools--ordering .inventory-quick-tools__row {
+  display: grid !important;
+  grid-template-columns: repeat(6, max-content) !important;
+  grid-auto-rows: 1.76rem !important;
+  gap: 0.35rem !important;
+  justify-content: start !important;
+  align-items: center !important;
+  max-height: none !important;
+}
+
+@media (max-width: 1180px), (pointer: coarse) {
+  body[data-active-tab="inventory"] .app {
+    min-width: 1080px !important;
+  }
+
+  body[data-active-tab="inventory"] .controls.sticky-filters {
+    grid-template-columns: 16rem 12rem 12rem 12rem minmax(28rem, 1fr) !important;
+  }
+
+  body[data-active-tab="inventory"] .inventory-quick-tools .inventory-quick-tools__row {
+    grid-template-columns: 7rem 7rem 7rem 7rem 9rem 9rem minmax(22rem, 1fr) !important;
+  }
+}
