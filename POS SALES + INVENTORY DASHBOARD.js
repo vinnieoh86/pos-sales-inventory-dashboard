@@ -580,6 +580,10 @@ document.querySelector("#datePeriodMode")?.addEventListener("change", (e) => {
 const renderParentsDebounced = debounce(renderParents, 120);
 const syncStickyHeightsDebounced = debounce(syncStickyHeights, 60);
 window.addEventListener("resize", syncStickyHeightsDebounced);
+if (els.searchInput) {
+  els.searchInput.name = `inventory_lookup_${Date.now()}`;
+  els.searchInput.setAttribute("autocomplete", "new-password");
+}
 function renderInventoryControlsLight() {
   clearInventorySelection();
   syncStickyHeights();
@@ -597,11 +601,21 @@ els.searchInput?.addEventListener("input", () => {
 els.searchInput?.addEventListener("keydown", (e) => {
   if (e.key === "Enter") { e.preventDefault(); els.searchInput.select(); }
 });
+els.searchInput?.addEventListener("pointerdown", () => {
+  els.searchInput.readOnly = false;
+}, { capture: true });
+els.searchInput?.addEventListener("touchstart", () => {
+  els.searchInput.readOnly = false;
+}, { capture: true, passive: true });
 els.searchInput?.addEventListener("focus", () => {
+  els.searchInput.readOnly = false;
   setTimeout(() => els.searchInput?.select(), 0);
 });
 els.searchInput?.addEventListener("click", () => {
   els.searchInput.select?.();
+});
+els.searchInput?.addEventListener("blur", () => {
+  els.searchInput.readOnly = true;
 });
 els.parentsSearch?.addEventListener("input", () => {
   const upper = els.parentsSearch.value.toUpperCase();
@@ -2127,6 +2141,7 @@ function normalizeItemState(value) {
   ) return "Force Order";
   if (normalized === "disabled") return "Disabled";
   if (normalized === "discontinued") return "Discontinued";
+  if (normalized === "back order" || normalized === "backorder" || normalized === "b/o" || normalized === "bo") return "Back Order";
   return raw;
 }
 
@@ -2440,6 +2455,7 @@ function mergeInventoryRowsByCode(rows = []) {
 }
 
 function buildLatestInventory() {
+  rebuildPrimaryCodeKeyIndex();
   state.latestInventory = new Map();
   [...state.inventories.entries()].sort(([a], [b]) => a.localeCompare(b)).forEach(([, rows]) => {
     mergeInventoryRowsByCode(rows).forEach((row) => {
@@ -3220,6 +3236,7 @@ function currentOrderRows(options = {}) {
     return vendorKeys
       .flatMap((vendor) => (state.orderSubmissionDrafts[vendor.toUpperCase()] || []).map((item) => applyOrderOverride({ ...item })))
       .filter((item) => !isPendingOrder(item.code))
+      .filter((item) => item.recommendedOrder > 0 || item.qtyNeeded > 0 || item.caseOrder > 0)
       .sort((a, b) => (b.recommendedOrder || b.qtyNeeded || 0) - (a.recommendedOrder || a.qtyNeeded || 0));
   }
   const vendorFilter = getOrderVendorFilter ? getOrderVendorFilter() : "Active";
@@ -5815,23 +5832,32 @@ function renderInventoryHeader() {
   updateSortHeaders();
 }
 
+function displayStateForItem(item) {
+  if (poBackorderCountForCode(item.code) >= 3) return "Back Order";
+  return normalizeItemState(item.state || "") || "Active";
+}
+
 function stateBadgeHtml(item) {
-  const s = (item.state || "").toLowerCase();
+  const displayState = displayStateForItem(item);
+  const s = displayState.toLowerCase();
   const cls = s === "active" ? "state-active"
     : s === "discontinued" ? "state-discontinued"
     : s === "disabled" ? "state-disabled"
     : s === "force order" ? "state-forceorder"
+    : s === "back order" ? "state-backorder"
     : "state-unknown";
-  return `<span class="state-badge ${cls}">${escapeHtml(item.state || "-")}</span>`;
+  return `<span class="state-badge ${cls}">${escapeHtml(displayState || "-")}</span>`;
 }
 
 function inventoryStateSelectHtml(item) {
-  const current = normalizeItemState(item.state || "");
+  const baseState = normalizeItemState(item.state || "") || "Active";
+  const current = displayStateForItem(item);
   const stateClass = current ? `state-select-${current.toLowerCase().replace(/\s+/g, "")}` : "";
-  const options = allowedItemStates()
+  const values = current === "Back Order" ? ["Back Order", ...allowedItemStates()] : allowedItemStates();
+  const options = values
     .map((value) => `<option value="${escapeHtml(value)}"${value === current ? " selected" : ""}>${escapeHtml(value || "Blank")}</option>`)
     .join("");
-  return `<select class="inventory-edit-select inventory-edit-select--state ${stateClass}" data-item-field="state" data-code="${escapeHtml(item.code)}" data-prev-value="${escapeHtml(current)}" ${isUserRole() ? "disabled" : ""}>${options}</select>`;
+  return `<select class="inventory-edit-select inventory-edit-select--state ${stateClass}" data-item-field="state" data-code="${escapeHtml(item.code)}" data-prev-value="${escapeHtml(baseState)}" ${isUserRole() ? "disabled" : ""}>${options}</select>`;
 }
 
 function inventoryCaseSizeInputHtml(item) {
@@ -5858,7 +5884,7 @@ function inventoryCellHtml(key, item) {
     containerAttr: `<td data-col="containerAttr">${escapeHtml(item.containerAttr || "-")}</td>`,
     category: `<td data-col="category">${escapeHtml(item.category || "-")}</td>`,
     vendor: `<td data-col="vendor">${escapeHtml(item.vendor || "-")}</td>`,
-    state: `<td data-col="state" class="inventory-edit-cell inventory-state-cell">${inventoryStateSelectHtml(item)}${backorderCount >= 3 ? `<span class="state-badge state-backorder" title="Backordered ${number.format(backorderCount)} times">B/O</span>` : ""}${backorderCount ? `<span class="po-backorder-count" title="Backordered ${number.format(backorderCount)} time${backorderCount === 1 ? "" : "s"}">${number.format(backorderCount)}</span>` : ""}</td>`,
+    state: `<td data-col="state" class="inventory-edit-cell inventory-state-cell">${inventoryStateSelectHtml(item)}${backorderCount ? `<span class="po-backorder-count" title="Backordered ${number.format(backorderCount)} time${backorderCount === 1 ? "" : "s"}">${number.format(backorderCount)}</span>` : ""}</td>`,
     addDate: `<td data-col="addDate">${escapeHtml(formatShortDisplayDate(item.addDate))}</td>`,
     stock: `<td data-col="stock" class="num stock-col stock-clickable" title="Click to adjust stock">${number.format(item.stock)}</td>`,
     units: `<td data-col="units" class="num sold-col">${number.format(item.units)}</td>`,
@@ -6178,9 +6204,7 @@ function renderInventorySummary(rows) {
   const showRuleOverridesOnly = quickValue.includes("ruleOverrides");
   const showNeedsOnly = quickValue.includes("needs");
   const showPendingOnly = quickValue.includes("pending");
-  const showBackorderOnly = quickValue.includes("backorder");
   const pendingCount = summaryBaseRows.filter((item) => isPendingOrder(item.code)).length;
-  const backorderItemCount = summaryBaseRows.filter((item) => poBackorderCountForCode(item.code) > 0).length;
   const ruleOverrideCount = summaryBaseRows.filter((item) => item.orderingRuleMode === "custom").length;
   const totals = rows.reduce(
     (sum, item) => ({
@@ -6205,7 +6229,6 @@ function renderInventorySummary(rows) {
     <label class="inventory-toggle-chip"><input type="checkbox" id="inventoryQuickRuleOverrides"${showRuleOverridesOnly ? " checked" : ""} />SD/DOI${ruleOverrideCount ? ` (${number.format(ruleOverrideCount)})` : ""}</label>
     <label class="inventory-toggle-chip"><input type="checkbox" id="inventoryQuickNeeds"${showNeedsOnly ? " checked" : ""} />Order needed</label>
     <label class="inventory-toggle-chip"><input type="checkbox" id="inventoryQuickPending"${showPendingOnly ? " checked" : ""} />PO pending${pendingCount ? ` (${number.format(pendingCount)})` : ""}</label>
-    <label class="inventory-toggle-chip"><input type="checkbox" id="inventoryQuickBackorder"${showBackorderOnly ? " checked" : ""} />B/O${backorderItemCount ? ` (${number.format(backorderItemCount)})` : ""}</label>
     ${pendingCount ? `<button type="button" class="secondary-button inventory-clear-pending-button" id="inventoryClearAllPendingButton">Clear all PO pending</button>` : ""}
     ${selectedCount ? `<button type="button" class="secondary-button inventory-selected-button" id="inventorySelectedActionsButton">Selected (${number.format(selectedCount)})</button>` : ""}`;
   const totalsTarget = ensureInventoryTotalsInline();
@@ -8186,9 +8209,32 @@ function rawCodeKey(value) {
   return /^\d+$/.test(code) ? (code.replace(/^0+/, "") || "0") : code.toUpperCase();
 }
 
+function rebuildPrimaryCodeKeyIndex() {
+  state._buildingPrimaryCodeKeys = true;
+  const keys = new Set();
+  state.inventories?.forEach((rows) => {
+    (rows || []).forEach((row) => {
+      const key = rawCodeKey(row?.code);
+      if (key) keys.add(key);
+    });
+  });
+  state.excelItems?.forEach((item) => {
+    const key = rawCodeKey(item?.code);
+    if (key) keys.add(key);
+  });
+  state._primaryCodeKeys = keys;
+  state._primaryCodeKeysStamp = state._dataCacheStamp;
+  state._buildingPrimaryCodeKeys = false;
+  return keys;
+}
+
 function codeKey(value) {
   const rawKey = rawCodeKey(value);
   if (!rawKey) return "";
+  if ((!state._primaryCodeKeys || state._primaryCodeKeysStamp !== state._dataCacheStamp) && !state._buildingPrimaryCodeKeys) {
+    rebuildPrimaryCodeKeyIndex();
+  }
+  if (state._primaryCodeKeys?.has(rawKey)) return rawKey;
   return state.multiBarcodeMap?.[rawKey] || rawKey;
 }
 
@@ -11153,7 +11199,8 @@ function submitVendorPo(vendorName, options = {}) {
   const items = (draftItems.length ? draftItems : currentOrderRows({ ignoreSubmissionDrafts: true }))
     .filter((item) => (item.vendor||"").toUpperCase() === vendorName.toUpperCase())
     .filter((item) => !isPendingOrder(item.code))
-    .map((item) => applyOrderOverride({ ...item }));
+    .map((item) => applyOrderOverride({ ...item }))
+    .filter((item) => item.recommendedOrder > 0 || item.qtyNeeded > 0 || item.caseOrder > 0);
   if (!items.length) { showToast(`No items to order for ${vendorName}.`, 2800, "warning"); return; }
   const clearAt = Date.now() + 7 * 24 * 60 * 60 * 1000; // 7 days
   const totalCost = items.reduce((sum, item) => sum + orderLineCost(item), 0);
@@ -11350,7 +11397,7 @@ function openVendorAnalysisPanel(vendorName) {
   });
   const items = sortItems((normalizedVendor
     ? baseRows.filter((item) => (item.vendor||"").toUpperCase() === normalizedVendor.toUpperCase())
-    : baseRows.slice()));
+    : baseRows.slice()).filter((item) => item.recommendedOrder > 0 || item.qtyNeeded > 0 || item.caseOrder > 0));
   const rule = normalizedVendor ? state.vendorRules.find((r) => r.vendor && r.vendor.toUpperCase() === normalizedVendor.toUpperCase()) : null;
   const totalCost = items.reduce((s, item) => s + orderLineCost(item), 0);
   const minOk = !rule || !rule.minOrder || totalCost >= rule.minOrder;
@@ -12273,7 +12320,8 @@ async function emailVendorPo(vendorName, options = {}) {
     console.warn("Backend PO email failed", error);
     if (!options.silent) {
       const message = (error?.message || "Unknown email error").replace(/\s+/g, " ").slice(0, 220);
-      showToast(`PO email was not sent: ${message}`, 7600, "warning");
+      openPoEmailDraft(vendorName, rows, { poNumber: options.poNumber, silent: true });
+      showToast(`Backend email was blocked, so a Gmail draft was opened instead. ${message}`, 7600, "warning");
     }
     return false;
   }
@@ -12435,6 +12483,7 @@ document.querySelector("#orderVendorFilterSelect")?.addEventListener("change", (
   let pin = "";
   let lastTouchKey = "";
   let lastTouchAt = 0;
+  let lastPointerAt = 0;
 
   function draw() {
     const disp = document.querySelector("#lockPinDisplay");
@@ -12469,9 +12518,11 @@ document.querySelector("#orderVendorFilterSelect")?.addEventListener("change", (
     if (!btn) return;
     e.preventDefault();
     e.stopPropagation();
+    if (e.type === "click" && Date.now() - lastPointerAt < 500) return;
+    if (e.type === "pointerdown" || e.type === "touchstart") lastPointerAt = Date.now();
     const key = btn.dataset.lockKey || "";
     const now = Date.now();
-    if (key && key === lastTouchKey && now - lastTouchAt < 250) return;
+    if (key && key === lastTouchKey && now - lastTouchAt < 65) return;
     lastTouchKey = key;
     lastTouchAt = now;
     btn.classList.add("lock-key--pressed");

@@ -7351,3 +7351,159 @@ body[data-active-tab="ordering"] .inventory-quick-tools--ordering .inventory-qui
     grid-template-columns: 7rem 7rem 7rem 7rem 9rem 9rem minmax(22rem, 1fr) !important;
   }
 }
+
+/* Final sticky + mobile polish: keep controls visible without letting upload/search overlays cover tabs. */
+.metrics-hover-zone {
+  position: sticky !important;
+  top: 0 !important;
+  z-index: 90 !important;
+}
+
+.command-bar {
+  position: sticky !important;
+  top: 1.35rem !important;
+  z-index: 89 !important;
+}
+
+body[data-active-tab="inventory"] .controls.sticky-filters,
+body[data-active-tab="ordering"] .controls.sticky-filters {
+  position: sticky !important;
+  top: calc(1.35rem + var(--command-bar-height, 4.5rem)) !important;
+  z-index: 82 !important;
+}
+
+body[data-active-tab="inventory"] #inventoryBody td[data-col="code"],
+body[data-active-tab="ordering"] .order-table td[data-col="code"] {
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  max-width: 100% !important;
+}
+
+body[data-active-tab="inventory"] #inventoryBody td[data-col="code"] *,
+body[data-active-tab="ordering"] .order-table td[data-col="code"] * {
+  min-width: 0 !important;
+  max-width: 100% !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+.state-select-backorder,
+.state-backorder {
+  background: #f8fafc !important;
+  border-color: #9ca3af !important;
+  color: #374151 !important;
+  font-weight: 800 !important;
+}
+
+.inventory-state-cell .po-backorder-count {
+  background: #fee2e2 !important;
+  color: #b91c1c !important;
+  border-color: #fecaca !important;
+}
+
+#vendorPoModal table {
+  table-layout: fixed !important;
+  width: 100% !important;
+}
+
+#vendorPoModal th:nth-child(1),
+#vendorPoModal td:nth-child(1) {
+  width: 8rem !important;
+  max-width: 8rem !important;
+}
+
+#vendorPoModal th:nth-child(2),
+#vendorPoModal td:nth-child(2) {
+  width: 5rem !important;
+  max-width: 5rem !important;
+}
+
+#vendorPoModal th:nth-child(3),
+#vendorPoModal td:nth-child(3) {
+  width: 28rem !important;
+  max-width: none !important;
+  text-align: left !important;
+}
+
+#vendorPoModal th:nth-child(n+4),
+#vendorPoModal td:nth-child(n+4) {
+  width: 4.3rem !important;
+  max-width: 5rem !important;
+}
+
+#vendorPoModal td,
+#vendorPoModal th {
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+#vendorPoModal .sku-name,
+#vendorPoModal .sku-name-text {
+  white-space: normal !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+  line-height: 1.05 !important;
+}
+
+@media (max-width: 760px), (pointer: coarse) {
+  .command-bar {
+    top: 1.35rem !important;
+    grid-template-columns: 1fr !important;
+    gap: 0.35rem !important;
+    padding: 0.35rem 0.45rem !important;
+  }
+
+  .command-bar .brand {
+    display: none !important;
+  }
+
+  .tab-list {
+    width: 100% !important;
+    display: flex !important;
+    flex-wrap: nowrap !important;
+    gap: 0.35rem !important;
+    overflow-x: auto !important;
+    -webkit-overflow-scrolling: touch !important;
+    padding-bottom: 0.15rem !important;
+  }
+
+  .tab-button {
+    flex: 0 0 auto !important;
+    min-height: 2.1rem !important;
+    padding: 0.36rem 0.72rem !important;
+    font-size: 0.82rem !important;
+  }
+
+  .compact-uploader {
+    display: none !important;
+  }
+
+  body[data-active-tab="inventory"] .controls.sticky-filters,
+  body[data-active-tab="ordering"] .controls.sticky-filters {
+    top: calc(1.35rem + var(--command-bar-height, 3.1rem)) !important;
+  }
+
+  body[data-active-tab="inventory"] .app,
+  body[data-active-tab="ordering"] .app {
+    min-width: 0 !important;
+    overflow-x: auto !important;
+    -webkit-overflow-scrolling: touch !important;
+  }
+
+  body[data-active-tab="inventory"] .tab-view[data-tab-view="inventory"] .table-wrap,
+  body[data-active-tab="ordering"] .order-table-wrap {
+    overflow-x: auto !important;
+    -webkit-overflow-scrolling: touch !important;
+  }
+
+  body[data-active-tab="inventory"] #inventory,
+  body[data-active-tab="ordering"] .order-table {
+    font-size: 0.72rem !important;
+  }
+
+  body[data-active-tab="inventory"] #inventoryBody td,
+  body[data-active-tab="ordering"] .order-table td {
+    padding: 0.22rem 0.28rem !important;
+  }
+}
