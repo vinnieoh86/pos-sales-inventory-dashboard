@@ -3473,7 +3473,8 @@ body[data-active-tab="scanmode"] .load-strip {
   position: relative;
 }
 
-#priceCheckSearchInput {
+#priceCheckSearchInput,
+#scanModeInput {
   min-height: 3.6rem;
   border-radius: 14px;
   font-size: 1.08rem;
@@ -3481,6 +3482,16 @@ body[data-active-tab="scanmode"] .load-strip {
   letter-spacing: 0.01em;
   border: 1px solid rgba(15, 118, 110, 0.18);
   background: #fff;
+}
+
+#scanModeInput.scan-mode-input--scanner-ready {
+  caret-color: transparent;
+  background: #f7fbf8;
+  border-color: rgba(15, 118, 110, 0.24);
+}
+
+body.scan-mode-touch-guard #scanModeInput {
+  cursor: default;
 }
 
 .price-check-dropdown {

@@ -106,6 +106,9 @@
   priceCheckScanTimer: 0,
   priceCheckLastCode: "",
   priceCheckLastScanAt: 0,
+  scanModeManualEntry: false,
+  scanModeKeyBuffer: "",
+  scanModeKeyBufferTimer: 0,
 };
 
 const ENABLE_CUSTOM_PARENT_RULES = true;
@@ -788,47 +791,52 @@ els.priceCheckManualButton?.addEventListener("click", () => {
   focusPriceCheckSearch();
 });
 els.scanModeStartButton?.addEventListener("click", () => startPriceCheckCamera({ fullscreen: prefersPhoneBarcodeScanner() }));
-els.scanModeManualButton?.addEventListener("click", () => switchTab("pricecheck"));
+els.scanModeManualButton?.addEventListener("click", () => {
+  stopPriceCheckCamera();
+  setScanModeManualEntry(true);
+});
 
 // Scan mode â€” Bluetooth scanner: Enter fires lookup, auto-refocus for next scan
 document.querySelector("#scanModeLookupButton")?.addEventListener("click", () => {
   const inp = document.querySelector("#scanModeInput");
   if (!inp) return;
-  const query = inp.value.trim();
-  if (!query) return;
-  const matches = priceCheckMatches(query, 10);
-  const item = matches[0] || null;
-  renderPriceCheckResult(item);
-  if (els.scanModeStatus) els.scanModeStatus.textContent = item
-    ? `\u2713 ${item.product || item.code} \u2014 ready for next scan.`
-    : `No match for "${query}". Try again.`;
-  if (!item) showToast("Item not found.", 2000, "warning");
-  setTimeout(() => { inp.focus(); inp.select(); }, 60);
+  handleScanModeLookup(inp.value, { source: "button" });
 });
 document.querySelector("#scanModeClearButton")?.addEventListener("click", () => {
   const inp = document.querySelector("#scanModeInput");
-  if (inp) { inp.value = ""; inp.focus(); }
+  if (inp) inp.value = "";
+  state.scanModeKeyBuffer = "";
+  setScanModeManualEntry(false);
   renderPriceCheckResult(null);
-  if (els.scanModeStatus) els.scanModeStatus.textContent = "Ready \u2014 scan an item.";
+  if (els.scanModeStatus) els.scanModeStatus.textContent = scanModeTouchGuardEnabled()
+    ? "Ready - scan the next item."
+    : "Ready - scan an item.";
 });
 document.querySelector("#scanModeInput")?.addEventListener("keydown", (e) => {
   if (e.key !== "Enter") return;
   e.preventDefault(); e.stopPropagation();
   const inp = e.target;
-  const query = inp.value.trim();
-  if (!query) return;
-  const matches = priceCheckMatches(query, 10);
-  const item = matches[0] || null;
-  renderPriceCheckResult(item);
-  if (els.scanModeStatus) els.scanModeStatus.textContent = item
-    ? `\u2713 ${item.product || item.code} \u2014 ready for next scan.`
-    : `No match for "${query}". Try again.`;
-  if (!item) showToast("Item not found.", 2000, "warning");
-  setTimeout(() => { inp.focus(); inp.select(); }, 60);
+  handleScanModeLookup(inp.value, { source: "input" });
 });
 document.querySelector("#scanModeInput")?.addEventListener("focus", (e) => {
+  if (scanModeTouchGuardEnabled() && !state.scanModeManualEntry) {
+    e.target.blur?.();
+    return;
+  }
   setTimeout(() => e.target.select?.(), 0);
 });
+document.querySelector("#scanModeInput")?.addEventListener("pointerdown", (e) => {
+  if (!scanModeTouchGuardEnabled() || state.scanModeManualEntry) return;
+  e.preventDefault();
+  scanModeInputEl()?.blur?.();
+  if (els.scanModeStatus) els.scanModeStatus.textContent = "Ready - scan an item. Tap Type code for manual entry.";
+});
+document.querySelector("#scanModeInput")?.addEventListener("touchstart", (e) => {
+  if (!scanModeTouchGuardEnabled() || state.scanModeManualEntry) return;
+  e.preventDefault();
+  scanModeInputEl()?.blur?.();
+}, { passive: false });
+document.addEventListener("keydown", handleScanModeHardwareKey, true);
 els.priceCheckClearButton?.addEventListener("click", clearPriceCheckSearch);
 els.priceCheckCameraButton?.addEventListener("click", () => startPriceCheckCamera({ fullscreen: prefersPhoneBarcodeScanner() }));
 els.priceCheckStopButton?.addEventListener("click", stopPriceCheckCamera);
@@ -2812,6 +2820,108 @@ function setPriceCheckTorchButtons(supported) {
 function setSharedScanStatus(message) {
   if (els.priceCheckStatus) els.priceCheckStatus.textContent = message;
   if (els.scanModeStatus) els.scanModeStatus.textContent = message;
+}
+
+function isTouchScanDevice() {
+  const ua = navigator.userAgent || "";
+  return /android|iphone|ipad|ipod|mobile|silk|kindle|kfapwi|kfsowi|kftt|kindle fire/i.test(ua)
+    || (window.matchMedia?.("(pointer: coarse)")?.matches ?? false)
+    || (window.matchMedia?.("(max-width: 980px)")?.matches ?? false);
+}
+
+function scanModeTouchGuardEnabled() {
+  return activeTabName() === "scanmode" && isTouchScanDevice();
+}
+
+function scanModeInputEl() {
+  return document.querySelector("#scanModeInput");
+}
+
+function setScanModeManualEntry(enabled) {
+  state.scanModeManualEntry = !!enabled;
+  const input = scanModeInputEl();
+  if (!input) return;
+  const guard = scanModeTouchGuardEnabled();
+  input.readOnly = guard && !state.scanModeManualEntry;
+  input.setAttribute("inputmode", guard && !state.scanModeManualEntry ? "none" : "search");
+  input.setAttribute("autocomplete", "off");
+  input.setAttribute("autocorrect", "off");
+  input.setAttribute("autocapitalize", "characters");
+  input.setAttribute("spellcheck", "false");
+  input.classList.toggle("scan-mode-input--scanner-ready", guard && !state.scanModeManualEntry);
+  document.body.classList.toggle("scan-mode-touch-guard", guard && !state.scanModeManualEntry);
+  const manualButton = document.querySelector("#scanModeManualButton");
+  if (manualButton) manualButton.textContent = state.scanModeManualEntry ? "Typing on" : "Type code";
+  if (guard && !state.scanModeManualEntry) {
+    input.blur?.();
+  } else if (activeTabName() === "scanmode") {
+    input.focus?.();
+    setTimeout(() => input.select?.(), 0);
+  }
+}
+
+function finishScanModeReady(item, query, options = {}) {
+  const input = scanModeInputEl();
+  if (input) input.value = query || "";
+  renderPriceCheckResult(item || null);
+  if (els.scanModeStatus) {
+    els.scanModeStatus.textContent = item
+      ? `Loaded ${item.product || item.code}. Ready for next scan.`
+      : `No match for "${query}". Scan again or tap Type code.`;
+  }
+  if (!item && options.toast !== false) showToast("Item not found.", 2000, "warning");
+  if (scanModeTouchGuardEnabled()) {
+    state.scanModeKeyBuffer = "";
+    setScanModeManualEntry(false);
+  } else if (input) {
+    setTimeout(() => { input.focus(); input.select(); }, 60);
+  }
+}
+
+function handleScanModeLookup(query, options = {}) {
+  const raw = cleanCell(query).trim();
+  if (!raw) return null;
+  const matches = priceCheckMatches(raw, 10);
+  const item = matches[0] || null;
+  finishScanModeReady(item, raw, options);
+  return item;
+}
+
+function handleScanModeHardwareKey(event) {
+  if (!scanModeTouchGuardEnabled() || state.scanModeManualEntry) return;
+  if (event.ctrlKey || event.altKey || event.metaKey) return;
+  const target = event.target;
+  if (target?.closest?.("#priceCheckOverlay, select, textarea, [contenteditable='true']")) return;
+  if (target?.matches?.("input") && target.id !== "scanModeInput") return;
+  if (event.key === "Enter") {
+    const query = state.scanModeKeyBuffer.trim() || cleanCell(scanModeInputEl()?.value || "");
+    if (!query) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (state.scanModeKeyBufferTimer) clearTimeout(state.scanModeKeyBufferTimer);
+    handleScanModeLookup(query, { source: "hardware" });
+    return;
+  }
+  if (event.key === "Backspace") {
+    if (!state.scanModeKeyBuffer) return;
+    event.preventDefault();
+    state.scanModeKeyBuffer = state.scanModeKeyBuffer.slice(0, -1);
+  } else if (event.key.length === 1) {
+    event.preventDefault();
+    state.scanModeKeyBuffer += event.key;
+  } else {
+    return;
+  }
+  const input = scanModeInputEl();
+  if (input) input.value = state.scanModeKeyBuffer;
+  if (els.scanModeStatus) els.scanModeStatus.textContent = "Scanning...";
+  if (state.scanModeKeyBufferTimer) clearTimeout(state.scanModeKeyBufferTimer);
+  state.scanModeKeyBufferTimer = setTimeout(() => {
+    state.scanModeKeyBuffer = "";
+    const current = scanModeInputEl();
+    if (current && current.readOnly) current.value = "";
+    if (els.scanModeStatus && activeTabName() === "scanmode") els.scanModeStatus.textContent = "Ready - scan the next item.";
+  }, 1200);
 }
 
 async function togglePriceCheckTorch() {
@@ -6822,7 +6932,15 @@ function switchTab(tab) {
   if (["pricecheck", "scanmode"].includes(tab)) {
     if (!els.priceCheckResult?.innerHTML) renderPriceCheckResult(null);
     if (tab === "pricecheck") focusPriceCheckSearch();
-    if (tab === "scanmode") setTimeout(() => { document.querySelector("#scanModeInput")?.focus(); }, 80);
+    if (tab === "scanmode") {
+      state.scanModeKeyBuffer = "";
+      setTimeout(() => {
+        setScanModeManualEntry(false);
+        if (els.scanModeStatus) els.scanModeStatus.textContent = scanModeTouchGuardEnabled()
+          ? "Ready - scan an item. Keyboard stays closed."
+          : "Ready - scan an item.";
+      }, 80);
+    }
   } else if (tab === "inventory") {
     setTimeout(() => {
       els.searchInput?.focus();
