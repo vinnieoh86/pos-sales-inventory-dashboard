@@ -106,9 +106,6 @@
   priceCheckScanTimer: 0,
   priceCheckLastCode: "",
   priceCheckLastScanAt: 0,
-  scanModeManualEntry: false,
-  scanModeKeyBuffer: "",
-  scanModeKeyBufferTimer: 0,
 };
 
 const ENABLE_CUSTOM_PARENT_RULES = true;
@@ -791,52 +788,47 @@ els.priceCheckManualButton?.addEventListener("click", () => {
   focusPriceCheckSearch();
 });
 els.scanModeStartButton?.addEventListener("click", () => startPriceCheckCamera({ fullscreen: prefersPhoneBarcodeScanner() }));
-els.scanModeManualButton?.addEventListener("click", () => {
-  stopPriceCheckCamera();
-  setScanModeManualEntry(true);
-});
+els.scanModeManualButton?.addEventListener("click", () => switchTab("pricecheck"));
 
 // Scan mode â€” Bluetooth scanner: Enter fires lookup, auto-refocus for next scan
 document.querySelector("#scanModeLookupButton")?.addEventListener("click", () => {
   const inp = document.querySelector("#scanModeInput");
   if (!inp) return;
-  handleScanModeLookup(inp.value, { source: "button" });
+  const query = inp.value.trim();
+  if (!query) return;
+  const matches = priceCheckMatches(query, 10);
+  const item = matches[0] || null;
+  renderPriceCheckResult(item);
+  if (els.scanModeStatus) els.scanModeStatus.textContent = item
+    ? `\u2713 ${item.product || item.code} \u2014 ready for next scan.`
+    : `No match for "${query}". Try again.`;
+  if (!item) showToast("Item not found.", 2000, "warning");
+  setTimeout(() => { inp.focus(); inp.select(); }, 60);
 });
 document.querySelector("#scanModeClearButton")?.addEventListener("click", () => {
   const inp = document.querySelector("#scanModeInput");
-  if (inp) inp.value = "";
-  state.scanModeKeyBuffer = "";
-  setScanModeManualEntry(false);
+  if (inp) { inp.value = ""; inp.focus(); }
   renderPriceCheckResult(null);
-  if (els.scanModeStatus) els.scanModeStatus.textContent = scanModeTouchGuardEnabled()
-    ? "Ready - scan the next item."
-    : "Ready - scan an item.";
+  if (els.scanModeStatus) els.scanModeStatus.textContent = "Ready \u2014 scan an item.";
 });
 document.querySelector("#scanModeInput")?.addEventListener("keydown", (e) => {
   if (e.key !== "Enter") return;
   e.preventDefault(); e.stopPropagation();
   const inp = e.target;
-  handleScanModeLookup(inp.value, { source: "input" });
+  const query = inp.value.trim();
+  if (!query) return;
+  const matches = priceCheckMatches(query, 10);
+  const item = matches[0] || null;
+  renderPriceCheckResult(item);
+  if (els.scanModeStatus) els.scanModeStatus.textContent = item
+    ? `\u2713 ${item.product || item.code} \u2014 ready for next scan.`
+    : `No match for "${query}". Try again.`;
+  if (!item) showToast("Item not found.", 2000, "warning");
+  setTimeout(() => { inp.focus(); inp.select(); }, 60);
 });
 document.querySelector("#scanModeInput")?.addEventListener("focus", (e) => {
-  if (scanModeTouchGuardEnabled() && !state.scanModeManualEntry) {
-    e.target.blur?.();
-    return;
-  }
   setTimeout(() => e.target.select?.(), 0);
 });
-document.querySelector("#scanModeInput")?.addEventListener("pointerdown", (e) => {
-  if (!scanModeTouchGuardEnabled() || state.scanModeManualEntry) return;
-  e.preventDefault();
-  scanModeInputEl()?.blur?.();
-  if (els.scanModeStatus) els.scanModeStatus.textContent = "Ready - scan an item. Tap Type code for manual entry.";
-});
-document.querySelector("#scanModeInput")?.addEventListener("touchstart", (e) => {
-  if (!scanModeTouchGuardEnabled() || state.scanModeManualEntry) return;
-  e.preventDefault();
-  scanModeInputEl()?.blur?.();
-}, { passive: false });
-document.addEventListener("keydown", handleScanModeHardwareKey, true);
 els.priceCheckClearButton?.addEventListener("click", clearPriceCheckSearch);
 els.priceCheckCameraButton?.addEventListener("click", () => startPriceCheckCamera({ fullscreen: prefersPhoneBarcodeScanner() }));
 els.priceCheckStopButton?.addEventListener("click", stopPriceCheckCamera);
@@ -1394,7 +1386,7 @@ els.inventoryBody?.addEventListener("mousemove", (event) => {
         <div class="row-hover-tooltip__line">Stock: ${number.format(item.stock)}</div>
         <div class="row-hover-tooltip__line">Cost: ${currency.format(item.unitCost)}</div>
         <div class="row-hover-tooltip__line">Price: ${currency.format(item.price)}</div>
-        <div class="row-hover-tooltip__line">Order rule: ${rule.mode === "custom" ? "Custom" : "Vendor"} (${number.format(rule.safetyDays || 0)} / ${number.format(rule.daysOfInventory || 0)})</div>
+        <div class="row-hover-tooltip__line">Order rule: ${rule.mode === "custom" ? "Custom" : rule.mode === "category" ? "Category" : "Vendor"} (${number.format(rule.safetyDays || 0)} / ${number.format(rule.daysOfInventory || 0)})</div>
         <div class="row-hover-tooltip__windows">${windows.map((e)=>`<span>${e.label}: ${number.format(e.units)}</span>`).join('<span class="row-hover-tooltip__sep">|</span>')}</div>`;
     }
   }
@@ -2177,9 +2169,38 @@ function itemMetaFor(code) {
   return state.itemMeta?.[codeKey(code)] || {};
 }
 
-function isWigDefaultOrderingCategory(category = "") {
-  const value = cleanCell(category).toUpperCase().replace(/\s+/g, " ").trim();
-  return value === "WIG" || value === "WIGS" || value === "HUMAN WIG" || value === "HUMAN WIGS";
+function isWigDefaultOrderingCategory(item = {}) {
+  const category = normalizeSearchText(item.category || "");
+  return [
+    "WIG",
+    "WIGS",
+    "HUMAN WIG",
+    "HUMAN WIGS",
+    "HUMAN HAIR WIG",
+    "HUMAN HAIR WIGS",
+  ].includes(category);
+}
+
+function categoryDefaultOrderingTarget(item = {}) {
+  if (!isWigDefaultOrderingCategory(item)) return null;
+  return {
+    min: 1,
+    max: 1,
+    safetyDays: 1,
+    daysOfInventory: 1,
+    categoryDefault: true,
+  };
+}
+
+function orderingTargetsForItem({ item = {}, velocity = 0, safetyDays = 0, daysOfInventory = 0 } = {}) {
+  const categoryTarget = categoryDefaultOrderingTarget(item);
+  if (categoryTarget) return categoryTarget;
+  return {
+    ...orderingTargets({ velocity, safetyDays, daysOfInventory }),
+    safetyDays,
+    daysOfInventory,
+    categoryDefault: false,
+  };
 }
 
 function effectiveItemRule(item = {}) {
@@ -2188,7 +2209,6 @@ function effectiveItemRule(item = {}) {
   const vendorName = (item.vendor || "").toUpperCase();
   const vendorRule = state.vendorRules.find((r) => r.vendor?.toUpperCase() === vendorName && r.status === "Active") || null;
   const mode = cleanCell(meta.orderingRuleMode).toLowerCase() === "custom" ? "custom" : "vendor";
-  const wigDefaultRule = isWigDefaultOrderingCategory(item.category);
   const vendorSafety = vendorRule
     ? Math.max(0, toNumber(vendorRule.safetyDays) || DEFAULT_ORDER_SAFETY_DAYS)
     : DEFAULT_ORDER_SAFETY_DAYS;
@@ -2201,12 +2221,25 @@ function effectiveItemRule(item = {}) {
   const customDoi = meta.daysOfInventoryOverride != null && meta.daysOfInventoryOverride !== ""
     ? Math.max(0, toNumber(meta.daysOfInventoryOverride) || 0)
     : vendorDoi;
-  const safetyDays = mode === "custom" ? customSafety : (wigDefaultRule ? 1 : vendorSafety);
-  const daysOfInventory = mode === "custom" ? customDoi : (wigDefaultRule ? 1 : vendorDoi);
+  const safetyDays = mode === "custom" ? customSafety : vendorSafety;
+  const daysOfInventory = mode === "custom" ? customDoi : vendorDoi;
+  const categoryTarget = categoryDefaultOrderingTarget(item);
+  if (categoryTarget) {
+    return {
+      mode: "category",
+      vendorRule,
+      safetyDays: categoryTarget.safetyDays,
+      daysOfInventory: categoryTarget.daysOfInventory,
+      customSafety,
+      customDoi,
+      vendorSafety,
+      vendorDoi,
+      categoryDefault: true,
+    };
+  }
   return {
     mode,
     vendorRule,
-    categoryRule: wigDefaultRule ? "WIG/HUMAN WIG 1/1" : "",
     safetyDays,
     daysOfInventory,
     customSafety,
@@ -2222,7 +2255,6 @@ function setItemMeta(code, patch = {}) {
   state.itemMeta = state.itemMeta || {};
   state.itemMeta[key] = { ...(state.itemMeta[key] || {}), ...patch };
   state._localProductMetaEdits?.set?.(key, Date.now());
-  bumpDataStamp();
   saveItemMeta();
   scheduleSharedProductSync(key);
 }
@@ -2827,108 +2859,6 @@ function setPriceCheckTorchButtons(supported) {
 function setSharedScanStatus(message) {
   if (els.priceCheckStatus) els.priceCheckStatus.textContent = message;
   if (els.scanModeStatus) els.scanModeStatus.textContent = message;
-}
-
-function isTouchScanDevice() {
-  const ua = navigator.userAgent || "";
-  return /android|iphone|ipad|ipod|mobile|silk|kindle|kfapwi|kfsowi|kftt|kindle fire/i.test(ua)
-    || (window.matchMedia?.("(pointer: coarse)")?.matches ?? false)
-    || (window.matchMedia?.("(max-width: 980px)")?.matches ?? false);
-}
-
-function scanModeTouchGuardEnabled() {
-  return activeTabName() === "scanmode" && isTouchScanDevice();
-}
-
-function scanModeInputEl() {
-  return document.querySelector("#scanModeInput");
-}
-
-function setScanModeManualEntry(enabled) {
-  state.scanModeManualEntry = !!enabled;
-  const input = scanModeInputEl();
-  if (!input) return;
-  const guard = scanModeTouchGuardEnabled();
-  input.readOnly = guard && !state.scanModeManualEntry;
-  input.setAttribute("inputmode", guard && !state.scanModeManualEntry ? "none" : "search");
-  input.setAttribute("autocomplete", "off");
-  input.setAttribute("autocorrect", "off");
-  input.setAttribute("autocapitalize", "characters");
-  input.setAttribute("spellcheck", "false");
-  input.classList.toggle("scan-mode-input--scanner-ready", guard && !state.scanModeManualEntry);
-  document.body.classList.toggle("scan-mode-touch-guard", guard && !state.scanModeManualEntry);
-  const manualButton = document.querySelector("#scanModeManualButton");
-  if (manualButton) manualButton.textContent = state.scanModeManualEntry ? "Typing on" : "Type code";
-  if (guard && !state.scanModeManualEntry) {
-    input.blur?.();
-  } else if (activeTabName() === "scanmode") {
-    input.focus?.();
-    setTimeout(() => input.select?.(), 0);
-  }
-}
-
-function finishScanModeReady(item, query, options = {}) {
-  const input = scanModeInputEl();
-  if (input) input.value = query || "";
-  renderPriceCheckResult(item || null);
-  if (els.scanModeStatus) {
-    els.scanModeStatus.textContent = item
-      ? `Loaded ${item.product || item.code}. Ready for next scan.`
-      : `No match for "${query}". Scan again or tap Type code.`;
-  }
-  if (!item && options.toast !== false) showToast("Item not found.", 2000, "warning");
-  if (scanModeTouchGuardEnabled()) {
-    state.scanModeKeyBuffer = "";
-    setScanModeManualEntry(false);
-  } else if (input) {
-    setTimeout(() => { input.focus(); input.select(); }, 60);
-  }
-}
-
-function handleScanModeLookup(query, options = {}) {
-  const raw = cleanCell(query).trim();
-  if (!raw) return null;
-  const matches = priceCheckMatches(raw, 10);
-  const item = matches[0] || null;
-  finishScanModeReady(item, raw, options);
-  return item;
-}
-
-function handleScanModeHardwareKey(event) {
-  if (!scanModeTouchGuardEnabled() || state.scanModeManualEntry) return;
-  if (event.ctrlKey || event.altKey || event.metaKey) return;
-  const target = event.target;
-  if (target?.closest?.("#priceCheckOverlay, select, textarea, [contenteditable='true']")) return;
-  if (target?.matches?.("input") && target.id !== "scanModeInput") return;
-  if (event.key === "Enter") {
-    const query = state.scanModeKeyBuffer.trim() || cleanCell(scanModeInputEl()?.value || "");
-    if (!query) return;
-    event.preventDefault();
-    event.stopPropagation();
-    if (state.scanModeKeyBufferTimer) clearTimeout(state.scanModeKeyBufferTimer);
-    handleScanModeLookup(query, { source: "hardware" });
-    return;
-  }
-  if (event.key === "Backspace") {
-    if (!state.scanModeKeyBuffer) return;
-    event.preventDefault();
-    state.scanModeKeyBuffer = state.scanModeKeyBuffer.slice(0, -1);
-  } else if (event.key.length === 1) {
-    event.preventDefault();
-    state.scanModeKeyBuffer += event.key;
-  } else {
-    return;
-  }
-  const input = scanModeInputEl();
-  if (input) input.value = state.scanModeKeyBuffer;
-  if (els.scanModeStatus) els.scanModeStatus.textContent = "Scanning...";
-  if (state.scanModeKeyBufferTimer) clearTimeout(state.scanModeKeyBufferTimer);
-  state.scanModeKeyBufferTimer = setTimeout(() => {
-    state.scanModeKeyBuffer = "";
-    const current = scanModeInputEl();
-    if (current && current.readOnly) current.value = "";
-    if (els.scanModeStatus && activeTabName() === "scanmode") els.scanModeStatus.textContent = "Ready - scan the next item.";
-  }, 1200);
 }
 
 async function togglePriceCheckTorch() {
@@ -3904,6 +3834,10 @@ function deleteCountSession() {
   persistCountSessions();
   renderCountsWorkspace();
   void (async () => {
+    if (deletedId && ENABLE_SHARED_SYNC && sharedCountSessionsAvailable) {
+      await supabaseDeleteRowsByValues("count_sessions", "id", [deletedId]);
+      await updateSharedSyncState("counts");
+    }
     await syncSharedCountSessionsToSupabase(true);
   })().catch(() => {});
   showToast(`Deleted unsaved count: ${label}`, 3200, "warning");
@@ -4842,7 +4776,7 @@ function buildSkuRows(options = {}) {
   const daysOfInventory = Math.max(0, toNumber(els.daysOfInventory?.value) || DEFAULT_ORDER_DAYS_OF_INVENTORY);
 
   // Cache busts on date range OR any ordering parameter change
-  const cacheKey = `${start}|${end}|${leadDays}|${safetyDays}|${daysOfInventory}`;
+  const cacheKey = `${start}|${end}|${leadDays}|${safetyDays}|${daysOfInventory}|ordering-math-v2`;
   if (!state._skuCache || state._skuCacheStamp !== state._dataCacheStamp || state._skuCacheKey !== cacheKey) {
     state._skuCache = _buildRawSkuMap(start, end, leadDays, safetyDays, daysOfInventory);
     state._skuCacheStamp = state._dataCacheStamp;
@@ -4924,13 +4858,19 @@ function _buildRawSkuMap(start, end, leadDays, safetyDays, daysOfInventory) {
   });
 
   return new Map([...grouped.entries()].map(([key, sku]) => {
-    const rule = effectiveItemRule(sku);
-    const effectiveSafety = rule.mode === "custom" || rule.vendorRule || rule.categoryRule ? rule.safetyDays : safetyDays;
-    const effectiveDoi = rule.mode === "custom" || rule.vendorRule || rule.categoryRule ? rule.daysOfInventory : daysOfInventory;
-    const velocity = sku.units / Math.max(dayCount, 1);
+    const velocity = Math.max(0, sku.units / Math.max(dayCount, 1));
     const override = reorderOverrideForCode(sku.code);
     const isOverridden = override.min != null || override.max != null;
-    const dynamic = orderingTargets({ velocity, safetyDays: effectiveSafety, daysOfInventory: effectiveDoi });
+    const rule = effectiveItemRule(sku);
+    const useRuleTargets = rule.mode === "custom" || rule.categoryDefault || !!rule.vendorRule;
+    const targetSafetyDays = useRuleTargets ? rule.safetyDays : safetyDays;
+    const targetDaysOfInventory = useRuleTargets ? rule.daysOfInventory : daysOfInventory;
+    const dynamic = orderingTargetsForItem({
+      item: sku,
+      velocity,
+      safetyDays: targetSafetyDays,
+      daysOfInventory: targetDaysOfInventory,
+    });
     const dynamicMaxWithDoi = dynamic.max;
     const manualMin = override.min ?? dynamic.min;
     const manualMax = override.max ?? dynamicMaxWithDoi;
@@ -4948,6 +4888,9 @@ function _buildRawSkuMap(start, end, leadDays, safetyDays, daysOfInventory) {
       ...sku, velocity, daysSupply, recommendedOrder, caseOrder, margin,
       reorderMin: manualMin, reorderMax: manualMax, inventoryCost,
       isOverridden, dynamicMin: dynamic.min, dynamicMax: dynamicMaxWithDoi,
+      effectiveSafetyDays: dynamic.safetyDays,
+      effectiveDaysOfInventory: dynamic.daysOfInventory,
+      orderingRuleMode: rule.mode,
       ...parentPartsFor(sku),
       status: classifySku({ velocity, daysSupply, margin, recommendedOrder, stock: sku.stock, itemState: sku.itemState }),
     };
@@ -5998,8 +5941,13 @@ function inventoryCellHtml(key, item) {
   const maxOverridden = override.max != null;
   const anyOverride = minOverridden || maxOverridden;
   const hasManualRule = item.orderingRuleMode === "custom";
+  const hasCategoryRule = item.orderingRuleMode === "category";
   const ruleText = `${number.format(item.effectiveSafetyDays || 0)}/${number.format(item.effectiveDaysOfInventory || 0)}`;
-  const ruleTitle = hasManualRule ? `Manual safety/DOI override: ${ruleText}` : `Vendor/default safety/DOI rule: ${ruleText}`;
+  const ruleTitle = hasManualRule
+    ? `Manual safety/DOI override: ${ruleText}`
+    : hasCategoryRule
+      ? `Category default safety/DOI rule: ${ruleText}`
+      : `Vendor/default safety/DOI rule: ${ruleText}`;
   const backorderCount = poBackorderCountForCode(item.code);
   const values = {
     code: `<td data-col="code" class="copy-code full-code-cell" data-copy-code="${escapeHtml(item.code)}" title="Click code to copy">${escapeHtml(item.code)}</td>`,
@@ -6192,8 +6140,9 @@ function recomputeInventoryItemForLocalEdit(item) {
   const excel = findExcelFor(item);
   const meta = itemMetaFor(item.code);
   const override = reorderOverrideForCode(item.code || key);
-  const rule = effectiveItemRule({ code: item.code, vendor: item.vendor || excel.vendor || "" });
-  const dynamic = orderingTargets({
+  const rule = effectiveItemRule({ code: item.code, category: item.category || excel.category || "", vendor: item.vendor || excel.vendor || "" });
+  const dynamic = orderingTargetsForItem({
+    item,
     velocity: item.velocity || 0,
     safetyDays: rule.safetyDays,
     daysOfInventory: rule.daysOfInventory,
@@ -6334,7 +6283,7 @@ function renderInventorySummary(rows) {
   const showPendingOnly = quickValue.includes("pending");
   const showBackorderOnly = quickValue.includes("backorder");
   const pendingCount = summaryBaseRows.filter((item) => isPendingOrder(item.code)).length;
-  const backorderItemCount = summaryBaseRows.filter((item) => isBackorderItem(item)).length;
+  const backorderItemCount = summaryBaseRows.filter((item) => poBackorderCountForCode(item.code) > 0).length;
   const ruleOverrideCount = summaryBaseRows.filter((item) => item.orderingRuleMode === "custom").length;
   const totals = rows.reduce(
     (sum, item) => ({
@@ -6410,10 +6359,11 @@ function buildInventoryRows(options = {}) {
   const quickFilter = options.ignoreQuickFilter ? "" : (els.inventoryQuickFilter?.value || "");
   const start = els.startDate.value || "0000-00-00";
   const end = els.endDate.value || "9999-99-99";
+  const dayCount = rangeDayCount(start, end);
   const leadDays = 0;
   const safetyDays = Math.max(0, toNumber(els.safetyDays.value) || DEFAULT_ORDER_SAFETY_DAYS);
   const daysOfInventory = Math.max(0, toNumber(els.daysOfInventory?.value) || DEFAULT_ORDER_DAYS_OF_INVENTORY);
-  const cacheKey = `${start}|${end}|${leadDays}|${safetyDays}|${daysOfInventory}`;
+  const cacheKey = `${start}|${end}|${leadDays}|${safetyDays}|${daysOfInventory}|ordering-math-v2`;
   if (!state._inventoryCache || state._inventoryCacheStamp !== state._dataCacheStamp || state._inventoryCacheKey !== cacheKey) {
     const inventoryIndex = state.latestInventory;
     const salesByCode = new Map(buildSkuRows({ ignoreQuery: true, ignoreFilters: true }).map((sku) => [codeKey(sku.code), sku]));
@@ -6430,26 +6380,31 @@ function buildInventoryRows(options = {}) {
       const meta = itemMetaFor(itemCode);
       const override = reorderOverrideForCode(itemCode || code);
       const isOverridden = override.min != null || override.max != null;
-      const hasWindowSales = Object.prototype.hasOwnProperty.call(sales, "velocity");
-      const velocity = hasWindowSales ? (toNumber(sales.velocity) || 0) : (toNumber(excel.saleVelocity) || 0);
+      const velocity = Math.max(0, toNumber(sales.units || 0) / Math.max(dayCount, 1));
       const caseSize = effectiveCaseSizeFor(inventory, excel, meta, sales);
       const displayState = meta.stateManual
         ? meta.state
         : (normalizeItemState(excel.state) || normalizeItemState(meta.state) || normalizeItemState(inventory.state) || "");
-      const stateLabel = poBackorderCountForCode(itemCode) >= 3
-        ? "Back Order"
-        : (normalizeItemState(displayState || "Active") || "Active");
+      const stateLabel = normalizeItemState(displayState || "Active") || "Active";
       const itemState = stateLabel.toLowerCase();
       const isOrderable = !["discontinued", "disabled"].includes(itemState);
       const rule = effectiveItemRule({
         code: itemCode,
-        vendor: inventory.vendor || excel.vendor || sales.vendor || "",
         category: inventory.category || excel.category || sales.category || "",
+        vendor: inventory.vendor || excel.vendor || sales.vendor || "",
       });
-      const useRuleTargets = rule.mode === "custom" || !!rule.vendorRule || !!rule.categoryRule;
+      const useRuleTargets = rule.mode === "custom" || rule.categoryDefault || !!rule.vendorRule;
       const effectiveSafety = useRuleTargets ? rule.safetyDays : safetyDays;
       const effectiveDoi = useRuleTargets ? rule.daysOfInventory : daysOfInventory;
-      const dynamic = orderingTargets({ velocity, safetyDays: effectiveSafety, daysOfInventory: effectiveDoi });
+      const dynamic = orderingTargetsForItem({
+        item: {
+          code: itemCode,
+          category: inventory.category || excel.category || sales.category || "",
+        },
+        velocity,
+        safetyDays: effectiveSafety,
+        daysOfInventory: effectiveDoi,
+      });
       const dynamicMaxWithDoi = dynamic.max;
       const stock = hasValue(inventory.stock) ? inventory.stock : excel.stock ?? sales.stock ?? 0;
       const item = {
@@ -6481,10 +6436,10 @@ function buildInventoryRows(options = {}) {
         reorderMin: isOrderable ? (override.min ?? dynamic.min) : 0,
         reorderMax: isOrderable ? (override.max ?? dynamicMaxWithDoi) : 0,
         qtyNeeded: sales.recommendedOrder || 0,
-        effectiveSafetyDays: effectiveSafety,
-        effectiveDaysOfInventory: effectiveDoi,
+        effectiveSafetyDays: dynamic.safetyDays,
+        effectiveDaysOfInventory: dynamic.daysOfInventory,
         orderingRuleMode: rule.mode,
-        saleWindowSum: excel.saleWindowSum || sales.units || 0,
+        saleWindowSum: sales.units || 0,
       };
       item.inventoryCost = item.stock * item.unitCost;
       Object.assign(item, parentPartsFor(item));
@@ -6532,7 +6487,7 @@ function buildInventoryRows(options = {}) {
     if (quickFilter.includes("ruleOverrides") && item.orderingRuleMode !== "custom") return false;
     if (!pendingOnly && quickFilter.includes("needs") && !(item.recommendedOrder > 0)) return false;
     if (pendingOnly && !isPendingOrder(item.code)) return false;
-    if (backorderOnly && !isBackorderItem(item)) return false;
+    if (backorderOnly && poBackorderCountForCode(item.code) <= 0) return false;
     return true;
   }).sort(compareInventoryRows);
 }
@@ -6944,15 +6899,7 @@ function switchTab(tab) {
   if (["pricecheck", "scanmode"].includes(tab)) {
     if (!els.priceCheckResult?.innerHTML) renderPriceCheckResult(null);
     if (tab === "pricecheck") focusPriceCheckSearch();
-    if (tab === "scanmode") {
-      state.scanModeKeyBuffer = "";
-      setTimeout(() => {
-        setScanModeManualEntry(false);
-        if (els.scanModeStatus) els.scanModeStatus.textContent = scanModeTouchGuardEnabled()
-          ? "Ready - scan an item. Keyboard stays closed."
-          : "Ready - scan an item.";
-      }, 80);
-    }
+    if (tab === "scanmode") setTimeout(() => { document.querySelector("#scanModeInput")?.focus(); }, 80);
   } else if (tab === "inventory") {
     setTimeout(() => {
       els.searchInput?.focus();
@@ -7114,7 +7061,7 @@ function showDetail(item, options = {}) {
           <label><input type="checkbox" ${visibleFields.has(key) ? "checked" : ""} data-detail-filter="${key}" />${label}</label>`).join("")}</div>
       </details>
       <div class="summary-strip">
-        <span><b>${itemRule.mode === "custom" ? "Custom rule" : "Vendor rule"}</b> ordering mode</span>
+        <span><b>${itemRule.mode === "custom" ? "Custom rule" : itemRule.mode === "category" ? "Category rule" : "Vendor rule"}</b> ordering mode</span>
         <span><b>${number.format(itemRule.safetyDays || 0)}</b> safety days</span>
         <span><b>${number.format(itemRule.daysOfInventory || 0)}</b> days of inventory</span>
       </div>
@@ -9099,8 +9046,7 @@ function productRowForSupabase(item) {
   const excel = findExcelFor(item);
   const normalizedCode = normalizeCode(item.code || excel.code || "");
   const meta = itemMetaFor(normalizedCode);
-  const backorderState = poBackorderCountForCode(normalizedCode) >= 3 ? "Back Order" : "";
-  const syncState = backorderState || normalizeItemState(meta.stateManual ? meta.state : (meta.state || excel.state || item.state || ""));
+  const syncState = normalizeItemState(meta.stateManual ? meta.state : (meta.state || excel.state || item.state || ""));
   const syncCaseSize = meta.caseSizeManual
     ? Math.max(1, Math.round(toNumber(meta.caseSize) || 1))
     : Math.max(1, Math.round(toNumber(excel.caseSize || item.caseSize || meta.caseSize) || 1));
@@ -9211,28 +9157,6 @@ function countSessionRowForSupabase(session = {}, active = false) {
   };
 }
 
-function countSessionDeleteRowForSupabase(sessionId = "") {
-  const id = cleanCell(sessionId);
-  if (!id) return null;
-  return {
-    id,
-    session_kind: "deleted",
-    session_payload: { id, deleted: true },
-    updated_at: new Date().toISOString(),
-  };
-}
-
-function countSessionActiveDeleteRowForSupabase(sessionId = "") {
-  const id = cleanCell(sessionId);
-  if (!id) return null;
-  return {
-    id: `active:${id}`,
-    session_kind: "deleted",
-    session_payload: { id, deleted: true },
-    updated_at: new Date().toISOString(),
-  };
-}
-
 function hydrateCountSessionFromSupabase(row = {}) {
   return row.session_payload && typeof row.session_payload === "object" ? row.session_payload : null;
 }
@@ -9315,8 +9239,7 @@ function productMetaRowForSupabase(source = {}) {
   const sku = state._skuCache?.get?.(codeKey(normalizedCode)) || {};
   const meta = itemMetaFor(normalizedCode);
   const override = reorderOverrideForCode(normalizedCode);
-  const backorderState = poBackorderCountForCode(normalizedCode) >= 3 ? "Back Order" : "";
-  const stateValue = backorderState || normalizeItemState(meta.stateManual ? meta.state : (meta.state || source.state || excel.state || sku.state || ""));
+  const stateValue = normalizeItemState(meta.stateManual ? meta.state : (meta.state || source.state || excel.state || sku.state || ""));
   const caseSize = effectiveCaseSizeFor(source, excel, meta, sku);
   const addDate = normalizeItemDate(meta.addDate || source.addDate || excel.addDate || meta.firstSeenDate || "");
   return {
@@ -9333,7 +9256,7 @@ function productMetaRowForSupabase(source = {}) {
     price: Number(source.price ?? excel.price ?? sku.price ?? 0),
     unit_cost: Number(source.unitCost ?? source.cost ?? excel.cost ?? sku.unitCost ?? 0),
     sold_units: Number(source.units ?? sku.units ?? 0),
-    sale_velocity: Number(source.velocity ?? sku.velocity ?? excel.saleVelocity ?? 0),
+    sale_velocity: Number(source.velocity ?? sku.velocity ?? 0),
     case_size: Number(caseSize || 1),
     add_date: addDate || null,
     ordering_rule_mode: cleanCell(meta.orderingRuleMode) || "vendor",
@@ -9601,17 +9524,8 @@ function applySharedImportLogRows(rows = []) {
 
 function applySharedCountSessionRows(rows = []) {
   pruneDeletedCountSessions();
-  (rows || []).forEach((row) => {
-    if (cleanCell(row?.session_kind).toLowerCase() !== "deleted") return;
-    const payloadId = cleanCell(row?.session_payload?.id);
-    const rowId = cleanCell(row?.id || "").replace(/^active:/i, "");
-    markCountSessionDeleted(payloadId || rowId);
-  });
-  pruneDeletedCountSessions({ persist: true });
-  const liveRows = (rows || []).filter((row) => cleanCell(row?.session_kind).toLowerCase() !== "deleted");
-  if (rows?.length && !liveRows.length) return (state.countSessions || []).length + (state.activeCountSession ? 1 : 0);
   const localHoldActive = Date.now() < (state._localCountHoldUntil || 0);
-  if (!liveRows.length) {
+  if (!rows?.length) {
     if (localHoldActive) return (state.countSessions || []).length + (state.activeCountSession ? 1 : 0);
     state.countSessions = [];
     state.activeCountSession = null;
@@ -9626,7 +9540,7 @@ function applySharedCountSessionRows(rows = []) {
     .filter((session) => cleanCell(session?.id) && !countSessionIsDeleted(session.id))
     .map((session) => [cleanCell(session.id), session]));
   const localActiveId = cleanCell(state.activeCountSession?.id);
-  liveRows.forEach((row) => {
+  rows.forEach((row) => {
     const session = hydrateCountSessionFromSupabase(row);
     if (!session) return;
     const sessionId = cleanCell(session.id);
@@ -9858,14 +9772,11 @@ async function syncSharedImportLogsToSupabase(silent = false) {
 async function syncSharedCountSessionsToSupabase(silent = false) {
   if (!ENABLE_SHARED_SYNC || !sharedCountSessionsAvailable) return false;
   try {
-    const remoteDeletedRows = await supabaseSelectRowsSafe("count_sessions", { select: "id,session_kind,session_payload,updated_at", session_kind: "eq.deleted" });
-    if (remoteDeletedRows.length) applySharedCountSessionRows(remoteDeletedRows);
     const deletedIds = [...(state._deletedCountSessionIds || [])].filter(Boolean).slice(-500);
-    const deleteRows = deletedIds
-      .flatMap((id) => [countSessionDeleteRowForSupabase(id), countSessionActiveDeleteRowForSupabase(id)])
-      .filter(Boolean);
+    if (deletedIds.length) {
+      await supabaseDeleteRowsByValues("count_sessions", "id", deletedIds);
+    }
     const rows = [
-      ...deleteRows,
       ...(state.countSessions || [])
         .filter((session) => cleanCell(session?.id) && !countSessionIsDeleted(session.id))
         .map((session) => countSessionRowForSupabase(session, false)),
@@ -10200,6 +10111,10 @@ function confirmDeleteSavedSession() {
   persistCountSessions();
   renderCountSessionRows();
   void (async () => {
+    if (ENABLE_SHARED_SYNC && sharedCountSessionsAvailable) {
+      await supabaseDeleteRowsByValues("count_sessions", "id", [id]);
+      await updateSharedSyncState("counts");
+    }
     await syncSharedCountSessionsToSupabase(true);
   })().catch(() => {});
   showToast("Saved count deleted.", 2400, "warning");
@@ -11293,31 +11208,11 @@ function poBackorderCountForCode(code) {
   return count > 0 ? count : 0;
 }
 
-function isBackorderItem(item = {}) {
-  const key = codeKey(item.code);
-  const meta = itemMetaFor(key);
-  return poBackorderCountForCode(key) >= 3
-    || normalizeItemState(item.state || "") === "Back Order"
-    || normalizeItemState(meta.state || "") === "Back Order";
-}
-
-function enforceBackorderStateForCodes(codes = []) {
-  [...new Set((codes || []).map(codeKey).filter(Boolean))].forEach((key) => {
-    if (poBackorderCountForCode(key) < 3) return;
-    const meta = itemMetaFor(key);
-    if (normalizeItemState(meta.state) === "Back Order" && meta.stateManual) return;
-    setItemMeta(key, { state: "Back Order", stateManual: true });
-  });
-}
-
 function incrementPoBackorderForCodes(codes = [], options = {}) {
   state.poBackorderCounts = state.poBackorderCounts || {};
-  const keys = [...new Set(codes.map(codeKey).filter(Boolean))];
-  keys.forEach((key) => {
+  [...new Set(codes.map(codeKey).filter(Boolean))].forEach((key) => {
     state.poBackorderCounts[key] = poBackorderCountForCode(key) + 1;
   });
-  enforceBackorderStateForCodes(keys);
-  bumpDataStamp();
   if (options.save !== false) savePoBackorderCounts();
 }
 
@@ -11325,7 +11220,6 @@ function resetPoBackorderForCode(code, options = {}) {
   const key = codeKey(code);
   if (!key || !state.poBackorderCounts?.[key]) return;
   delete state.poBackorderCounts[key];
-  bumpDataStamp();
   if (options.save !== false) savePoBackorderCounts();
 }
 
@@ -12720,7 +12614,6 @@ document.querySelector("#orderVendorFilterSelect")?.addEventListener("change", (
   let lastTouchKey = "";
   let lastTouchAt = 0;
   let lastPointerAt = 0;
-  let unlockPending = false;
 
   function draw() {
     const disp = document.querySelector("#lockPinDisplay");
@@ -12734,29 +12627,24 @@ document.querySelector("#orderVendorFilterSelect")?.addEventListener("change", (
   }
 
   function press(k) {
-    if (unlockPending) return;
     if (k === "clear") { pin = ""; draw(); return; }
     if (k === "del" || k === "Backspace") { pin = pin.slice(0, -1); draw(); return; }
     if (/^[0-9]$/.test(k) && pin.length < 4) {
       pin += k; draw();
       if (pin.length === 4) {
         const p = pin;
-        unlockPending = true;
-        Promise.resolve().then(async () => {
-          try {
-            const unlocked = await tryUnlock(p);
-            pin = "";
-            if (!unlocked) draw();
-          } finally {
-            unlockPending = false;
-          }
-        });
+        setTimeout(async () => {
+          const unlocked = await tryUnlock(p);
+          pin = "";
+          if (!unlocked) draw();
+        }, 0);
       }
     }
   }
 
   function handleLockKeyEvent(e) {
     const btn = e.target.closest("[data-lock-key]");
+    overlay.focus?.();
     if (!btn) return;
     e.preventDefault();
     e.stopPropagation();

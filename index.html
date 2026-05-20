@@ -148,15 +148,13 @@
           <div class="panel-heading">
             <div><p class="eyebrow">Fast lane</p><h2>Scan mode</h2></div>
           </div>
-          <p class="muted">Use a scanner for price and stock checks. Manual typing is available only when needed.</p>
+          <p class="muted">Use a Bluetooth scanner or type a code manually. After each scan, the field is reselected and ready for the next item.</p>
           <label class="price-check-search-label">Scan / Search
             <div class="price-check-search-wrapper">
-              <input id="scanModeInput" type="search" placeholder="Scan barcode, UPC, PLU, item #..." autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false" />
+              <input id="scanModeInput" type="search" placeholder="Bluetooth scanner, UPC, PLU, item #..." autocomplete="off" />
             </div>
           </label>
           <div class="scan-mode-actions">
-            <button id="scanModeStartButton" type="button">Camera</button>
-            <button id="scanModeManualButton" type="button" class="secondary-button">Type code</button>
             <button id="scanModeLookupButton" type="button">Lookup</button>
             <button id="scanModeClearButton" type="button" class="secondary-button">Clear</button>
           </div>

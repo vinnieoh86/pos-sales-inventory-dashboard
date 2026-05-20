@@ -3473,8 +3473,7 @@ body[data-active-tab="scanmode"] .load-strip {
   position: relative;
 }
 
-#priceCheckSearchInput,
-#scanModeInput {
+#priceCheckSearchInput {
   min-height: 3.6rem;
   border-radius: 14px;
   font-size: 1.08rem;
@@ -3482,16 +3481,6 @@ body[data-active-tab="scanmode"] .load-strip {
   letter-spacing: 0.01em;
   border: 1px solid rgba(15, 118, 110, 0.18);
   background: #fff;
-}
-
-#scanModeInput.scan-mode-input--scanner-ready {
-  caret-color: transparent;
-  background: #f7fbf8;
-  border-color: rgba(15, 118, 110, 0.24);
-}
-
-body.scan-mode-touch-guard #scanModeInput {
-  cursor: default;
 }
 
 .price-check-dropdown {
@@ -7562,112 +7551,4 @@ body[data-active-tab="ordering"] .ordering-vendor-filter-bar {
   top: calc(1.35rem + var(--command-bar-height, 4.5rem) + var(--filters-height, 4.5rem) + var(--date-pills-height, 2.3rem)) !important;
   z-index: 58 !important;
   background: rgba(246, 250, 247, 0.98) !important;
-}
-
-/* Stable table scroll ownership: avoid page-level sticky math pushing headers into the body. */
-body[data-active-tab="inventory"] .tab-view[data-tab-view="inventory"] .table-wrap,
-body[data-active-tab="ordering"] .order-table-wrap {
-  overflow: auto !important;
-  max-height: calc(100vh - 18.25rem) !important;
-  position: relative !important;
-}
-
-body[data-active-tab="inventory"] #inventory thead,
-body[data-active-tab="ordering"] .order-table thead {
-  display: table-header-group !important;
-  visibility: visible !important;
-}
-
-body[data-active-tab="inventory"] #inventory thead th,
-body[data-active-tab="ordering"] .order-table thead th {
-  position: sticky !important;
-  top: 0 !important;
-  z-index: 12 !important;
-  visibility: visible !important;
-  opacity: 1 !important;
-  background: #f3f8f5 !important;
-  box-shadow: inset 0 -1px 0 rgba(15, 118, 110, 0.25) !important;
-}
-
-body[data-active-tab="ordering"] .ordering-vendor-filter-bar {
-  position: relative !important;
-  top: auto !important;
-  z-index: 3 !important;
-  background: transparent !important;
-}
-
-body[data-active-tab="inventory"] #inventory th[data-col="state"],
-body[data-active-tab="inventory"] #inventoryBody td[data-col="state"] {
-  min-width: 10.6rem !important;
-  width: 10.6rem !important;
-}
-
-body[data-active-tab="inventory"] .inventory-state-cell {
-  display: flex !important;
-  align-items: center !important;
-  justify-content: center !important;
-  gap: 0.25rem !important;
-  overflow: hidden !important;
-  padding-left: 0.25rem !important;
-  padding-right: 0.25rem !important;
-}
-
-body[data-active-tab="inventory"] .inventory-edit-select--state {
-  flex: 1 1 auto !important;
-  min-width: 7.2rem !important;
-  max-width: 8.1rem !important;
-}
-
-body[data-active-tab="inventory"] .inventory-state-cell .po-backorder-count {
-  position: static !important;
-  flex: 0 0 1.2rem !important;
-  min-width: 1.2rem !important;
-  height: 1.2rem !important;
-  transform: none !important;
-  display: inline-flex !important;
-  align-items: center !important;
-  justify-content: center !important;
-  font-size: 0.64rem !important;
-}
-
-body[data-active-tab="inventory"] #inventory th[data-col="addDate"],
-body[data-active-tab="inventory"] #inventoryBody td[data-col="addDate"] {
-  min-width: 5.1rem !important;
-  width: 5.1rem !important;
-}
-
-/* Ordering accuracy pass: headers must stay visible above the first row. */
-body[data-active-tab="inventory"] #inventory,
-body[data-active-tab="ordering"] .order-table {
-  border-collapse: separate !important;
-  border-spacing: 0 !important;
-}
-
-body[data-active-tab="inventory"] .tab-view[data-tab-view="inventory"] .table-wrap,
-body[data-active-tab="ordering"] .order-table-wrap {
-  overflow-x: auto !important;
-  overflow-y: auto !important;
-  overscroll-behavior: contain !important;
-}
-
-body[data-active-tab="inventory"] #inventory thead tr,
-body[data-active-tab="ordering"] .order-table thead tr {
-  display: table-row !important;
-  visibility: visible !important;
-}
-
-body[data-active-tab="inventory"] #inventory thead th,
-body[data-active-tab="ordering"] .order-table thead th {
-  display: table-cell !important;
-  position: sticky !important;
-  top: 0 !important;
-  z-index: 80 !important;
-  height: 1.9rem !important;
-  min-height: 1.9rem !important;
-  color: #52615d !important;
-  background: #f3f8f5 !important;
-  border-top: 0 !important;
-  border-bottom: 1px solid rgba(15, 118, 110, 0.35) !important;
-  box-shadow: 0 1px 0 rgba(15, 118, 110, 0.18), 0 2px 6px rgba(15, 23, 42, 0.06) !important;
-  opacity: 1 !important;
 }
