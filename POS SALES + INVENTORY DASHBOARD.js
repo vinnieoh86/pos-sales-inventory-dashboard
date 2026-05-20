@@ -2177,12 +2177,18 @@ function itemMetaFor(code) {
   return state.itemMeta?.[codeKey(code)] || {};
 }
 
+function isWigDefaultOrderingCategory(category = "") {
+  const value = cleanCell(category).toUpperCase().replace(/\s+/g, " ").trim();
+  return value === "WIG" || value === "WIGS" || value === "HUMAN WIG" || value === "HUMAN WIGS";
+}
+
 function effectiveItemRule(item = {}) {
   const code = item.code || item.itemCode || "";
   const meta = itemMetaFor(code);
   const vendorName = (item.vendor || "").toUpperCase();
   const vendorRule = state.vendorRules.find((r) => r.vendor?.toUpperCase() === vendorName && r.status === "Active") || null;
   const mode = cleanCell(meta.orderingRuleMode).toLowerCase() === "custom" ? "custom" : "vendor";
+  const wigDefaultRule = isWigDefaultOrderingCategory(item.category);
   const vendorSafety = vendorRule
     ? Math.max(0, toNumber(vendorRule.safetyDays) || DEFAULT_ORDER_SAFETY_DAYS)
     : DEFAULT_ORDER_SAFETY_DAYS;
@@ -2195,11 +2201,12 @@ function effectiveItemRule(item = {}) {
   const customDoi = meta.daysOfInventoryOverride != null && meta.daysOfInventoryOverride !== ""
     ? Math.max(0, toNumber(meta.daysOfInventoryOverride) || 0)
     : vendorDoi;
-  const safetyDays = mode === "custom" ? customSafety : vendorSafety;
-  const daysOfInventory = mode === "custom" ? customDoi : vendorDoi;
+  const safetyDays = mode === "custom" ? customSafety : (wigDefaultRule ? 1 : vendorSafety);
+  const daysOfInventory = mode === "custom" ? customDoi : (wigDefaultRule ? 1 : vendorDoi);
   return {
     mode,
     vendorRule,
+    categoryRule: wigDefaultRule ? "WIG/HUMAN WIG 1/1" : "",
     safetyDays,
     daysOfInventory,
     customSafety,
@@ -4917,10 +4924,13 @@ function _buildRawSkuMap(start, end, leadDays, safetyDays, daysOfInventory) {
   });
 
   return new Map([...grouped.entries()].map(([key, sku]) => {
-    const velocity = sku.units / dayCount;
+    const rule = effectiveItemRule(sku);
+    const effectiveSafety = rule.mode === "custom" || rule.vendorRule || rule.categoryRule ? rule.safetyDays : safetyDays;
+    const effectiveDoi = rule.mode === "custom" || rule.vendorRule || rule.categoryRule ? rule.daysOfInventory : daysOfInventory;
+    const velocity = sku.units / Math.max(dayCount, 1);
     const override = reorderOverrideForCode(sku.code);
     const isOverridden = override.min != null || override.max != null;
-    const dynamic = orderingTargets({ velocity, safetyDays, daysOfInventory });
+    const dynamic = orderingTargets({ velocity, safetyDays: effectiveSafety, daysOfInventory: effectiveDoi });
     const dynamicMaxWithDoi = dynamic.max;
     const manualMin = override.min ?? dynamic.min;
     const manualMax = override.max ?? dynamicMaxWithDoi;
@@ -6420,7 +6430,8 @@ function buildInventoryRows(options = {}) {
       const meta = itemMetaFor(itemCode);
       const override = reorderOverrideForCode(itemCode || code);
       const isOverridden = override.min != null || override.max != null;
-      const velocity = sales.velocity || excel.saleVelocity || 0;
+      const hasWindowSales = Object.prototype.hasOwnProperty.call(sales, "velocity");
+      const velocity = hasWindowSales ? (toNumber(sales.velocity) || 0) : (toNumber(excel.saleVelocity) || 0);
       const caseSize = effectiveCaseSizeFor(inventory, excel, meta, sales);
       const displayState = meta.stateManual
         ? meta.state
@@ -6433,8 +6444,9 @@ function buildInventoryRows(options = {}) {
       const rule = effectiveItemRule({
         code: itemCode,
         vendor: inventory.vendor || excel.vendor || sales.vendor || "",
+        category: inventory.category || excel.category || sales.category || "",
       });
-      const useRuleTargets = rule.mode === "custom" || !!rule.vendorRule;
+      const useRuleTargets = rule.mode === "custom" || !!rule.vendorRule || !!rule.categoryRule;
       const effectiveSafety = useRuleTargets ? rule.safetyDays : safetyDays;
       const effectiveDoi = useRuleTargets ? rule.daysOfInventory : daysOfInventory;
       const dynamic = orderingTargets({ velocity, safetyDays: effectiveSafety, daysOfInventory: effectiveDoi });
@@ -12708,6 +12720,7 @@ document.querySelector("#orderVendorFilterSelect")?.addEventListener("change", (
   let lastTouchKey = "";
   let lastTouchAt = 0;
   let lastPointerAt = 0;
+  let unlockPending = false;
 
   function draw() {
     const disp = document.querySelector("#lockPinDisplay");
@@ -12721,24 +12734,29 @@ document.querySelector("#orderVendorFilterSelect")?.addEventListener("change", (
   }
 
   function press(k) {
+    if (unlockPending) return;
     if (k === "clear") { pin = ""; draw(); return; }
     if (k === "del" || k === "Backspace") { pin = pin.slice(0, -1); draw(); return; }
     if (/^[0-9]$/.test(k) && pin.length < 4) {
       pin += k; draw();
       if (pin.length === 4) {
         const p = pin;
-        setTimeout(async () => {
-          const unlocked = await tryUnlock(p);
-          pin = "";
-          if (!unlocked) draw();
-        }, 0);
+        unlockPending = true;
+        Promise.resolve().then(async () => {
+          try {
+            const unlocked = await tryUnlock(p);
+            pin = "";
+            if (!unlocked) draw();
+          } finally {
+            unlockPending = false;
+          }
+        });
       }
     }
   }
 
   function handleLockKeyEvent(e) {
     const btn = e.target.closest("[data-lock-key]");
-    overlay.focus?.();
     if (!btn) return;
     e.preventDefault();
     e.stopPropagation();

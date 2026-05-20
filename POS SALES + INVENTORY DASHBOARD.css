@@ -7635,3 +7635,39 @@ body[data-active-tab="inventory"] #inventoryBody td[data-col="addDate"] {
   min-width: 5.1rem !important;
   width: 5.1rem !important;
 }
+
+/* Ordering accuracy pass: headers must stay visible above the first row. */
+body[data-active-tab="inventory"] #inventory,
+body[data-active-tab="ordering"] .order-table {
+  border-collapse: separate !important;
+  border-spacing: 0 !important;
+}
+
+body[data-active-tab="inventory"] .tab-view[data-tab-view="inventory"] .table-wrap,
+body[data-active-tab="ordering"] .order-table-wrap {
+  overflow-x: auto !important;
+  overflow-y: auto !important;
+  overscroll-behavior: contain !important;
+}
+
+body[data-active-tab="inventory"] #inventory thead tr,
+body[data-active-tab="ordering"] .order-table thead tr {
+  display: table-row !important;
+  visibility: visible !important;
+}
+
+body[data-active-tab="inventory"] #inventory thead th,
+body[data-active-tab="ordering"] .order-table thead th {
+  display: table-cell !important;
+  position: sticky !important;
+  top: 0 !important;
+  z-index: 80 !important;
+  height: 1.9rem !important;
+  min-height: 1.9rem !important;
+  color: #52615d !important;
+  background: #f3f8f5 !important;
+  border-top: 0 !important;
+  border-bottom: 1px solid rgba(15, 118, 110, 0.35) !important;
+  box-shadow: 0 1px 0 rgba(15, 118, 110, 0.18), 0 2px 6px rgba(15, 23, 42, 0.06) !important;
+  opacity: 1 !important;
+}
