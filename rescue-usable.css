@@ -1,0 +1,120 @@
+/* Rescue layer: keep the deployed app usable while the main CSS is cleaned up. */
+.controls.sticky-filters,
+body[data-active-tab="inventory"] .controls.sticky-filters,
+body[data-active-tab="ordering"] .controls.sticky-filters {
+  position: static !important;
+  top: auto !important;
+  z-index: 1 !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  overflow: visible !important;
+  transform: none !important;
+}
+
+.sticky-pills,
+body[data-active-tab="inventory"] #datePresets,
+body[data-active-tab="ordering"] #datePresets {
+  position: static !important;
+  top: auto !important;
+  z-index: 1 !important;
+  opacity: 1 !important;
+  pointer-events: auto !important;
+}
+
+#searchInput {
+  position: relative !important;
+  z-index: 50 !important;
+  pointer-events: auto !important;
+  user-select: text !important;
+}
+
+.tab-view[data-tab-view="inventory"] .table-wrap,
+body[data-active-tab="inventory"] .tab-view[data-tab-view="inventory"] .table-wrap,
+.order-table-wrap,
+body[data-active-tab="ordering"] .order-table-wrap {
+  max-height: calc(100vh - 14rem) !important;
+  overflow: auto !important;
+  isolation: auto !important;
+  -webkit-overflow-scrolling: touch !important;
+}
+
+#inventory,
+.order-table {
+  min-width: 1180px !important;
+  table-layout: fixed !important;
+  border-collapse: separate !important;
+  border-spacing: 0 !important;
+}
+
+#inventory thead,
+.order-table thead {
+  display: table-header-group !important;
+  visibility: visible !important;
+}
+
+#inventory thead th,
+.order-table thead th,
+body[data-active-tab="inventory"] #inventory thead th,
+body[data-active-tab="ordering"] .order-table thead th {
+  display: table-cell !important;
+  position: sticky !important;
+  top: 0 !important;
+  z-index: 80 !important;
+  height: 1.65rem !important;
+  min-height: 1.65rem !important;
+  padding: 0.34rem 0.4rem !important;
+  background: #f4f8f5 !important;
+  color: #45534d !important;
+  opacity: 1 !important;
+  visibility: visible !important;
+  text-align: center !important;
+  white-space: nowrap !important;
+  border-bottom: 1px solid #cfd9d2 !important;
+  box-shadow: inset 0 -1px 0 #cfd9d2 !important;
+  pointer-events: auto !important;
+}
+
+#inventory th[data-col="code"],
+#inventoryBody td[data-col="code"] {
+  min-width: 8.5rem !important;
+  max-width: 8.5rem !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+#inventory th[data-col="product"],
+#inventoryBody td[data-col="product"] {
+  min-width: 21rem !important;
+  max-width: 21rem !important;
+  white-space: normal !important;
+  line-height: 1.05 !important;
+}
+
+#inventory th[data-col="plu"],
+#inventoryBody td[data-col="plu"] {
+  min-width: 7rem !important;
+  max-width: 7rem !important;
+}
+
+#inventoryBody,
+#inventoryBody tr,
+#inventoryBody td {
+  pointer-events: auto !important;
+}
+
+@media (max-width: 760px), (pointer: coarse) {
+  .import-card {
+    position: static !important;
+    width: auto !important;
+    max-width: none !important;
+  }
+
+  .command-bar {
+    position: static !important;
+    top: auto !important;
+  }
+
+  body[data-active-tab="scanmode"] #countSearchInput {
+    caret-color: transparent;
+  }
+}
