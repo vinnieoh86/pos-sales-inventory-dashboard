@@ -149,20 +149,20 @@ function createScanPerformanceProfile() {
       camera: { width: 1280, height: 720, fps: 24, qrbox: { width: 260, height: 130 } },
       detectIntervalMs: 42,
       normalPollMs: SHARED_SYNC_POLL_MS,
-      scanPollMs: 4000,
+      scanPollMs: SHARED_SYNC_POLL_MS,
       deferRestoresWhileScanning: false,
     },
     medium: {
       camera: { width: 960, height: 540, fps: 15, qrbox: { width: 230, height: 115 } },
       detectIntervalMs: 67,
-      normalPollMs: 5000,
+      normalPollMs: SHARED_SYNC_POLL_MS,
       scanPollMs: 12000,
       deferRestoresWhileScanning: true,
     },
     low: {
       camera: { width: 640, height: 480, fps: 10, qrbox: { width: 200, height: 100 } },
       detectIntervalMs: 100,
-      normalPollMs: 12000,
+      normalPollMs: SHARED_SYNC_POLL_MS,
       scanPollMs: 45000,
       deferRestoresWhileScanning: true,
     },
@@ -12761,6 +12761,7 @@ if (!state.authRequired || !loadUsers().length) {
           syncRow.product_count,
           syncRow.sales_count,
         ].join("|");
+        state._deferredSharedSync = false;
         return;
       }
       const hash = [
