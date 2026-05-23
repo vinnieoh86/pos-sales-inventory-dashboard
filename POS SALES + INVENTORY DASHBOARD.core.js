@@ -37,6 +37,10 @@
   _deletedCountSessionIds: new Set(JSON.parse(localStorage.getItem("posDashboardDeletedCountSessionIds:v1") || "[]")),
   _priceCheckExactIndex: null,
   _priceCheckExactIndexStamp: 0,
+  _multiBarcodeIndexStamp: 0,
+  scanModeActive: false,
+  _deferredSharedSync: false,
+  _deferredDashboardOptions: false,
   _filteredSkuIndex: new Map(),
   _loadedFileSignatures: new Set(),
   _activeDetailCode: "",
@@ -131,13 +135,84 @@ const SHARED_SYNC_POLL_MS = 2000;
 const SHARED_SYNC_INITIAL_DELAY_MS = 1200;
 const SHARED_PRODUCT_META_PULL_LIMIT = 500;
 
+// Scan mode gets a small capability profile so weaker browsers do less work while scanning.
+function createScanPerformanceProfile() {
+  const ua = navigator.userAgent || "";
+  const cores = Number(navigator.hardwareConcurrency || 0);
+  const memory = Number(navigator.deviceMemory || 0);
+  const isSilk = /silk|kindle|kf[a-z]{2,}/i.test(ua);
+  const isMobile = /android|iphone|ipad|ipod|mobile/i.test(ua);
+  const weakHardware = (!!cores && cores <= 2) || (!!memory && memory <= 2);
+  const tier = isSilk || weakHardware ? "low" : (isMobile || (!!cores && cores <= 4) || (!!memory && memory <= 4) ? "medium" : "full");
+  const profiles = {
+    full: {
+      camera: { width: 1280, height: 720, fps: 24, qrbox: { width: 260, height: 130 } },
+      detectIntervalMs: 42,
+      normalPollMs: SHARED_SYNC_POLL_MS,
+      scanPollMs: 4000,
+      deferRestoresWhileScanning: false,
+    },
+    medium: {
+      camera: { width: 960, height: 540, fps: 15, qrbox: { width: 230, height: 115 } },
+      detectIntervalMs: 67,
+      normalPollMs: 5000,
+      scanPollMs: 12000,
+      deferRestoresWhileScanning: true,
+    },
+    low: {
+      camera: { width: 640, height: 480, fps: 10, qrbox: { width: 200, height: 100 } },
+      detectIntervalMs: 100,
+      normalPollMs: 12000,
+      scanPollMs: 45000,
+      deferRestoresWhileScanning: true,
+    },
+  };
+  const profile = { tier, isSilk, isMobile, cores, memory, ...profiles[tier] };
+  console.info("[ScanPerf] profile", { tier, isSilk, isMobile, cores: cores || "unknown", memory: memory || "unknown" });
+  return profile;
+}
+
+const scanPerformanceProfile = createScanPerformanceProfile();
+
+function scanModeIsActive() {
+  return state.scanModeActive || activeTabName() === "scanmode";
+}
+
+function queueScanExactIndexBuild() {
+  const run = () => {
+    if (scanModeIsActive()) ensurePriceCheckExactIndex();
+  };
+  if ("requestIdleCallback" in window) window.requestIdleCallback(run, { timeout: 400 });
+  else setTimeout(run, 30);
+}
+
+function setScanPerformanceMode(active) {
+  state.scanModeActive = !!active;
+  document.body?.classList.toggle("scan-mode-active", state.scanModeActive);
+  ["full", "medium", "low"].forEach((tier) => {
+    document.body?.classList.toggle(`scan-performance-${tier}`, state.scanModeActive && scanPerformanceProfile.tier === tier);
+  });
+  if (state.scanModeActive) {
+    hideHoverTooltip();
+    queueScanExactIndexBuild();
+  } else {
+    if (state._deferredDashboardOptions) {
+      state._deferredDashboardOptions = false;
+      updateFilterOptions();
+      updateInventoryStateFilter();
+      setDefaultDates();
+    }
+    if (state._deferredSharedSync) window.flushDeferredSharedSync?.();
+  }
+}
+
 // Increment this whenever raw data changes to bust the SKU cache
 function bumpDataStamp() {
   // After data loads, apply the 90D default if it hasn't been overridden
   clearTimeout(state._applyPresetTimer);
   state._applyPresetTimer = setTimeout(() => {
     // Only auto-apply 90D if it hasn't been manually changed by the user
-    if (state.activePresetDays === 90 && state.dates.length) {
+    if (state.activePresetDays === 90 && state.dates.length && !scanModeIsActive()) {
       applyDatePreset(90);
     }
   }, 200);
@@ -151,12 +226,14 @@ function bumpDataStamp() {
   state._inventoryRowIndex = new Map();
   state._priceCheckExactIndex = null;
   state._priceCheckExactIndexStamp = 0;
+  state._priceCheckRowsCache = null;
+  state._priceCheckRowsStamp = 0;
   state._countSearchIndex = null; // invalidate count search index too
   // Pre-warm inventory cache in background after a short delay so the
   // UI stays responsive but the next render is instant
   clearTimeout(state._prewarmTimer);
   state._prewarmTimer = setTimeout(() => {
-    if (activeTabName() !== "inventory") {
+    if (!scanModeIsActive() && activeTabName() !== "inventory") {
       // Build but don't display â€” just warms the cache
       buildInventoryRows({ ignoreQuery: true, ignoreFilters: true, ignoreStateFilter: true });
     }
@@ -586,7 +663,9 @@ function renderInventoryControlsLight() {
   queueActiveTabRender();
 }
 // Keep search and ordering controls on the lighter active-tab render path.
-[els.searchInput, els.leadDays, els.safetyDays, els.daysOfInventory].filter(Boolean).forEach((input) => input.addEventListener("input", renderInventoryControlsLight));
+const renderInventorySearchDebounced = debounce(renderInventoryControlsLight, 140);
+els.searchInput?.addEventListener("input", renderInventorySearchDebounced);
+[els.leadDays, els.safetyDays, els.daysOfInventory].filter(Boolean).forEach((input) => input.addEventListener("input", renderInventoryControlsLight));
 els.parentsSearch?.addEventListener("input", renderParentsDebounced);
 els.searchInput?.addEventListener("input", () => {
   const upper = els.searchInput.value.toUpperCase();
@@ -771,23 +850,14 @@ els.priceCheckManualButton?.addEventListener("click", () => {
   stopPriceCheckCamera();
   focusPriceCheckSearch();
 });
-els.scanModeStartButton?.addEventListener("click", () => startPriceCheckCamera({ fullscreen: prefersPhoneBarcodeScanner() }));
+els.scanModeStartButton?.addEventListener("click", () => startPriceCheckCamera({ fullscreen: true, forceFullscreen: true }));
 els.scanModeManualButton?.addEventListener("click", () => switchTab("pricecheck"));
 
-// Scan mode â€” Bluetooth scanner: Enter fires lookup, auto-refocus for next scan
+// Scan mode: Bluetooth/manual scanners use the exact barcode index first, then refocus immediately.
 document.querySelector("#scanModeLookupButton")?.addEventListener("click", () => {
   const inp = document.querySelector("#scanModeInput");
   if (!inp) return;
-  const query = inp.value.trim();
-  if (!query) return;
-  const matches = priceCheckMatches(query, 10);
-  const item = matches[0] || null;
-  renderPriceCheckResult(item);
-  if (els.scanModeStatus) els.scanModeStatus.textContent = item
-    ? `\u2713 ${item.product || item.code} \u2014 ready for next scan.`
-    : `No match for "${query}". Try again.`;
-  if (!item) showToast("Item not found.", 2000, "warning");
-  setTimeout(() => { inp.focus(); inp.select(); }, 60);
+  handleScanModeLookup(inp.value);
 });
 document.querySelector("#scanModeClearButton")?.addEventListener("click", () => {
   const inp = document.querySelector("#scanModeInput");
@@ -799,16 +869,7 @@ document.querySelector("#scanModeInput")?.addEventListener("keydown", (e) => {
   if (e.key !== "Enter") return;
   e.preventDefault(); e.stopPropagation();
   const inp = e.target;
-  const query = inp.value.trim();
-  if (!query) return;
-  const matches = priceCheckMatches(query, 10);
-  const item = matches[0] || null;
-  renderPriceCheckResult(item);
-  if (els.scanModeStatus) els.scanModeStatus.textContent = item
-    ? `\u2713 ${item.product || item.code} \u2014 ready for next scan.`
-    : `No match for "${query}". Try again.`;
-  if (!item) showToast("Item not found.", 2000, "warning");
-  setTimeout(() => { inp.focus(); inp.select(); }, 60);
+  handleScanModeLookup(inp.value);
 });
 document.querySelector("#scanModeInput")?.addEventListener("focus", (e) => {
   setTimeout(() => e.target.select?.(), 0);
@@ -2021,6 +2082,9 @@ function rebuildMultiBarcodeLookup() {
     });
   });
   state.multiBarcodeMap = map;
+  state._multiBarcodeIndexStamp += 1;
+  state._priceCheckExactIndex = null;
+  state._priceCheckExactIndexStamp = 0;
   saveMultiBarcodeState();
 }
 
@@ -2732,7 +2796,8 @@ function buildPriceCheckEntry(inventory = {}, excel = {}) {
 }
 
 function ensurePriceCheckExactIndex() {
-  if (state._priceCheckExactIndex && state._priceCheckExactIndexStamp === state._dataCacheStamp) return;
+  const stamp = `${state._dataCacheStamp}:${state._multiBarcodeIndexStamp || 0}`;
+  if (state._priceCheckExactIndex && state._priceCheckExactIndexStamp === stamp) return;
   const exact = new Map();
   const indexEntry = (entry) => {
     [entry.code, entry.plu, entry.itemNumber].forEach((value) => {
@@ -2750,8 +2815,21 @@ function ensurePriceCheckExactIndex() {
     const entry = buildPriceCheckEntry({}, excel);
     if (entry.code || entry.plu || entry.itemNumber) indexEntry(entry);
   });
+  Object.entries(state.multiBarcodeMap || {}).forEach(([alias, masterCode]) => {
+    const aliasKey = codeKey(alias);
+    const masterKey = codeKey(masterCode);
+    const item = masterKey ? exact.get(masterKey) : null;
+    if (aliasKey && item && !exact.has(aliasKey)) exact.set(aliasKey, item);
+  });
   state._priceCheckExactIndex = exact;
-  state._priceCheckExactIndexStamp = state._dataCacheStamp;
+  state._priceCheckExactIndexStamp = stamp;
+}
+
+function priceCheckExactMatch(query) {
+  const keyed = codeKey(query);
+  if (!keyed) return null;
+  ensurePriceCheckExactIndex();
+  return state._priceCheckExactIndex?.get(keyed) || null;
 }
 
 function priceCheckRows() {
@@ -2861,8 +2939,7 @@ function priceCheckMatches(query, limit = 12) {
   const raw = cleanCell(query);
   if (!raw) return [];
   const keyed = codeKey(raw);
-  ensurePriceCheckExactIndex();
-  const exact = keyed ? state._priceCheckExactIndex?.get(keyed) : null;
+  const exact = priceCheckExactMatch(raw);
   if (exact) return [exact];
   const rows = priceCheckRows();
   const search = raw.toLowerCase();
@@ -3041,9 +3118,16 @@ function processPriceCheckScan(code) {
   if (cleanCode === state.priceCheckLastCode && now - state.priceCheckLastScanAt <= 1200) return false;
   state.priceCheckLastCode = cleanCode;
   state.priceCheckLastScanAt = now;
-  if (els.priceCheckSearchInput) els.priceCheckSearchInput.value = cleanCode;
-  const item = handlePriceCheckLookup({ refocus: false, silentNotFound: true });
   const inScanMode = activeTabName() === "scanmode";
+  let item = null;
+  if (inScanMode) {
+    const scanInput = document.querySelector("#scanModeInput");
+    if (scanInput) scanInput.value = cleanCode;
+    item = handleScanModeLookup(cleanCode, { refocus: false, silentNotFound: true });
+  } else {
+    if (els.priceCheckSearchInput) els.priceCheckSearchInput.value = cleanCode;
+    item = handlePriceCheckLookup({ refocus: false, silentNotFound: true });
+  }
   if (inScanMode) stopPriceCheckCamera();
   setSharedScanStatus(item
     ? (inScanMode
@@ -3056,7 +3140,7 @@ function processPriceCheckScan(code) {
 }
 
 async function startPriceCheckCamera(options = {}) {
-  const { fullscreen = false } = options;
+  const { fullscreen = false, forceFullscreen = false } = options;
   if (!window.isSecureContext) {
     stopPriceCheckCamera();
     showToast("Camera scanning requires the secure live website. Open the GitHub Pages URL, not a local file.", 4200, "warning");
@@ -3069,16 +3153,23 @@ async function startPriceCheckCamera(options = {}) {
   }
   try {
     stopPriceCheckCamera();
-    setPriceCheckFullscreen(fullscreen && prefersPhoneBarcodeScanner());
+    setPriceCheckFullscreen(!!forceFullscreen || (fullscreen && prefersPhoneBarcodeScanner()));
     els.priceCheckSearchInput?.blur?.();
-    if (els.priceCheckStatus) els.priceCheckStatus.textContent = "Starting camera...";
+    setSharedScanStatus("Starting camera...");
     const tryStream = async (videoOptions) => navigator.mediaDevices.getUserMedia({ video: videoOptions, audio: false });
+    const cameraProfile = scanPerformanceProfile.camera;
     const optimizedVideo = {
       facingMode: { ideal: "environment" },
-      width: { ideal: 1280, max: 1280 },
-      height: { ideal: 720, max: 720 },
-      frameRate: { ideal: 30, max: 30 },
+      width: { ideal: cameraProfile.width, max: cameraProfile.width },
+      height: { ideal: cameraProfile.height, max: cameraProfile.height },
+      frameRate: { ideal: cameraProfile.fps, max: cameraProfile.fps },
     };
+    console.info("[ScanPerf] camera", {
+      tier: scanPerformanceProfile.tier,
+      width: cameraProfile.width,
+      height: cameraProfile.height,
+      fps: cameraProfile.fps,
+    });
     try {
       state.priceCheckStream = await tryStream({ ...optimizedVideo, facingMode: { exact: "environment" } });
     } catch (primaryError) {
@@ -3109,17 +3200,17 @@ async function startPriceCheckCamera(options = {}) {
       scannerEl.hidden = true;
       scannerEl.innerHTML = "";
     }
-    if (els.priceCheckStatus) els.priceCheckStatus.textContent = "Camera live. Point at a barcode.";
+    setSharedScanStatus("Camera live. Point at a barcode.");
     if (els.priceCheckStopButton) els.priceCheckStopButton.hidden = false;
     if (els.priceCheckCameraButton) els.priceCheckCameraButton.hidden = true;
     if ("BarcodeDetector" in window) {
       state.priceCheckDetector = new BarcodeDetector({
         formats: ["upc_a", "upc_e", "ean_13", "ean_8", "code_128"],
       });
-      if (els.priceCheckStatus) {
-        els.priceCheckStatus.textContent = prefersPhoneBarcodeScanner()
+      if (els.priceCheckStatus || els.scanModeStatus) {
+        setSharedScanStatus(prefersPhoneBarcodeScanner()
           ? "Camera live. Hold the barcode inside the box and move slightly closer."
-          : "Camera live. Point at a barcode.";
+          : "Camera live. Point at a barcode.");
       }
       scanPriceCheckFrame();
       return;
@@ -3147,8 +3238,8 @@ async function startPriceCheckCamera(options = {}) {
         await state.priceCheckScanner.start(
           { facingMode: "environment" },
           {
-            fps: 24,
-            qrbox: { width: 220, height: 110 },
+            fps: cameraProfile.fps,
+            qrbox: cameraProfile.qrbox,
             rememberLastUsedCamera: true,
             aspectRatio: 1.7778,
             disableFlip: true,
@@ -3160,7 +3251,7 @@ async function startPriceCheckCamera(options = {}) {
             processPriceCheckScan(decodedText);
           }
         );
-        if (els.priceCheckStatus) els.priceCheckStatus.textContent = "Camera live. Hold the barcode inside the box and move slightly closer.";
+        setSharedScanStatus("Camera live. Hold the barcode inside the box and move slightly closer.");
         return;
       } catch (error) {
         state.priceCheckScanner = null;
@@ -3236,9 +3327,10 @@ function stopPriceCheckCamera() {
 }
 
 async function scanPriceCheckFrame() {
+  const interval = scanPerformanceProfile.detectIntervalMs || 67;
   const videoEl = priceCheckVideoEl();
   if (!state.priceCheckDetector || !videoEl || videoEl.readyState < 2) {
-    state.priceCheckScanTimer = setTimeout(scanPriceCheckFrame, 35);
+    state.priceCheckScanTimer = setTimeout(scanPriceCheckFrame, interval);
     return;
   }
   try {
@@ -3250,7 +3342,7 @@ async function scanPriceCheckFrame() {
   } catch (error) {
     // keep looping silently; browsers may throw transient detect errors
   }
-  state.priceCheckScanTimer = setTimeout(scanPriceCheckFrame, 35);
+  state.priceCheckScanTimer = setTimeout(scanPriceCheckFrame, interval);
 }
 
 function latestExcelAddDate() {
@@ -3535,6 +3627,35 @@ function persistCountSessions() {
   localStorage.setItem("posDashboardCountSessions:v1", JSON.stringify(state.countSessions));
   localStorage.setItem("posDashboardActiveCountSession:v1", JSON.stringify(state.activeCountSession));
   scheduleSharedCountSessionsSync();
+}
+
+function handleScanModeLookup(value, options = {}) {
+  const input = document.querySelector("#scanModeInput");
+  const query = cleanCell(value ?? input?.value ?? "");
+  if (!query) {
+    input?.focus?.();
+    input?.select?.();
+    return null;
+  }
+  const start = performance.now();
+  const exact = priceCheckExactMatch(query);
+  const item = exact || priceCheckMatches(query, 1)[0] || null;
+  const elapsed = Number((performance.now() - start).toFixed(2));
+  console.debug("[ScanPerf] lookup", { ms: elapsed, exact: !!exact, found: !!item });
+  renderPriceCheckResult(item);
+  if (els.scanModeStatus) {
+    els.scanModeStatus.textContent = item
+      ? `\u2713 ${item.product || item.code} \u2014 ready for next scan.`
+      : `No match for "${query}". Try again.`;
+  }
+  if (!item && !options.silentNotFound) showToast("Item not found.", 2000, "warning");
+  if (options.refocus !== false) {
+    requestAnimationFrame(() => {
+      input?.focus?.();
+      input?.select?.();
+    });
+  }
+  return item;
 }
 
 function persistDeletedCountSessionIds() {
@@ -4604,6 +4725,10 @@ function renderCountsWorkspace() {
 function renderActiveTab() {
   hideHoverTooltip();
   const activeTab = document.querySelector(".tab-button.active")?.dataset.tab || "dashboard";
+  if (activeTab === "scanmode") {
+    if (els.inventoryQuickTools) els.inventoryQuickTools.hidden = true;
+    return;
+  }
   if (els.inventoryQuickTools) {
     els.inventoryQuickTools.hidden = !["inventory", "ordering"].includes(activeTab);
   }
@@ -6852,6 +6977,7 @@ function fileSignature(file) {
 
 function switchTab(tab) {
   saveActiveTabSearch();
+  setScanPerformanceMode(tab === "scanmode");
   if (["dashboard", "inventory", "ordering"].includes(tab) && els.searchInput) {
     els.searchInput.value = state.tabSearches[tab] || "";
   }
@@ -6862,7 +6988,13 @@ function switchTab(tab) {
   if (["pricecheck", "scanmode"].includes(tab)) {
     if (!els.priceCheckResult?.innerHTML) renderPriceCheckResult(null);
     if (tab === "pricecheck") focusPriceCheckSearch();
-    if (tab === "scanmode") setTimeout(() => { document.querySelector("#scanModeInput")?.focus(); }, 80);
+    if (tab === "scanmode") {
+      setTimeout(() => {
+        const input = document.querySelector("#scanModeInput");
+        input?.focus?.();
+        input?.select?.();
+      }, 30);
+    }
   } else if (tab === "inventory") {
     setTimeout(() => {
       els.searchInput?.focus();
@@ -6870,6 +7002,7 @@ function switchTab(tab) {
     }, 80);
   }
   applyRoleRestrictions(true);
+  if (tab === "scanmode") return;
   renderSharedQuickTools(tab);
   queueActiveTabRender();
 }
@@ -8861,9 +8994,13 @@ async function restorePersistedState() {
         : "Excel not loaded.";
     }
     bumpDataStamp();
-    updateFilterOptions();
-    updateInventoryStateFilter();
-    setDefaultDates();
+    if (scanModeIsActive()) {
+      state._deferredDashboardOptions = true;
+    } else {
+      updateFilterOptions();
+      updateInventoryStateFilter();
+      setDefaultDates();
+    }
   } catch (error) {
     console.warn("Could not restore POS dashboard history", error);
   }
@@ -9168,8 +9305,10 @@ function applySharedVendorRuleRows(rows = []) {
     .sort((a, b) => compareDisplayValue(a.vendor, b.vendor));
   localStorage.setItem("posDashboardVendorRules:v1", JSON.stringify(state.vendorRules));
   bumpDataStamp();
-  renderVendorRules();
-  queueActiveTabRender();
+  if (!scanModeIsActive()) {
+    renderVendorRules();
+    queueActiveTabRender();
+  }
   return state.vendorRules.length;
 }
 
@@ -9852,9 +9991,13 @@ async function restoreSharedDataFromSupabase(options = {}) {
       applySharedCountSessionRows(countSessionRows);
     state._loadedFileSignatures = new Set(["supabase-shared"]);
     bumpDataStamp();
-    updateFilterOptions();
-    updateInventoryStateFilter();
-    setDefaultDates();
+    if (scanModeIsActive()) {
+      state._deferredDashboardOptions = true;
+    } else {
+      updateFilterOptions();
+      updateInventoryStateFilter();
+      setDefaultDates();
+    }
     if (!silent) showToast(`Loaded shared data â€” ${number.format(mergedProductRows.length)} products, ${number.format(salesRows.length)} sales rows`, 3200, "success");
     return true;
   } catch (error) {
@@ -9926,8 +10069,10 @@ async function initApp() {
   resetUiCriteriaOnStartup();
   switchTab(state.currentUser ? (isUserRole() ? "scanmode" : "inventory") : "inventory");
   updateMetricsSummaryMode();
-  render();
-  renderUploadLogs();
+  if (!scanModeIsActive()) {
+    render();
+    renderUploadLogs();
+  }
   document.body.dataset.activeTab = activeTabName();
   renderPriceCheckResult(null);
   appInitDone = true;
@@ -9938,13 +10083,15 @@ async function initApp() {
     if (ENABLE_SHARED_SYNC && state.vendorRules.length) {
       syncSharedVendorRulesToSupabase(true).catch(() => {});
     }
-    if (state.dates.length) {
+    if (state.dates.length && !scanModeIsActive()) {
       state.activePresetDays = 90;
       applyDatePreset(90);
-    } else {
+    } else if (!scanModeIsActive()) {
       render();
+    } else {
+      queueScanExactIndexBuild();
     }
-    renderUploadLogs();
+    if (!scanModeIsActive()) renderUploadLogs();
   } catch (error) {
     console.warn("Background local restore failed", error);
   }
@@ -9952,6 +10099,10 @@ async function initApp() {
     setTimeout(async () => {
       try {
         const hasLocalDataset = !!(state.latestInventory.size || state.excelItems.size || state.rawSales.length);
+        if (hasLocalDataset && scanModeIsActive() && scanPerformanceProfile.deferRestoresWhileScanning) {
+          state._deferredSharedSync = true;
+          return;
+        }
         const restoredShared = hasLocalDataset
           ? (await Promise.all([
               restoreSharedProductsOnlyFromSupabase({ silent: true }),
@@ -9964,8 +10115,12 @@ async function initApp() {
           await syncSharedMetaSnapshotToSupabase({ silent: true, includeVendorRules: true });
         } else if (restoredShared) {
           await savePersistedState();
-          queueActiveTabRender();
-          renderUploadLogs();
+          if (scanModeIsActive()) {
+            queueScanExactIndexBuild();
+          } else {
+            queueActiveTabRender();
+            renderUploadLogs();
+          }
         }
       } catch (error) {
         console.warn("Background shared restore failed", error);
@@ -12582,7 +12737,10 @@ if (!state.authRequired || !loadUsers().length) {
 (function startSyncPoller() {
   if (!ENABLE_SHARED_SYNC) return;
   let _lastHash = "";
-  async function poll() {
+  let pollTimer = 0;
+  const nextPollDelay = () => scanModeIsActive() ? scanPerformanceProfile.scanPollMs : scanPerformanceProfile.normalPollMs;
+  async function poll(options = {}) {
+    const forceRestore = options.forceRestore === true;
     try {
       const url = new URL(`${SUPABASE_URL}/rest/v1/sync_state`);
       url.searchParams.set("select", "id,last_sync_kind,updated_at,latest_inventory_date,latest_sales_date,product_count,sales_count");
@@ -12615,7 +12773,12 @@ if (!state.authRequired || !loadUsers().length) {
         syncRow.sales_count,
       ].join("|");
       if (hash === _lastHash) return;
+      if (scanModeIsActive() && scanPerformanceProfile.deferRestoresWhileScanning && !forceRestore) {
+        state._deferredSharedSync = true;
+        return;
+      }
       _lastHash = hash;
+      state._deferredSharedSync = false;
       const syncKind = String(syncRow.last_sync_kind || "").toLowerCase();
       const isProductsOnly = syncKind === "products" || syncKind === "product-meta";
       const isVendorRulesOnly = syncKind === "vendor-rules";
@@ -12631,7 +12794,7 @@ if (!state.authRequired || !loadUsers().length) {
           ? await restoreSharedProductsOnlyFromSupabase({ silent: true })
           : await restoreSharedDataFromSupabase({ silent: true, preferCurrentState: false });
       if (restored) {
-        if (!isProductsOnly && !isCountsOnly && !state.activeCountSession) {
+        if (!scanModeIsActive() && !isProductsOnly && !isCountsOnly && !state.activeCountSession) {
           showToast(
             isVendorRulesOnly
               ? "\u21ba Synced shared vendor rules from another device"
@@ -12647,7 +12810,20 @@ if (!state.authRequired || !loadUsers().length) {
       }
     } catch (_) { /* silent fail on file:// */ }
   }
-  setTimeout(() => { poll(); setInterval(poll, SHARED_SYNC_POLL_MS); }, SHARED_SYNC_INITIAL_DELAY_MS);
+  function schedule(delay = nextPollDelay()) {
+    clearTimeout(pollTimer);
+    pollTimer = setTimeout(async () => {
+      await poll();
+      schedule();
+    }, delay);
+  }
+  window.flushDeferredSharedSync = async () => {
+    if (!state._deferredSharedSync) return;
+    state._deferredSharedSync = false;
+    await poll({ forceRestore: true });
+    schedule();
+  };
+  schedule(SHARED_SYNC_INITIAL_DELAY_MS);
 })();
 
 

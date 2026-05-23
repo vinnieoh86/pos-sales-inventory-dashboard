@@ -7352,203 +7352,142 @@ body[data-active-tab="ordering"] .inventory-quick-tools--ordering .inventory-qui
   }
 }
 
-/* Final sticky + mobile polish: keep controls visible without letting upload/search overlays cover tabs. */
-.metrics-hover-zone {
-  position: sticky !important;
-  top: 0 !important;
-  z-index: 90 !important;
-}
-
-.command-bar {
-  position: sticky !important;
-  top: 1.35rem !important;
-  z-index: 89 !important;
-}
-
+/* Emergency usability reset: remove overlay-sticky conflicts and keep tables/search usable. */
+.controls.sticky-filters,
 body[data-active-tab="inventory"] .controls.sticky-filters,
 body[data-active-tab="ordering"] .controls.sticky-filters {
-  position: sticky !important;
-  top: calc(1.35rem + var(--command-bar-height, 4.5rem)) !important;
-  z-index: 82 !important;
-}
-
-body[data-active-tab="inventory"] #inventoryBody td[data-col="code"],
-body[data-active-tab="ordering"] .order-table td[data-col="code"] {
-  overflow: hidden !important;
-  text-overflow: ellipsis !important;
-  white-space: nowrap !important;
-  max-width: 100% !important;
-}
-
-body[data-active-tab="inventory"] #inventoryBody td[data-col="code"] *,
-body[data-active-tab="ordering"] .order-table td[data-col="code"] * {
-  min-width: 0 !important;
-  max-width: 100% !important;
-  overflow: hidden !important;
-  text-overflow: ellipsis !important;
-}
-
-.state-select-backorder,
-.state-backorder {
-  background: #f8fafc !important;
-  border-color: #9ca3af !important;
-  color: #374151 !important;
-  font-weight: 800 !important;
-}
-
-.inventory-state-cell .po-backorder-count {
-  background: #fee2e2 !important;
-  color: #b91c1c !important;
-  border-color: #fecaca !important;
-}
-
-#vendorPoModal table {
-  table-layout: fixed !important;
-  width: 100% !important;
-}
-
-#vendorPoModal th:nth-child(1),
-#vendorPoModal td:nth-child(1) {
-  width: 8rem !important;
-  max-width: 8rem !important;
-}
-
-#vendorPoModal th:nth-child(2),
-#vendorPoModal td:nth-child(2) {
-  width: 5rem !important;
-  max-width: 5rem !important;
-}
-
-#vendorPoModal th:nth-child(3),
-#vendorPoModal td:nth-child(3) {
-  width: 28rem !important;
-  max-width: none !important;
-  text-align: left !important;
-}
-
-#vendorPoModal th:nth-child(n+4),
-#vendorPoModal td:nth-child(n+4) {
-  width: 4.3rem !important;
-  max-width: 5rem !important;
-}
-
-#vendorPoModal td,
-#vendorPoModal th {
-  overflow: hidden !important;
-  text-overflow: ellipsis !important;
-}
-
-#vendorPoModal .sku-name,
-#vendorPoModal .sku-name-text {
-  white-space: normal !important;
+  position: static !important;
+  top: auto !important;
+  z-index: 1 !important;
+  min-height: 0 !important;
+  max-height: none !important;
   overflow: visible !important;
-  text-overflow: clip !important;
+  transform: none !important;
+}
+
+.sticky-pills,
+body[data-active-tab="inventory"] #datePresets,
+body[data-active-tab="ordering"] #datePresets {
+  position: static !important;
+  top: auto !important;
+  z-index: 1 !important;
+  opacity: 1 !important;
+  pointer-events: auto !important;
+}
+
+#searchInput {
+  position: relative !important;
+  z-index: 20 !important;
+  pointer-events: auto !important;
+}
+
+.tab-view[data-tab-view="inventory"] .table-wrap,
+body[data-active-tab="inventory"] .tab-view[data-tab-view="inventory"] .table-wrap,
+.order-table-wrap,
+body[data-active-tab="ordering"] .order-table-wrap {
+  max-height: calc(100vh - 14rem) !important;
+  overflow: auto !important;
+  isolation: auto !important;
+  -webkit-overflow-scrolling: touch !important;
+}
+
+#inventory,
+.order-table {
+  min-width: 1180px !important;
+  table-layout: fixed !important;
+  border-collapse: separate !important;
+  border-spacing: 0 !important;
+}
+
+#inventory thead,
+.order-table thead {
+  display: table-header-group !important;
+  visibility: visible !important;
+}
+
+#inventory thead th,
+.order-table thead th,
+body[data-active-tab="inventory"] #inventory thead th,
+body[data-active-tab="ordering"] .order-table thead th {
+  display: table-cell !important;
+  position: sticky !important;
+  top: 0 !important;
+  z-index: 80 !important;
+  height: 1.65rem !important;
+  min-height: 1.65rem !important;
+  padding: 0.34rem 0.4rem !important;
+  background: #f4f8f5 !important;
+  color: #45534d !important;
+  opacity: 1 !important;
+  visibility: visible !important;
+  text-align: center !important;
+  white-space: nowrap !important;
+  border-bottom: 1px solid #cfd9d2 !important;
+  box-shadow: inset 0 -1px 0 #cfd9d2 !important;
+  pointer-events: auto !important;
+}
+
+#inventory th[data-col="code"],
+#inventoryBody td[data-col="code"] {
+  min-width: 8.5rem !important;
+  max-width: 8.5rem !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+#inventory th[data-col="product"],
+#inventoryBody td[data-col="product"] {
+  min-width: 21rem !important;
+  max-width: 21rem !important;
+  white-space: normal !important;
   line-height: 1.05 !important;
 }
 
-@media (max-width: 760px), (pointer: coarse) {
-  .command-bar {
-    top: 1.35rem !important;
-    grid-template-columns: 1fr !important;
-    gap: 0.35rem !important;
-    padding: 0.35rem 0.45rem !important;
-  }
-
-  .command-bar .brand {
-    display: none !important;
-  }
-
-  .tab-list {
-    width: 100% !important;
-    display: flex !important;
-    flex-wrap: nowrap !important;
-    gap: 0.35rem !important;
-    overflow-x: auto !important;
-    -webkit-overflow-scrolling: touch !important;
-    padding-bottom: 0.15rem !important;
-  }
-
-  .tab-button {
-    flex: 0 0 auto !important;
-    min-height: 2.1rem !important;
-    padding: 0.36rem 0.72rem !important;
-    font-size: 0.82rem !important;
-  }
-
-  .compact-uploader {
-    display: none !important;
-  }
-
-  body[data-active-tab="inventory"] .controls.sticky-filters,
-  body[data-active-tab="ordering"] .controls.sticky-filters {
-    top: calc(1.35rem + var(--command-bar-height, 3.1rem)) !important;
-  }
-
-  body[data-active-tab="inventory"] .app,
-  body[data-active-tab="ordering"] .app {
-    min-width: 0 !important;
-    overflow-x: auto !important;
-    -webkit-overflow-scrolling: touch !important;
-  }
-
-  body[data-active-tab="inventory"] .tab-view[data-tab-view="inventory"] .table-wrap,
-  body[data-active-tab="ordering"] .order-table-wrap {
-    overflow-x: auto !important;
-    -webkit-overflow-scrolling: touch !important;
-  }
-
-  body[data-active-tab="inventory"] #inventory,
-  body[data-active-tab="ordering"] .order-table {
-    font-size: 0.72rem !important;
-  }
-
-  body[data-active-tab="inventory"] #inventoryBody td,
-  body[data-active-tab="ordering"] .order-table td {
-    padding: 0.22rem 0.28rem !important;
-  }
+#inventory th[data-col="plu"],
+#inventoryBody td[data-col="plu"] {
+  min-width: 7rem !important;
+  max-width: 7rem !important;
 }
 
-/* Sync-test layout repairs: keep pills, drawers, and ordering headers usable. */
-body[data-active-tab="inventory"] .tab-view[data-tab-view="inventory"] .panel-heading h2 {
+#inventoryBody,
+#inventoryBody tr,
+#inventoryBody td {
+  pointer-events: auto !important;
+}
+
+/* Scan performance mode limits paint and hover work while the scanner is active. */
+body.scan-mode-active .metrics-hover-zone,
+body.scan-mode-active .row-hover-tooltip {
   display: none !important;
+  pointer-events: none !important;
 }
 
-body[data-active-tab="inventory"] #datePresets,
-body[data-active-tab="ordering"] #datePresets {
-  position: sticky !important;
-  top: calc(1.35rem + var(--command-bar-height, 4.5rem) + var(--filters-height, 5.2rem)) !important;
-  z-index: 83 !important;
-  background: rgba(246, 250, 247, 0.98) !important;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.22) !important;
+body.scan-mode-active .scan-mode-panel {
+  contain: layout paint style;
 }
 
-.detail-drawer {
-  z-index: 180 !important;
-  top: calc(1.35rem + var(--command-bar-height, 4.5rem) + 0.4rem) !important;
-  bottom: 0.75rem !important;
-  max-height: none !important;
+body.scan-mode-active .scan-mode-panel .muted {
+  display: none;
 }
 
-body[data-active-tab="inventory"] #inventory thead th,
-body[data-active-tab="ordering"] .order-table thead th {
-  position: sticky !important;
-  top: calc(1.35rem + var(--command-bar-height, 4.5rem) + var(--filters-height, 5.2rem) + var(--date-pills-height, 2.3rem)) !important;
-  z-index: 55 !important;
-  background: #f3f8f5 !important;
+body.scan-mode-active .scan-mode-actions {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
-body[data-active-tab="inventory"] #inventory th[data-col="state"],
-body[data-active-tab="inventory"] #inventoryBody td[data-col="state"] {
-  min-width: 8.2rem !important;
+body.scan-mode-active.scan-performance-low *,
+body.scan-mode-active.scan-performance-medium .scan-mode-panel * {
+  animation: none !important;
+  transition: none !important;
 }
 
-body[data-active-tab="inventory"] .inventory-edit-select--state {
-  min-width: 6.8rem !important;
-}
+@media (max-width: 640px) {
+  body.scan-mode-active .scan-mode-actions {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.45rem;
+  }
 
-body[data-active-tab="ordering"] .ordering-vendor-filter-bar {
-  position: sticky !important;
-  top: calc(1.35rem + var(--command-bar-height, 4.5rem) + var(--filters-height, 4.5rem) + var(--date-pills-height, 2.3rem)) !important;
-  z-index: 58 !important;
-  background: rgba(246, 250, 247, 0.98) !important;
+  body.scan-mode-active .scan-mode-actions button {
+    min-width: 0;
+    padding-inline: 0.5rem;
+  }
 }
