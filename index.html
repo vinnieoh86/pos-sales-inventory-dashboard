@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>POS Sales + Inventory Dashboard</title>
     <link rel="stylesheet" href="POS SALES + INVENTORY DASHBOARD.css" />
+    <link rel="stylesheet" href="rescue-usable.css?v=20260523-countsync1" />
   </head>
   <body>
     <div class="metrics-hover-zone" id="metricsHoverZone">
@@ -415,11 +416,12 @@
           <div class="panel-heading">
             <div><p class="eyebrow">Inventory control</p><h2>Physical count workspace</h2></div>
             <div class="table-tools">
-              <button id="zeroNegativeStockButton" type="button" class="secondary-button">Set Negatives → 0</button>
+              <button id="zeroNegativeStockButton" type="button" class="secondary-button" data-admin-only>Set Negatives → 0</button>
               <button id="countReviewButton" type="button" hidden>Print / Review report</button>
               <button id="closeCountSessionButton" type="button" class="secondary-button" hidden>Close active count</button>
             </div>
           </div>
+          <div id="countSyncStatus" class="count-sync-status" hidden>Loading latest count...</div>
           <div class="summary-strip" id="countSummaryStrip">
             <span><b>Phase 1</b> physical counts</span>
             <span><b>Launch</b> start a dated vendor/category count session first</span>
@@ -427,17 +429,17 @@
           </div>
           <div id="countWorkspaceEmpty" class="compare-card-grid">
             <button id="countLaunchCard" class="compare-card count-launch-card" type="button">
-              <strong>New physical count</strong>
-              <p class="muted">Choose date, vendor, and category. Then begin scanning items and entering the physical quantity on hand.</p>
-              <span class="count-launch-state">Open count setup</span>
+              <strong id="countLaunchTitle">Continue Count</strong>
+              <p id="countLaunchDescription" class="muted">Resume the latest active synced count.</p>
+              <span id="countLaunchState" class="count-launch-state">Continue Count</span>
             </button>
-            <div class="compare-card">
+            <div class="compare-card" data-admin-only>
               <strong>Employee view</strong>
               <p class="muted">The count screen hides current system stock so staff only records what is physically on hand.</p>
             </div>
             <button id="openSessionHistoryButton" class="compare-card count-launch-card" type="button">
-              <strong>Saved for reports</strong>
-              <p class="muted">Every count entry is stored with its session info so managers can review later.</p>
+              <strong>View Report History</strong>
+              <p class="muted">Review submitted physical count summaries and open details only when needed.</p>
               <span class="count-launch-state">View report history</span>
             </button>
           </div>
@@ -745,8 +747,9 @@
             <div class="panel-heading">
               <div><p class="eyebrow">Session entries</p><h3>Scanned items</h3></div>
             </div>
-            <div class="table-wrap">
-              <table class="count-report-table">
+            <div class="table-wrap count-stable-scroll">
+              <table id="countEntryTable" class="count-report-table count-stable-table">
+                <colgroup><col class="count-col-code" /><col class="count-col-item" /><col class="count-col-vendor" /><col class="count-col-category" /><col class="count-col-entry" /><col class="count-col-physical" /><col class="count-col-mode" /><col class="count-col-variance" /></colgroup>
                 <thead>
                   <tr>
                     <th>Code</th><th>Item</th><th>Vendor</th><th>Category</th><th>Entry</th><th>Physical count</th><th>Mode</th><th>Variance</th>
@@ -792,8 +795,9 @@
           </div>
         </div>
         <div id="countReportMeta" class="summary-strip"></div>
-        <div class="table-wrap">
-          <table class="count-report-table count-report-table--variance">
+        <div class="table-wrap count-stable-scroll">
+          <table id="countReportTable" class="count-report-table count-report-table--variance count-stable-table">
+            <colgroup><col class="count-col-code" /><col class="count-col-item" /><col class="count-col-vendor" /><col class="count-col-category" /><col class="count-col-entry" /><col class="count-col-physical" /><col class="count-col-variance" /><col class="count-col-mode" /><col class="count-col-time" /></colgroup>
             <thead id="countReportHead">
               <tr>
                 <th>Code</th><th>Item</th><th>Vendor</th><th>Category</th><th>Qty before</th><th>Qty after</th><th>Variance</th><th>Mode</th><th>Date/Time</th>
@@ -928,8 +932,9 @@
             <button type="button" id="sessionHistoryCloseButton" class="secondary-button">Close</button>
           </div>
         </div>
-        <div class="table-wrap">
-          <table class="count-report-table">
+        <div class="table-wrap count-stable-scroll">
+          <table id="countSessionTable" class="count-report-table count-stable-table count-session-summary-table">
+            <colgroup><col class="history-col-date" /><col class="history-col-vendor" /><col class="history-col-category" /><col class="history-col-status" /><col class="history-col-started" /><col class="history-col-entries" /><col class="history-col-update" /><col class="history-col-action" /><col class="history-col-action" /><col class="history-col-action" /><col class="history-col-action" /></colgroup>
             <thead>
               <tr><th>Date</th><th>Vendor</th><th>Category</th><th>Status filter</th><th>Started</th><th>Entries</th><th>Last update</th><th>Report</th><th>Final Report</th><th>Restore</th><th>Delete</th></tr>
             </thead>
@@ -953,8 +958,9 @@
           </div>
         </div>
         <div id="finalReportMeta" class="summary-strip"></div>
-        <div class="table-wrap">
-          <table class="count-report-table count-report-table--variance">
+        <div class="table-wrap count-stable-scroll">
+          <table id="finalCountReportTable" class="count-report-table count-report-table--variance count-stable-table">
+            <colgroup><col class="count-col-code" /><col class="count-col-item" /><col class="count-col-vendor" /><col class="count-col-category" /><col class="count-col-entry" /><col class="count-col-physical" /><col class="count-col-variance" /><col class="count-col-variance" /><col class="count-col-mode" /></colgroup>
             <thead>
               <tr><th>Code</th><th>Item</th><th>Vendor</th><th>Category</th><th>Qty Start</th><th>Qty End</th><th>Variance</th><th>Cost Variance</th><th>Status</th></tr>
             </thead>
@@ -1178,6 +1184,6 @@
       </div>
 
         <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-    <script src="POS SALES + INVENTORY DASHBOARD.js"></script>
+    <script src="POS SALES + INVENTORY DASHBOARD.js?v=20260523-countsync1"></script>
   </body>
 </html>

@@ -33,7 +33,9 @@
   _inventoryRowIndex: new Map(),
   _localProductMetaEdits: new Map(),
   _localImportHoldUntil: 0,
-  _localCountHoldUntil: 0,
+  _countSyncLoading: false,
+  _countRemoteLoaded: false,
+  _countSessionOpen: false,
   _deletedCountSessionIds: new Set(JSON.parse(localStorage.getItem("posDashboardDeletedCountSessionIds:v1") || "[]")),
   _priceCheckExactIndex: null,
   _priceCheckExactIndexStamp: 0,
@@ -403,6 +405,10 @@ const els = {
   countWorkspace: document.querySelector("#countWorkspace"),
   countWorkspaceEmpty: document.querySelector("#countWorkspaceEmpty"),
   countLaunchCard: document.querySelector("#countLaunchCard"),
+  countLaunchTitle: document.querySelector("#countLaunchTitle"),
+  countLaunchDescription: document.querySelector("#countLaunchDescription"),
+  countLaunchState: document.querySelector("#countLaunchState"),
+  countSyncStatus: document.querySelector("#countSyncStatus"),
   countSummaryStrip: document.querySelector("#countSummaryStrip"),
   activeCountTitle: document.querySelector("#activeCountTitle"),
   activeCountMeta: document.querySelector("#activeCountMeta"),
@@ -750,7 +756,7 @@ document.querySelector("#orderArrangeColumnsButton")?.addEventListener("click", 
   renderOrders();
 });
 els.createPoShortcut?.addEventListener("click", openProductPoReviewModal);
-els.countLaunchCard?.addEventListener("click", openCountSetupModal);
+els.countLaunchCard?.addEventListener("click", () => openLatestCountOrSetup());
 els.closeCountSessionButton?.addEventListener("click", closeActiveCountSession);
 els.countReviewButton?.addEventListener("click", () => openCountReport(state.activeCountSession?.id, "input"));
 els.countSaveSessionButton?.addEventListener("click", saveCountSession);
@@ -912,6 +918,7 @@ els.countSessionModal?.addEventListener("click", (event) => {
   if (els.countDuplicateModal && !els.countDuplicateModal.hidden) return;
   if (els.countReportModal && !els.countReportModal.hidden) return;
   if (event.target === els.countSessionModal) {
+    state._countSessionOpen = false;
     els.countSessionModal.hidden = true;
     return;
   }
@@ -3622,11 +3629,32 @@ function exportProductReviewPdf() {
   setTimeout(() => win.print(), 350);
 }
 
-function persistCountSessions() {
-  state._localCountHoldUntil = Date.now() + 90000;
+function countSessionUpdatedMs(session = {}) {
+  return Date.parse(session.updatedAt || session.submittedAt || session.savedAt || session.startedAt || "") || 0;
+}
+
+function markCountSessionDirty(session) {
+  if (!session) return null;
+  const stamp = new Date().toISOString();
+  session.updatedAt = stamp;
+  session.syncVersion = Math.max(0, Number(session.syncVersion || 0)) + 1;
+  session.localSyncPending = true;
+  return session;
+}
+
+function countSessionHasUnsyncedEdits(session) {
+  return session?.localSyncPending === true;
+}
+
+function countSessionForRemote(session = {}) {
+  const { localSyncPending, ...payload } = session;
+  return payload;
+}
+
+function persistCountSessions(options = {}) {
   localStorage.setItem("posDashboardCountSessions:v1", JSON.stringify(state.countSessions));
   localStorage.setItem("posDashboardActiveCountSession:v1", JSON.stringify(state.activeCountSession));
-  scheduleSharedCountSessionsSync();
+  if (options.scheduleSync !== false) scheduleSharedCountSessionsSync();
 }
 
 function handleScanModeLookup(value, options = {}) {
@@ -3730,8 +3758,8 @@ function archiveCountSessionEntriesToAdjustmentLog(session) {
 
 let _persistCountTimer = null;
 function persistActiveCountSession() {
-  // Defer localStorage write off the critical path â€” batches rapid scans
-  state._localCountHoldUntil = Date.now() + 90000;
+  // Defer the local write and remote push off the scan critical path.
+  markCountSessionDirty(state.activeCountSession);
   clearTimeout(_persistCountTimer);
   _persistCountTimer = setTimeout(() => {
     localStorage.setItem("posDashboardActiveCountSession:v1", JSON.stringify(state.activeCountSession));
@@ -3821,6 +3849,7 @@ function startCountSessionFromModal() {
     entries: [],
   };
   state.activeCountSession = session;
+  state._countSessionOpen = true;
   state.countQtyBuffer = "0";
   state.selectedCountItemCode = "";
   state.countStage = "search";
@@ -3835,6 +3864,7 @@ function startCountSessionFromModal() {
 
 function closeActiveCountSession() {
   if (!state.activeCountSession) return;
+  state._countSessionOpen = false;
   state.activeCountSession = null;
   state.selectedCountItemCode = "";
   state.countQtyBuffer = "0";
@@ -3847,11 +3877,12 @@ function closeActiveCountSession() {
 
 function saveCountSession() {
   if (!state.activeCountSession) return;
-  const session = {
+  state._countSessionOpen = false;
+  const session = markCountSessionDirty({
     ...state.activeCountSession,
     savedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
-  };
+  });
   state.countSessions = [session, ...state.countSessions.filter((item) => item.id !== session.id)];
 
   // Apply physical counts: update stock values in latestInventory to reflect counted quantities
@@ -3915,6 +3946,7 @@ function saveCountSession() {
 
 function deleteCountSession() {
   if (!state.activeCountSession) return;
+  state._countSessionOpen = false;
   const label = countSessionLabel(state.activeCountSession);
   const deletedId = markCountSessionDeleted(state.activeCountSession.id);
   state.activeCountSession = null;
@@ -3923,12 +3955,11 @@ function deleteCountSession() {
   state.countStage = "search";
   state.pendingDuplicateCount = null;
   state.pendingDuplicateMode = null;
-  state._localCountHoldUntil = Date.now() + 90000;
   persistCountSessions();
   renderCountsWorkspace();
   void (async () => {
     if (deletedId && ENABLE_SHARED_SYNC && sharedCountSessionsAvailable) {
-      await supabaseDeleteRowsByValues("count_sessions", "id", [deletedId]);
+      await supabaseDeleteRowsByValues("count_sessions", "id", [deletedId, `active:${deletedId}`]);
       await updateSharedSyncState("counts");
     }
     await syncSharedCountSessionsToSupabase(true);
@@ -3962,17 +3993,11 @@ function findCountMatch(query) {
   const needle = raw.toLowerCase();
   const normalizedNeedle = codeKey(raw); // strips leading zeros for numeric matching
 
-  // First: try exact code match (barcode scan) â€” check across ALL inventory rows, not just filtered
-  // This ensures scans work even with strict vendor/category/status filters
-  const allRows = allCountCandidateRows();
-  const exactMatch = allRows.find((item) =>
-    codeKey(item.code) === normalizedNeedle ||
-    codeKey(item.plu) === normalizedNeedle ||
-    codeKey(item.itemNumber) === normalizedNeedle ||
-    item.code.toLowerCase() === needle ||
-    (item.plu && item.plu.toLowerCase() === needle) ||
-    (item.itemNumber && item.itemNumber.toLowerCase() === needle)
-  );
+  if (!state._countSearchIndex || state._countIndexStamp !== state._dataCacheStamp) buildCountSearchIndex();
+  // Scanner submissions use the exact map before any text search.
+  const exactMatch = state._countExactIndex?.get(normalizedNeedle)
+    || state._countExactIndex?.get(needle)
+    || null;
   if (exactMatch) return exactMatch;
 
   // Second: try filtered pool with partial text match
@@ -4104,6 +4129,7 @@ function commitCountEntry(item, qty, mode) {
     recordedAt: new Date().toISOString(),
   });
   state.activeCountSession = session;
+  state._countSessionOpen = true;
   state.countQtyBuffer = "0";
   state.countStage = "search";
   state.selectedCountItemCode = "";
@@ -4188,6 +4214,15 @@ function buildCountSearchIndex() {
       .map((v) => String(v || "").toLowerCase()).join("|"),
     codeKey: codeKey(item.code),
   }));
+  state._countExactIndex = new Map();
+  allRows.forEach((item) => {
+    [item.code, item.plu, item.itemNumber].forEach((value) => {
+      const rawKey = cleanCell(value).toLowerCase();
+      const normalizedKey = codeKey(value);
+      if (rawKey && !state._countExactIndex.has(rawKey)) state._countExactIndex.set(rawKey, item);
+      if (normalizedKey && !state._countExactIndex.has(normalizedKey)) state._countExactIndex.set(normalizedKey, item);
+    });
+  });
   // Pre-compute filtered scope codes
   state._countFilteredCodes = new Set(
     filteredCountCandidateRows().map((r) => codeKey(r.code))
@@ -4512,7 +4547,12 @@ function renderCountReportRows(session, mode = state.countReportMode || "input")
     .join("");
 }
 
-function openSessionHistoryModal() {
+async function openSessionHistoryModal() {
+  if (els.sessionHistoryModal) els.sessionHistoryModal.hidden = false;
+  if (els.countSessionBody) els.countSessionBody.innerHTML = `<tr><td colspan="11" class="empty-cell">Loading report history...</td></tr>`;
+  if (ENABLE_SHARED_SYNC && sharedCountSessionsAvailable) {
+    await restoreSharedCountSessionsOnlyFromSupabase({ silent: true, history: true });
+  }
   // Populate vendor filter
   const vendors = [...new Set(state.countSessions.map((s) => s.vendor || s.department || "").filter(Boolean))];
   if (els.sessionHistoryVendorFilter) {
@@ -4520,7 +4560,6 @@ function openSessionHistoryModal() {
     els.sessionHistoryVendorFilter.innerHTML = `<option value="">All vendors</option>` +
       vendors.map((v) => `<option value="${escapeHtml(v)}" ${v === cur ? "selected" : ""}>${escapeHtml(v)}</option>`).join("");
   }
-  document.querySelector("#sessionHistoryModal").hidden = false;
   renderCountSessionRows();
 }
 
@@ -4578,6 +4617,7 @@ function dedupeCountSessionsForDisplay(sessions = []) {
 
 function renderCountSessionRows() {
   if (!els.countSessionBody) return;
+  const employeeMode = isUserRole();
   const vendorFilter = els.sessionHistoryVendorFilter?.value || "";
   const periodFilter = els.sessionHistoryPeriodFilter?.value || "";
 
@@ -4588,6 +4628,7 @@ function renderCountSessionRows() {
       if (countSessionIsDeleted(s.id)) return false;
       if (!remoteActiveCountSessionIsFresh(s)) return false;
       if (!(s.entries || []).length && !s.savedAt && !s.submittedAt) return false;
+      if (employeeMode && !s.submittedAt) return false;
       if (vendorFilter && (s.vendor || s.department || "") !== vendorFilter) return false;
       if (!sessionMatchesPeriodFilter(s, periodFilter)) return false;
       return true;
@@ -4607,10 +4648,10 @@ function renderCountSessionRows() {
         <td>${escapeHtml(new Date(session.startedAt).toLocaleString())}</td>
         <td class="num">${number.format((session.entries || []).length)}</td>
         <td>${escapeHtml(new Date(session.updatedAt || session.startedAt).toLocaleString())}${session.remoteActive ? ` <span class="muted">(Live)</span>` : ""}</td>
-        <td><button type="button" class="secondary-button count-inline-report-button" data-count-report="${escapeHtml(session.id)}">${session.remoteActive ? "Open" : "Continue"}</button></td>
+        <td><button type="button" class="secondary-button count-inline-report-button" data-count-report="${escapeHtml(session.id)}">View</button></td>
         <td>${session.submittedAt ? `<button type="button" class="secondary-button final-report-btn" data-final-report="${escapeHtml(session.id)}">Final Report</button>` : `<span class="muted">Not submitted</span>`}</td>
-        <td>${session.preCountSnapshot ? (session.restoredAt ? `<span class="muted">Restored</span>` : `<button type="button" class="restore-count-btn" data-restore-session="${escapeHtml(session.id)}">Restore</button>`) : ""}</td>
-        <td><button type="button" class="delete-session-btn" data-delete-session="${escapeHtml(session.id)}">Delete</button></td>
+        <td>${!employeeMode && session.preCountSnapshot ? (session.restoredAt ? `<span class="muted">Restored</span>` : `<button type="button" class="restore-count-btn" data-restore-session="${escapeHtml(session.id)}">Restore</button>`) : ""}</td>
+        <td>${!employeeMode ? `<button type="button" class="delete-session-btn" data-delete-session="${escapeHtml(session.id)}">Delete</button>` : ""}</td>
       </tr>`)
     .join("");
 
@@ -4697,11 +4738,67 @@ function updateCountSummaryStrip() {
     <span><b>${number.format(entries.length)}</b> items counted</span>`;
 }
 
-function renderCountsWorkspace() {
+function setCountSyncLoading(loading, text = "Loading latest count...") {
+  state._countSyncLoading = !!loading;
+  if (!els.countSyncStatus) return;
+  els.countSyncStatus.hidden = !loading;
+  els.countSyncStatus.textContent = text;
+}
+
+async function refreshLatestCountSessions(options = {}) {
+  setCountSyncLoading(true);
+  renderCountsWorkspace({ loading: true });
+  try {
+    if (ENABLE_SHARED_SYNC && sharedCountSessionsAvailable) {
+      const pulled = await restoreSharedCountSessionsOnlyFromSupabase({ silent: true, history: options.history === true });
+      if (!pulled && !state._countRemoteLoaded) {
+        state.countSessions = (state.countSessions || []).filter(countSessionHasUnsyncedEdits);
+        state.activeCountSession = countSessionHasUnsyncedEdits(state.activeCountSession) ? state.activeCountSession : null;
+        persistCountSessions({ scheduleSync: false });
+        showToast("Could not load the latest count. Unsynced local edits were preserved.", 3200, "warning");
+      }
+    }
+  } finally {
+    setCountSyncLoading(false);
+    renderCountsWorkspace();
+  }
+}
+
+async function openLatestCountOrSetup() {
+  await refreshLatestCountSessions();
+  if (state.activeCountSession) {
+    state._countSessionOpen = true;
+    renderCountsWorkspace();
+    return;
+  }
+  if (isUserRole()) {
+    showToast("No active physical count is ready to continue.", 2800, "warning");
+    return;
+  }
+  openCountSetupModal();
+}
+
+function renderCountsWorkspace(options = {}) {
+  if (options.loading || state._countSyncLoading) {
+    if (els.countSessionModal) els.countSessionModal.hidden = true;
+    if (els.countWorkspaceEmpty) els.countWorkspaceEmpty.hidden = true;
+    if (els.countSummaryStrip) els.countSummaryStrip.hidden = true;
+    return;
+  }
   populateCountSetupOptions();
   const active = state.activeCountSession;
-  if (els.countSessionModal) els.countSessionModal.hidden = !active;
+  const employeeMode = isUserRole();
+  if (els.countSummaryStrip) els.countSummaryStrip.hidden = false;
+  if (els.countSessionModal) els.countSessionModal.hidden = !active || !state._countSessionOpen;
   els.countWorkspaceEmpty.hidden = false;
+  if (els.countLaunchCard) els.countLaunchCard.hidden = employeeMode && !active;
+  if (els.countLaunchTitle) els.countLaunchTitle.textContent = active ? "Continue Count" : "New physical count";
+  if (els.countLaunchDescription) {
+    els.countLaunchDescription.textContent = active
+      ? "Resume the latest active synced count."
+      : "Choose the scope and begin a new physical count.";
+  }
+  if (els.countLaunchState) els.countLaunchState.textContent = active ? "Continue Count" : "Open count setup";
   if (els.closeCountSessionButton) els.closeCountSessionButton.hidden = true;
   if (els.countReviewButton) els.countReviewButton.hidden = true;
   if (active) {
@@ -4768,7 +4865,8 @@ function applyRoleRestrictions(force = false) {
     "#exportPoExcel", "#exportPoPdf", "#downloadOrder",
     "#exportAdjustPdfButton", "#exportAdjustExcelButton",
     "#clearAdjustLogButton", ".arrange-columns-btn", "#arrangeColumnsButton",
-    ".column-picker", "#downloadInventory", "#createPoShortcut", "#openSessionHistoryButton"
+    ".column-picker", "#downloadInventory", "#createPoShortcut",
+    "#countContinueButton", "#countSubmitButton", "#countPdfReportButton", "#countExcelReportButton", "#countComparisonViewButton"
   ];
   adminOnly.forEach((sel) => {
     document.querySelectorAll(sel).forEach((el) => { el.style.display = userMode ? "none" : ""; });
@@ -7003,6 +7101,11 @@ function switchTab(tab) {
   }
   applyRoleRestrictions(true);
   if (tab === "scanmode") return;
+  if (tab === "counts") {
+    state._countSessionOpen = false;
+    void refreshLatestCountSessions();
+    return;
+  }
   renderSharedQuickTools(tab);
   queueActiveTabRender();
 }
@@ -9229,13 +9332,18 @@ function countSessionRowForSupabase(session = {}, active = false) {
   return {
     id: active ? `active:${cleanCell(session.id) || "session"}` : cleanCell(session.id),
     session_kind: active ? "active" : "saved",
-    session_payload: session,
+    session_payload: countSessionForRemote(session),
     updated_at: session.updatedAt || session.submittedAt || new Date().toISOString(),
   };
 }
 
 function hydrateCountSessionFromSupabase(row = {}) {
-  return row.session_payload && typeof row.session_payload === "object" ? row.session_payload : null;
+  if (!row.session_payload || typeof row.session_payload !== "object") return null;
+  return {
+    ...row.session_payload,
+    updatedAt: row.session_payload.updatedAt || row.updated_at || new Date().toISOString(),
+    localSyncPending: false,
+  };
 }
 
 function hydrateVendorRuleFromSupabase(row = {}) {
@@ -9598,52 +9706,96 @@ function applySharedImportLogRows(rows = []) {
 
 function applySharedCountSessionRows(rows = []) {
   pruneDeletedCountSessions();
-  const localHoldActive = Date.now() < (state._localCountHoldUntil || 0);
-  if (!rows?.length) {
-    if (localHoldActive) return (state.countSessions || []).length + (state.activeCountSession ? 1 : 0);
-    state.countSessions = [];
-    state.activeCountSession = null;
-    localStorage.setItem("posDashboardCountSessions:v1", JSON.stringify(state.countSessions));
-    localStorage.setItem("posDashboardActiveCountSession:v1", JSON.stringify(state.activeCountSession));
-    if (activeTabName() === "inventory") renderCountsWorkspace();
-    return 0;
-  }
-  const savedSessions = [];
-  let activeSession = null;
-  const savedById = new Map((localHoldActive ? (state.countSessions || []) : [])
+  const localSavedById = new Map((state.countSessions || [])
     .filter((session) => cleanCell(session?.id) && !countSessionIsDeleted(session.id))
     .map((session) => [cleanCell(session.id), session]));
-  const localActiveId = cleanCell(state.activeCountSession?.id);
+  const localActive = state.activeCountSession;
+  let mergedPendingEntries = false;
+  const chooseRemoteOrDirtyLocal = (remoteSession, localSession) => {
+    if (!localSession || !countSessionHasUnsyncedEdits(localSession)) return remoteSession;
+    if (!remoteSession || countSessionUpdatedMs(localSession) >= countSessionUpdatedMs(remoteSession)) return localSession;
+    if (cleanCell(remoteSession.id) === cleanCell(localSession.id)) {
+      const remoteEntryKeys = new Set((remoteSession.entries || []).map((entry) => [
+        cleanCell(entry.recordedAt),
+        codeKey(entry.code),
+        cleanCell(entry.mode),
+        Number(entry.inputQty || 0),
+      ].join("|")));
+      const localOnlyEntries = (localSession.entries || []).filter((entry) => !remoteEntryKeys.has([
+        cleanCell(entry.recordedAt),
+        codeKey(entry.code),
+        cleanCell(entry.mode),
+        Number(entry.inputQty || 0),
+      ].join("|")));
+      if (localOnlyEntries.length) {
+        mergedPendingEntries = true;
+        return {
+          ...remoteSession,
+          entries: [...(remoteSession.entries || []), ...localOnlyEntries]
+            .sort((a, b) => String(a.recordedAt || "").localeCompare(String(b.recordedAt || ""))),
+          updatedAt: new Date().toISOString(),
+          syncVersion: Math.max(Number(remoteSession.syncVersion || 0), Number(localSession.syncVersion || 0)) + 1,
+          localSyncPending: true,
+        };
+      }
+    }
+    return remoteSession;
+  };
+  if (!rows?.length) {
+    state.countSessions = [...localSavedById.values()].filter(countSessionHasUnsyncedEdits);
+    state.activeCountSession = countSessionHasUnsyncedEdits(localActive) ? localActive : null;
+    persistCountSessions({ scheduleSync: false });
+    if (activeTabName() === "counts") renderCountsWorkspace();
+    return state.countSessions.length + (state.activeCountSession ? 1 : 0);
+  }
+  const remoteSavedById = new Map();
+  let remoteActive = null;
   rows.forEach((row) => {
     const session = hydrateCountSessionFromSupabase(row);
     if (!session) return;
     const sessionId = cleanCell(session.id);
-    if (countSessionIsDeleted(sessionId)) return;
-    if (cleanCell(row.session_kind).toLowerCase() === "active") activeSession = session;
-    else savedById.set(sessionId, session);
+    if (!sessionId || countSessionIsDeleted(sessionId)) return;
+    if (cleanCell(row.session_kind).toLowerCase() === "active") {
+      if (!remoteActive || countSessionUpdatedMs(session) >= countSessionUpdatedMs(remoteActive)) remoteActive = session;
+    } else {
+      const previous = remoteSavedById.get(sessionId);
+      if (!previous || countSessionUpdatedMs(session) >= countSessionUpdatedMs(previous)) remoteSavedById.set(sessionId, session);
+    }
   });
-  savedSessions.push(...savedById.values());
-  const remoteActiveId = cleanCell(activeSession?.id);
-  if (activeSession && remoteActiveId && remoteActiveId !== localActiveId && remoteActiveCountSessionIsFresh({ ...activeSession, remoteActive: true })) {
-    savedById.delete(remoteActiveId);
-    savedSessions.unshift({ ...activeSession, remoteActive: true });
+  if (remoteActive?.id) {
+    const submittedCopy = remoteSavedById.get(cleanCell(remoteActive.id));
+    if (submittedCopy && countSessionUpdatedMs(submittedCopy) >= countSessionUpdatedMs(remoteActive)) {
+      const staleActiveId = `active:${cleanCell(remoteActive.id)}`;
+      remoteActive = null;
+      if (ENABLE_SHARED_SYNC && sharedCountSessionsAvailable) {
+        supabaseDeleteRowsByValues("count_sessions", "id", [staleActiveId]).catch(() => {});
+      }
+    }
   }
-  state.countSessions = dedupeCountSessionsForDisplay(savedSessions)
+  const mergedSavedById = new Map();
+  remoteSavedById.forEach((remoteSession, id) => {
+    mergedSavedById.set(id, chooseRemoteOrDirtyLocal(remoteSession, localSavedById.get(id)));
+  });
+  localSavedById.forEach((localSession, id) => {
+    if (!mergedSavedById.has(id) && countSessionHasUnsyncedEdits(localSession)) mergedSavedById.set(id, localSession);
+  });
+  const remoteActiveId = cleanCell(remoteActive?.id);
+  const localActiveId = cleanCell(localActive?.id);
+  let nextActive = remoteActive && remoteActiveCountSessionIsFresh({ ...remoteActive, remoteActive: true })
+    ? chooseRemoteOrDirtyLocal(remoteActive, remoteActiveId === localActiveId ? localActive : null)
+    : null;
+  if (countSessionHasUnsyncedEdits(localActive) && (!nextActive || localActiveId !== remoteActiveId)) {
+    nextActive = localActive;
+  }
+  if (nextActive?.id) mergedSavedById.delete(cleanCell(nextActive.id));
+  state.countSessions = dedupeCountSessionsForDisplay([...mergedSavedById.values()])
     .filter((session) => !countSessionIsDeleted(session.id))
     .sort((a, b) => String(b.updatedAt || b.submittedAt || "").localeCompare(String(a.updatedAt || a.submittedAt || "")));
-  if (localActiveId) {
-    state.activeCountSession = localHoldActive
-      ? state.activeCountSession
-      : (remoteActiveId === localActiveId ? activeSession : null);
-  } else {
-    state.activeCountSession = null;
-  }
-  localStorage.setItem("posDashboardCountSessions:v1", JSON.stringify(state.countSessions));
-  localStorage.setItem("posDashboardActiveCountSession:v1", JSON.stringify(state.activeCountSession));
-  if (activeTabName() === "inventory") {
-    if (state.activeCountSession && Date.now() < (state._localCountHoldUntil || 0)) renderCountSessionRows();
-    else renderCountsWorkspace();
-  }
+  state.activeCountSession = nextActive;
+  state._countRemoteLoaded = true;
+  persistCountSessions({ scheduleSync: false });
+  if (mergedPendingEntries) scheduleSharedCountSessionsSync();
+  if (activeTabName() === "counts" && !state._countSyncLoading) renderCountsWorkspace();
   return state.countSessions.length + (state.activeCountSession ? 1 : 0);
 }
 
@@ -9710,9 +9862,13 @@ async function restoreSharedImportLogsOnlyFromSupabase(options = {}) {
 
 async function restoreSharedCountSessionsOnlyFromSupabase(options = {}) {
   if (!ENABLE_SHARED_SYNC || !sharedCountSessionsAvailable) return false;
-  const { silent = false } = options;
+  const { silent = false, history = false } = options;
   try {
-    const rows = await supabaseSelectRowsSafe("count_sessions", { select: "*" });
+    const rows = await supabaseSelectRowsSafe("count_sessions", {
+      select: "*",
+      order: "updated_at.desc",
+      limit: history ? "60" : "25",
+    });
     applySharedCountSessionRows(rows);
     if (!silent) showToast("Shared count sessions loaded.", 2400, "success");
     return true;
@@ -9808,23 +9964,40 @@ async function syncSharedImportLogsToSupabase(silent = false) {
 
 async function syncSharedCountSessionsToSupabase(silent = false) {
   if (!ENABLE_SHARED_SYNC || !sharedCountSessionsAvailable) return false;
+  clearTimeout(sharedCountSessionsTimer);
+  sharedCountSessionsTimer = 0;
   try {
     const deletedIds = [...(state._deletedCountSessionIds || [])].filter(Boolean).slice(-500);
     if (deletedIds.length) {
-      await supabaseDeleteRowsByValues("count_sessions", "id", deletedIds);
+      await supabaseDeleteRowsByValues("count_sessions", "id", deletedIds.flatMap((id) => [id, `active:${id}`]));
+    }
+    const dirtySaved = (state.countSessions || [])
+      .filter((session) => cleanCell(session?.id) && !countSessionIsDeleted(session.id) && countSessionHasUnsyncedEdits(session));
+    const dirtyActive = state.activeCountSession?.id
+      && !countSessionIsDeleted(state.activeCountSession.id)
+      && countSessionHasUnsyncedEdits(state.activeCountSession)
+      ? state.activeCountSession
+      : null;
+    if (dirtySaved.length) {
+      await supabaseDeleteRowsByValues("count_sessions", "id", dirtySaved.map((session) => `active:${session.id}`));
+    }
+    if (dirtyActive) {
+      await supabaseDeleteRowsByValues("count_sessions", "id", [dirtyActive.id]);
     }
     const rows = [
-      ...(state.countSessions || [])
-        .filter((session) => cleanCell(session?.id) && !countSessionIsDeleted(session.id))
+      ...dirtySaved
         .map((session) => countSessionRowForSupabase(session, false)),
-      ...(state.activeCountSession?.id && !countSessionIsDeleted(state.activeCountSession.id)
-        ? [countSessionRowForSupabase(state.activeCountSession, true)]
+      ...(dirtyActive
+        ? [countSessionRowForSupabase(dirtyActive, true)]
         : []),
     ];
     if (rows.length) {
       await supabaseUpsertRows("count_sessions", rows, "id");
+      dirtySaved.forEach((session) => { session.localSyncPending = false; });
+      if (dirtyActive) dirtyActive.localSyncPending = false;
+      persistCountSessions({ scheduleSync: false });
     }
-    await updateSharedSyncState("counts");
+    if (rows.length || deletedIds.length) await updateSharedSyncState("counts");
     return true;
   } catch (error) {
     if (String(error?.message || "").includes("(401)") || String(error?.message || "").includes("(403)")) {
@@ -10159,12 +10332,11 @@ function confirmDeleteSavedSession() {
   archiveCountSessionEntriesToAdjustmentLog(session);
   markCountSessionDeleted(id);
   state.countSessions = state.countSessions.filter((s) => s.id !== id);
-  state._localCountHoldUntil = Date.now() + 90000;
   persistCountSessions();
   renderCountSessionRows();
   void (async () => {
     if (ENABLE_SHARED_SYNC && sharedCountSessionsAvailable) {
-      await supabaseDeleteRowsByValues("count_sessions", "id", [id]);
+      await supabaseDeleteRowsByValues("count_sessions", "id", [id, `active:${id}`]);
       await updateSharedSyncState("counts");
     }
     await syncSharedCountSessionsToSupabase(true);
@@ -10173,13 +10345,15 @@ function confirmDeleteSavedSession() {
 }
 
 // â”€â”€ Continue count from report (re-open the session as active) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-function continueCountFromReport() {
+async function continueCountFromReport() {
+  await refreshLatestCountSessions({ history: true });
   const sessionId = state.countReportOpenId;
   const session = findCountSessionById(sessionId);
   if (!session) { showToast("Session not found.", 3000, "warning"); return; }
   // Remove from saved, set as active
   state.countSessions = state.countSessions.filter((s) => s.id !== sessionId);
-  state.activeCountSession = { ...session };
+  state.activeCountSession = markCountSessionDirty({ ...session });
+  state._countSessionOpen = true;
   state.countQtyBuffer = "0";
   state.selectedCountItemCode = "";
   state.countStage = "search";
@@ -10239,6 +10413,7 @@ function restorePreviousCount(sessionId) {
     });
   });
   session.restoredAt = new Date().toISOString();
+  markCountSessionDirty(session);
   Object.keys(session.preCountSnapshot || {}).forEach((code) => state._localProductMetaEdits.set(codeKey(code), Date.now()));
   persistCountSessions();
   localStorage.setItem("posDashboardAdjustLog:v1", JSON.stringify(state.adjustmentLog));
@@ -10266,7 +10441,7 @@ function submitAndApplyCount() {
   // Save pre-count snapshot for restore
   const snapshot = {};
   state.latestInventory.forEach((item, key) => { snapshot[key] = item.stock; });
-  const savedSession = { ...session, preCountSnapshot: snapshot, submittedAt: new Date().toISOString() };
+  const savedSession = markCountSessionDirty({ ...session, preCountSnapshot: snapshot, submittedAt: new Date().toISOString() });
   state.countSessions = state.countSessions.map((s) => s.id === sessionId ? savedSession : s);
 
   // All items in scope â€” scanned items get their count, null/unscanned items get 0

@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "20260523-scanperf1";
+  const VERSION = "20260523-countsync1";
 
   function makeSearchEditable() {
     const search = document.querySelector("#searchInput");
