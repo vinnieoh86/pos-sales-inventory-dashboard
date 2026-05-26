@@ -710,7 +710,10 @@
             <div class="count-panel">
               <label class="count-search-label">Scan / search
                 <div class="count-search-wrapper">
-                  <input id="countSearchInput" type="search" placeholder="Scan barcode or type name, code, PLU..." autocomplete="off" />
+                  <input id="countSearchInput" type="search" placeholder="Scan barcode or type name, code, PLU..."
+                    autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false"
+                    inputmode="search" enterkeyhint="search"
+                    data-lpignore="true" data-1p-ignore="true" data-form-type="other" />
                   <div id="countSearchDropdown" class="count-search-dropdown" hidden></div>
                 </div>
               </label>
@@ -728,21 +731,19 @@
                 <strong id="countQuantityDisplay">0</strong>
               </div>
               <div class="count-keypad">
-                <button type="button" data-count-key="1">1</button>
-                <button type="button" data-count-key="2">2</button>
-                <button type="button" data-count-key="3">3</button>
-                <button type="button" data-count-key="back">Back</button>
-                <button type="button" data-count-key="4">4</button>
-                <button type="button" data-count-key="5">5</button>
-                <button type="button" data-count-key="6">6</button>
-                <button type="button" data-count-key="clear">Clear</button>
-                <button type="button" data-count-key="7">7</button>
-                <button type="button" data-count-key="8">8</button>
-                <button type="button" data-count-key="9">9</button>
-                <button type="button" data-count-key="done" class="count-keypad__done">Done</button>
-                <button type="button" data-count-key="0">0</button>
-                <button type="button" data-count-key="00">00</button>
-                <button type="button" data-count-key=".">.</button>
+                <button type="button" data-count-key="1" class="count-key--1">1</button>
+                <button type="button" data-count-key="2" class="count-key--2">2</button>
+                <button type="button" data-count-key="3" class="count-key--3">3</button>
+                <button type="button" data-count-key="4" class="count-key--4">4</button>
+                <button type="button" data-count-key="5" class="count-key--5">5</button>
+                <button type="button" data-count-key="6" class="count-key--6">6</button>
+                <button type="button" data-count-key="7" class="count-key--7">7</button>
+                <button type="button" data-count-key="8" class="count-key--8">8</button>
+                <button type="button" data-count-key="9" class="count-key--9">9</button>
+                <button type="button" data-count-key="back" class="count-key--back">Back</button>
+                <button type="button" data-count-key="0" class="count-key--0">0</button>
+                <button type="button" data-count-key="clear" class="count-key--clear">Clear</button>
+                <button type="button" data-count-key="done" class="count-keypad__done count-key--done">Done</button>
               </div>
             </div>
           </div>
@@ -937,9 +938,9 @@
         </div>
         <div class="table-wrap count-stable-scroll">
           <table id="countSessionTable" class="count-report-table count-stable-table count-session-summary-table">
-            <colgroup><col class="history-col-date" /><col class="history-col-vendor" /><col class="history-col-category" /><col class="history-col-status" /><col class="history-col-started" /><col class="history-col-entries" /><col class="history-col-update" /><col class="history-col-action" /><col class="history-col-action" /><col class="history-col-action" /><col class="history-col-action" /></colgroup>
+            <colgroup><col class="history-col-date" /><col class="history-col-vendor" /><col class="history-col-category" /><col class="history-col-status" /><col class="history-col-started" /><col class="history-col-entries" /><col class="history-col-update" /><col class="history-col-sync" /><col class="history-col-action" /><col class="history-col-action" /><col class="history-col-action" /><col class="history-col-action" /></colgroup>
             <thead>
-              <tr><th>Date</th><th>Vendor</th><th>Category</th><th>Status filter</th><th>Started</th><th>Entries</th><th>Last update</th><th>Report</th><th>Final Report</th><th>Restore</th><th>Delete</th></tr>
+              <tr><th>Date</th><th>Vendor</th><th>Category</th><th>Status filter</th><th>Started</th><th>Entries</th><th>Last update</th><th>Sync</th><th>Report</th><th>Final Report</th><th>Restore</th><th>Delete</th></tr>
             </thead>
             <tbody id="countSessionBody">
               <tr><td colspan="11" class="empty-cell">No sessions saved yet.</td></tr>
