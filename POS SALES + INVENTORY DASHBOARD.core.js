@@ -9,7 +9,8 @@
   itemMeta: {},
   visibleColumns: JSON.parse(localStorage.getItem("posDashboardVisibleColumns:v3") || "null"),
   columnOrder: JSON.parse(localStorage.getItem("posDashboardColumnOrder:v3") || "null"),
-  columnWidths: JSON.parse(localStorage.getItem("posDashboardColumnWidths:v1") || "{}"),
+  // Reset v1 widths once; those values were captured while CSS tracks conflicted.
+  columnWidths: JSON.parse(localStorage.getItem("posDashboardColumnWidths:v2") || "{}"),
   arrangeColumns: false,
   resizeColumns: false,
   detailOrder: JSON.parse(localStorage.getItem("posDashboardDetailOrder:v1") || "null"),
@@ -5967,7 +5968,7 @@ function autoFitInventoryColumn(key) {
     .reduce((longest, text) => (text.trim().length > longest.length ? text.trim() : longest), "");
   const width = Math.max(48, Math.min(520, Math.ceil(sampleText.length * 7.4) + 34));
   state.columnWidths[key] = width;
-  localStorage.setItem("posDashboardColumnWidths:v1", JSON.stringify(state.columnWidths));
+  localStorage.setItem("posDashboardColumnWidths:v2", JSON.stringify(state.columnWidths));
   applyInventoryColumnWidths();
 }
 
@@ -5987,7 +5988,7 @@ function startInventoryColumnResize(event, key) {
     applyInventoryColumnWidths();
   };
   const onUp = () => {
-    localStorage.setItem("posDashboardColumnWidths:v1", JSON.stringify(state.columnWidths));
+    localStorage.setItem("posDashboardColumnWidths:v2", JSON.stringify(state.columnWidths));
     document.removeEventListener("mousemove", onMove);
     document.removeEventListener("mouseup", onUp);
     document.removeEventListener("pointermove", onMove);
@@ -6051,7 +6052,7 @@ function renderInventoryHeader() {
   state._inventoryHeaderKey = headerKey;
   const labels = Object.fromEntries(inventoryColumns);
   // Always start with the checkbox th, then data columns
-  row.innerHTML = `<th class="checkbox-col" style="width:28px;min-width:28px;max-width:28px"><input type="checkbox" id="selectAllInventory" title="Select / deselect all" /></th>` +
+  row.innerHTML = `<th class="checkbox-col"><input type="checkbox" id="selectAllInventory" title="Select / deselect all" /></th>` +
     state.columnOrder.map((key) => `
     <th data-col="${key}" data-sort="${key}" class="${state.resizeColumns ? "is-resizable" : ""}" ${state.arrangeColumns ? 'draggable="true"' : ""}>
       <span class="inventory-header-label">${escapeHtml(labels[key] || key)}</span>

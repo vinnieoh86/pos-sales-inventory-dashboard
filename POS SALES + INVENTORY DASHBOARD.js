@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "20260524-layout1";
+  const VERSION = "20260526-columns1";
 
   function makeSearchEditable() {
     const search = document.querySelector("#searchInput");

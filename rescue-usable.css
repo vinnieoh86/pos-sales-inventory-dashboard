@@ -1,7 +1,4 @@
 /* Rescue layer: keep the deployed app usable while the main CSS is cleaned up. */
-:root {
-  --inventory-table-min-width: 96rem;
-}
 .controls.sticky-filters,
 body[data-active-tab="inventory"] .controls.sticky-filters,
 body[data-active-tab="ordering"] .controls.sticky-filters {
@@ -34,6 +31,7 @@ body[data-active-tab="ordering"] #datePresets {
 .tab-view[data-tab-view="inventory"] .table-wrap,
 body[data-active-tab="inventory"] .tab-view[data-tab-view="inventory"] .table-wrap {
   max-height: calc(100vh - 14rem) !important;
+  max-width: 100% !important;
   overflow-x: auto !important;
   overflow-y: auto !important;
   isolation: auto !important;
@@ -41,11 +39,12 @@ body[data-active-tab="inventory"] .tab-view[data-tab-view="inventory"] .table-wr
 }
 
 #inventory {
-  width: max(100%, var(--inventory-table-min-width)) !important;
-  min-width: var(--inventory-table-min-width) !important;
+  width: max-content !important;
+  min-width: 96rem !important;
   table-layout: fixed !important;
   border-collapse: separate !important;
   border-spacing: 0 !important;
+  background: #fff !important;
 }
 
 .order-table-wrap,
@@ -91,26 +90,55 @@ body[data-active-tab="ordering"] .order-table thead th {
   pointer-events: auto !important;
 }
 
-#inventory th[data-col="code"],
+/* The sole default geometry map for the Products inventory table. */
+#inventory .checkbox-col { width: 2rem !important; min-width: 2rem !important; max-width: 2rem !important; }
+#inventory th[data-col="code"], #inventoryBody td[data-col="code"] { width: 8.5rem !important; min-width: 8.5rem !important; max-width: 8.5rem !important; }
+#inventory th[data-col="product"], #inventoryBody td[data-col="product"] { width: 28rem !important; min-width: 28rem !important; max-width: 28rem !important; }
+#inventory th[data-col="plu"], #inventoryBody td[data-col="plu"] { width: 6rem !important; min-width: 6rem !important; max-width: 6rem !important; }
+#inventory th[data-col="rule"], #inventoryBody td[data-col="rule"] { width: 4rem !important; min-width: 4rem !important; max-width: 4rem !important; }
+#inventory th[data-col="itemNumber"], #inventoryBody td[data-col="itemNumber"],
+#inventory th[data-col="sizeAttr"], #inventoryBody td[data-col="sizeAttr"],
+#inventory th[data-col="subType"], #inventoryBody td[data-col="subType"],
+#inventory th[data-col="containerAttr"], #inventoryBody td[data-col="containerAttr"] { width: 6rem !important; min-width: 6rem !important; max-width: 6rem !important; }
+#inventory th[data-col="category"], #inventoryBody td[data-col="category"] { width: 6rem !important; min-width: 6rem !important; max-width: 6rem !important; }
+#inventory th[data-col="vendor"], #inventoryBody td[data-col="vendor"] { width: 6rem !important; min-width: 6rem !important; max-width: 6rem !important; }
+#inventory th[data-col="state"], #inventoryBody td[data-col="state"] { width: 7.8rem !important; min-width: 7.8rem !important; max-width: 7.8rem !important; }
+#inventory th[data-col="addDate"], #inventoryBody td[data-col="addDate"] { width: 4.5rem !important; min-width: 4.5rem !important; max-width: 4.5rem !important; }
+#inventory th[data-col="stock"], #inventoryBody td[data-col="stock"],
+#inventory th[data-col="units"], #inventoryBody td[data-col="units"],
+#inventory th[data-col="velocity"], #inventoryBody td[data-col="velocity"],
+#inventory th[data-col="unitCost"], #inventoryBody td[data-col="unitCost"],
+#inventory th[data-col="price"], #inventoryBody td[data-col="price"],
+#inventory th[data-col="inventoryCost"], #inventoryBody td[data-col="inventoryCost"] { width: 4.5rem !important; min-width: 4.5rem !important; max-width: 4.5rem !important; }
+#inventory th[data-col="caseSize"], #inventoryBody td[data-col="caseSize"],
+#inventory th[data-col="reorderMin"], #inventoryBody td[data-col="reorderMin"],
+#inventory th[data-col="reorderMax"], #inventoryBody td[data-col="reorderMax"],
+#inventory th[data-col="needs"], #inventoryBody td[data-col="needs"],
+#inventory th[data-col="pending"], #inventoryBody td[data-col="pending"] { width: 4rem !important; min-width: 4rem !important; max-width: 4rem !important; }
+
 #inventoryBody td[data-col="code"] {
-  min-width: 8.5rem !important;
-  max-width: 8.5rem !important;
   overflow: hidden !important;
   text-overflow: ellipsis !important;
+  white-space: nowrap !important;
 }
 
-#inventory th[data-col="product"],
 #inventoryBody td[data-col="product"] {
-  min-width: 21rem !important;
-  max-width: 21rem !important;
   white-space: normal !important;
   line-height: 1.05 !important;
 }
 
-#inventory th[data-col="plu"],
-#inventoryBody td[data-col="plu"] {
-  min-width: 7rem !important;
-  max-width: 7rem !important;
+#inventoryBody td.inventory-state-cell {
+  display: table-cell !important;
+}
+
+#inventoryBody td[data-col="state"] select,
+#inventoryBody td[data-col="caseSize"] input,
+#inventoryBody td[data-col="reorderMin"] input,
+#inventoryBody td[data-col="reorderMax"] input {
+  box-sizing: border-box !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
 }
 
 #inventoryBody,
