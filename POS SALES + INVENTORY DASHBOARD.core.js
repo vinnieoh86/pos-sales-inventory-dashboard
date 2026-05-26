@@ -7,7 +7,8 @@
   excelByItemNumber: new Map(),
   reorderOverrides: JSON.parse(localStorage.getItem("posDashboardReorderOverrides:v1") || "{}"),
   itemMeta: {},
-  visibleColumns: JSON.parse(localStorage.getItem("posDashboardVisibleColumns:v3") || "null"),
+  // v4 starts with a compact Products view; users can re-enable detail columns.
+  visibleColumns: JSON.parse(localStorage.getItem("posDashboardVisibleColumns:v4") || "null"),
   columnOrder: JSON.parse(localStorage.getItem("posDashboardColumnOrder:v3") || "null"),
   // Reset v1 widths once; those values were captured while CSS tracks conflicted.
   columnWidths: JSON.parse(localStorage.getItem("posDashboardColumnWidths:v2") || "{}"),
@@ -51,6 +52,10 @@
   _activeTabRenderLastAt: 0,
   _activeTabRenderRequested: false,
   _activeTabRenderRunning: false,
+  _productsOpened: false,
+  _dashboardDetailsReady: false,
+  _dashboardDetailScheduled: false,
+  _dashboardDetailToken: 0,
   _parentPartsCache: new Map(),
   _datePresetsReady: false,
   tabSearches: JSON.parse(localStorage.getItem("posDashboardTabSearches:v1") || "{\"dashboard\":\"\",\"inventory\":\"\",\"ordering\":\"\"}"),
@@ -234,15 +239,9 @@ function bumpDataStamp() {
   state._priceCheckRowsCache = null;
   state._priceCheckRowsStamp = 0;
   state._countSearchIndex = null; // invalidate count search index too
-  // Pre-warm inventory cache in background after a short delay so the
-  // UI stays responsive but the next render is instant
-  clearTimeout(state._prewarmTimer);
-  state._prewarmTimer = setTimeout(() => {
-    if (!scanModeIsActive() && activeTabName() !== "inventory") {
-      // Build but don't display â€” just warms the cache
-      buildInventoryRows({ ignoreQuery: true, ignoreFilters: true, ignoreStateFilter: true });
-    }
-  }, 400);
+  state._dashboardDetailsReady = false;
+  state._dashboardDetailScheduled = false;
+  state._dashboardDetailToken += 1;
 }
 
 function clearInventorySelection() {
@@ -366,7 +365,9 @@ const els = {
   parentsSearch: document.querySelector("#parentsSearch"),
   detailDrawer: document.querySelector("#detailDrawer"),
   dropInbox: document.querySelector("#dropInbox"),
+  appLoadStatus: document.querySelector("#appLoadStatus"),
   columnPickerPanel: document.querySelector("#columnPickerPanel"),
+  inventoryColumnPicker: document.querySelector("#inventoryColumnPicker"),
   sortMode: document.querySelector("#sortMode"),
   inventoryStateFilter: document.querySelector("#inventoryStateFilter"),
   arrangeColumnsButton: document.querySelector("#arrangeColumnsButton"),
@@ -575,8 +576,8 @@ hoverTooltip.hidden = true;
 document.body.append(hoverTooltip);
 
 if (!state.visibleColumns) {
-  // Sensible defaults: hide rarely-needed columns to keep table in viewport
-  const defaultOff = new Set(["plu","itemNumber","sizeAttr","subType","containerAttr","inventoryCost"]);
+  // Keep operational ordering fields visible while hiding secondary item details.
+  const defaultOff = new Set(["itemNumber", "sizeAttr", "subType", "containerAttr", "addDate", "inventoryCost"]);
   state.visibleColumns = Object.fromEntries(inventoryColumns.map(([key]) => [key, !defaultOff.has(key)]));
 }
 if (!state.columnOrder) {
@@ -593,7 +594,6 @@ state.columnOrder = placeColumnAfter(state.columnOrder, "plu", "product");
 state.columnOrder = placeColumnAfter(state.columnOrder, "rule", "plu");
 state.visibleColumns.plu = true;
 state.visibleColumns.rule = true;
-state.visibleColumns.addDate = true;
 
 const currency = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
 const number = new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 });
@@ -601,6 +601,17 @@ const svNumber = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maxi
 
 function activeTabName() {
   return document.querySelector(".tab-button.active")?.dataset.tab || "dashboard";
+}
+
+function setAppLoadStatus(message = "") {
+  if (!els.appLoadStatus) return;
+  els.appLoadStatus.textContent = message;
+  els.appLoadStatus.hidden = !message;
+}
+
+function clearAppLoadStatus(message) {
+  if (!els.appLoadStatus || (message && els.appLoadStatus.textContent !== message)) return;
+  setAppLoadStatus("");
 }
 
 function saveActiveTabSearch() {
@@ -1080,6 +1091,18 @@ els.arrangeColumnsButton.addEventListener("click", () => {
   els.arrangeColumnsButton.classList.toggle("active-edit", state.arrangeColumns);
   els.arrangeColumnsButton.textContent = state.arrangeColumns ? "Done arranging" : "Arrange columns";
   renderInventory();
+});
+els.inventoryColumnPicker?.querySelector("summary")?.addEventListener("click", (event) => {
+  event.preventDefault();
+  const nextOpen = !els.inventoryColumnPicker.open;
+  els.inventoryColumnPicker.open = nextOpen;
+  event.currentTarget.setAttribute("aria-expanded", String(nextOpen));
+  if (nextOpen) renderColumnPicker();
+});
+document.addEventListener("click", (event) => {
+  if (!els.inventoryColumnPicker?.open || els.inventoryColumnPicker.contains(event.target)) return;
+  els.inventoryColumnPicker.open = false;
+  els.inventoryColumnPicker.querySelector("summary")?.setAttribute("aria-expanded", "false");
 });
 els.addParentRuleButton.addEventListener("click", () => addParentRule());
 els.addAttributeRuleButton.addEventListener("click", () => addAttributeRule());
@@ -2689,7 +2712,7 @@ function renderSharedQuickTools(tab = activeTabName()) {
   const row = els.inventoryQuickTools.querySelector(".inventory-quick-tools__row");
   if (!row) return;
   const resizeColumnsButton = ensureResizeColumnsButton();
-  const inventoryColumnPicker = document.querySelector(".column-picker");
+  const inventoryColumnPicker = els.inventoryColumnPicker;
   const orderColumnPicker = document.querySelector("#orderColumnPicker");
   const orderArrangeButton = document.querySelector("#orderArrangeColumnsButton");
   const exportPoExcelButton = document.querySelector("#exportPoExcel");
@@ -4834,8 +4857,12 @@ function renderActiveTab() {
   }
   renderSharedQuickTools(activeTab);
   if (activeTab === "dashboard") {
-    renderTrend();
-    renderBars();
+    if (state._dashboardDetailsReady) {
+      renderTrend();
+      renderBars();
+    } else {
+      scheduleDashboardDetails();
+    }
   } else if (activeTab === "inventory") {
     renderInventory();
   } else if (activeTab === "newitems") {
@@ -4855,6 +4882,23 @@ function renderActiveTab() {
   }
   repairMojibakeText(document.body);
   refreshDetailDrawer();
+}
+
+function scheduleDashboardDetails() {
+  if (state._dashboardDetailsReady || state._dashboardDetailScheduled || activeTabName() !== "dashboard") return;
+  state._dashboardDetailScheduled = true;
+  const token = ++state._dashboardDetailToken;
+  const run = () => {
+    state._dashboardDetailScheduled = false;
+    if (token !== state._dashboardDetailToken || activeTabName() !== "dashboard") return;
+    setAppLoadStatus("Building product index");
+    renderTrend();
+    renderBars();
+    state._dashboardDetailsReady = true;
+    clearAppLoadStatus("Building product index");
+  };
+  if ("requestIdleCallback" in window) window.requestIdleCallback(run, { timeout: 1400 });
+  else setTimeout(run, 180);
 }
 
 function applyRoleRestrictions(force = false) {
@@ -5885,6 +5929,8 @@ function renderTable() {
 
 function renderInventory() {
   renderSharedQuickTools("inventory");
+  const needsIndexBuild = !state._inventoryCache || state._inventoryCacheStamp !== state._dataCacheStamp;
+  if (needsIndexBuild) setAppLoadStatus("Building product index");
   const rows = currentInventoryRows();
   const filterKey = JSON.stringify({
     search: els.searchInput?.value || "",
@@ -5904,6 +5950,7 @@ function renderInventory() {
   renderInventoryHeader();
   if (!rows.length) {
     els.inventoryBody.innerHTML = `<tr><td colspan="20" class="empty-cell">Load CSV inventory or the Excel import to view all items.</td></tr>`;
+    clearAppLoadStatus("Building product index");
     return;
   }
 
@@ -5933,6 +5980,7 @@ function renderInventory() {
       applyInventoryColumnWidths();
       wireInventoryInfiniteScroll();
       syncInventoryHeaderOffset();
+      clearAppLoadStatus("Building product index");
     }
   }
   requestAnimationFrame(renderChunk);
@@ -7113,6 +7161,7 @@ function switchTab(tab) {
       }, 30);
     }
   } else if (tab === "inventory") {
+    state._productsOpened = true;
     setTimeout(() => {
       els.searchInput?.focus();
       els.searchInput?.select?.();
@@ -7855,7 +7904,7 @@ function renderColumnPicker() {
   els.columnPickerPanel.querySelectorAll("[data-column-toggle]").forEach((input) => {
     input.addEventListener("change", () => {
       state.visibleColumns[input.dataset.columnToggle] = input.checked;
-      localStorage.setItem("posDashboardVisibleColumns:v3", JSON.stringify(state.visibleColumns));
+      localStorage.setItem("posDashboardVisibleColumns:v4", JSON.stringify(state.visibleColumns));
       applyColumnVisibility();
     });
   });
@@ -9077,11 +9126,16 @@ async function savePersistedState() {
 
 async function restorePersistedState() {
   try {
+    setAppLoadStatus("Loading sales");
     const saved = await readPersistedState();
-    if (!saved) return;
+    if (!saved) {
+      clearAppLoadStatus("Loading sales");
+      return;
+    }
     normalizeReorderOverridesState();
     state.rawSales = saved.rawSales || [];
     state.dates = [...new Set(state.rawSales.map((row) => row.date))].sort();
+    setAppLoadStatus("Loading inventory");
     state.inventories = new Map();
     if (saved.inventoryDate && saved.inventoryRows?.length) {
       state.inventories.set(saved.inventoryDate, saved.inventoryRows);
@@ -9123,7 +9177,9 @@ async function restorePersistedState() {
       updateInventoryStateFilter();
       setDefaultDates();
     }
+    clearAppLoadStatus("Loading inventory");
   } catch (error) {
+    setAppLoadStatus("");
     console.warn("Could not restore POS dashboard history", error);
   }
 }
@@ -10259,7 +10315,7 @@ async function initApp() {
     refreshUsersFromSupabase({ silent: true }).catch(() => {});
   }
   resetUiCriteriaOnStartup();
-  switchTab(state.currentUser ? (isUserRole() ? "scanmode" : "inventory") : "inventory");
+  switchTab(state.currentUser && isUserRole() ? "scanmode" : "dashboard");
   updateMetricsSummaryMode();
   if (!scanModeIsActive()) {
     render();
@@ -12294,11 +12350,11 @@ async function tryUnlock(pin) {
   applyRoleRestrictions(true);
   updateMetricsSummaryMode();
   resetIdleLogoutTimer();
-  if (appInitDone) switchTab(isUserRole() ? "scanmode" : "inventory");
+  if (appInitDone) switchTab(isUserRole() ? "scanmode" : "dashboard");
   else showToast("Loading your dashboard...", 1600, "success");
   Promise.resolve(bootAppIfNeeded())
     .then(() => {
-      switchTab(isUserRole() ? "scanmode" : "inventory");
+      switchTab(isUserRole() ? "scanmode" : "dashboard");
       showToast("Welcome, " + user.name + "!", 1200, "success");
     })
     .catch((error) => {
