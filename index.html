@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>POS Sales + Inventory Dashboard</title>
     <link rel="stylesheet" href="POS SALES + INVENTORY DASHBOARD.css?v=20260526-scanready1" />
-    <link rel="stylesheet" href="rescue-usable.css?v=20260526-productsload1" />
+    <link rel="stylesheet" href="rescue-usable.css?v=20260526-countsync1" />
   </head>
   <body>
     <div class="metrics-hover-zone" id="metricsHoverZone">
@@ -681,6 +681,7 @@
           <label>Vendor <select id="countVendorInput"></select></label>
           <label>Category <select id="countCategoryInput"></select></label>
           <label>Item Status <select id="countStatusInput"></select></label>
+          <label data-admin-only><input id="countAllowOutOfScopeInput" type="checkbox" /> Allow manager out-of-scope entries</label>
         </div>
         <div class="count-modal__actions">
           <button id="countStartButton" type="button">Start inventory</button>
@@ -704,6 +705,7 @@
             </div>
           </div>
           <div id="activeCountMeta" class="count-meta-pills"></div>
+          <div id="activeCountSyncStatus" class="count-session-sync" aria-live="polite"></div>
           <div class="count-workspace__grid">
             <div class="count-panel">
               <label class="count-search-label">Scan / search
@@ -772,8 +774,8 @@
         </div>
         <p id="countDuplicateMessage" class="muted">This item was already counted in this session.</p>
         <div class="count-modal__actions">
-          <button id="countDuplicateAddButton" type="button">Add to inventory</button>
-          <button id="countDuplicateResetButton" type="button" class="secondary-button">Reset inventory</button>
+          <button id="countDuplicateAddButton" type="button">Add to quantity</button>
+          <button id="countDuplicateResetButton" type="button" class="secondary-button">Reset quantity</button>
           <button id="countDuplicateCancelButton" type="button" class="secondary-button">Cancel</button>
         </div>
       </div>
@@ -1185,6 +1187,6 @@
       </div>
 
         <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-    <script src="POS SALES + INVENTORY DASHBOARD.js?v=20260526-scanready1"></script>
+    <script src="POS SALES + INVENTORY DASHBOARD.js?v=20260526-countsync1"></script>
   </body>
 </html>

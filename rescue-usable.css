@@ -211,6 +211,34 @@ body[data-active-tab="ordering"] .order-table thead th {
   font-weight: 600;
 }
 
+.count-session-sync {
+  display: flex;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+  align-items: center;
+  padding: 0.45rem 0;
+  color: #4b5b54;
+  font-size: 0.86rem;
+}
+
+.count-session-sync span {
+  border: 1px solid #d7e4dc;
+  border-radius: 999px;
+  background: #f4f8f5;
+  padding: 0.25rem 0.65rem;
+}
+
+.count-session-sync .sync-pending {
+  border-color: #e8cf8b;
+  background: #fff7df;
+}
+
+.count-session-sync .sync-failed {
+  border-color: #e1afa8;
+  background: #fff0ef;
+  color: #a32e23;
+}
+
 .count-stable-scroll {
   width: 100%;
   overflow-x: auto !important;

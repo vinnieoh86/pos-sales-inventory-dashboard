@@ -37,6 +37,9 @@
   _localImportHoldUntil: 0,
   _countSyncLoading: false,
   _countRemoteLoaded: false,
+  _countSyncUnavailable: false,
+  _countLastSyncAt: "",
+  _countSyncInFlight: null,
   _countSessionOpen: false,
   _deletedCountSessionIds: new Set(JSON.parse(localStorage.getItem("posDashboardDeletedCountSessionIds:v1") || "[]")),
   _priceCheckExactIndex: null,
@@ -130,6 +133,8 @@ const ENABLE_SHARED_SYNC = true;
 const DEFAULT_ORDER_SAFETY_DAYS = 21;
 const DEFAULT_ORDER_DAYS_OF_INVENTORY = 7;
 const COUNT_REMOTE_ACTIVE_HISTORY_TTL_MS = 12 * 60 * 60 * 1000;
+const COUNT_SYNC_RETRY_MS = 8000;
+const COUNT_DEVICE_ID_KEY = "posDashboardCountDeviceId:v1";
 const DEFAULT_PO_COPY_EMAIL = "vinnieoh86@gmail.com";
 const PO_EMAIL_FUNCTION_NAME = "send-po-email";
 const pendingInventoryRefreshTimers = new Map();
@@ -461,6 +466,7 @@ const els = {
   countSummaryStrip: document.querySelector("#countSummaryStrip"),
   activeCountTitle: document.querySelector("#activeCountTitle"),
   activeCountMeta: document.querySelector("#activeCountMeta"),
+  activeCountSyncStatus: document.querySelector("#activeCountSyncStatus"),
   countReviewButton: document.querySelector("#countReviewButton"),
   closeCountSessionButton: document.querySelector("#closeCountSessionButton"),
   countSessionModal: document.querySelector("#countSessionModal"),
@@ -480,6 +486,7 @@ const els = {
   countDateInput: document.querySelector("#countDateInput"),
   countVendorInput: document.querySelector("#countVendorInput"),
   countCategoryInput: document.querySelector("#countCategoryInput"),
+  countAllowOutOfScopeInput: document.querySelector("#countAllowOutOfScopeInput"),
   countStartButton: document.querySelector("#countStartButton"),
   countCancelButton: document.querySelector("#countCancelButton"),
   countDuplicateModal: document.querySelector("#countDuplicateModal"),
@@ -2227,6 +2234,7 @@ function scheduleSharedVendorRulesSync() {
 
 let sharedImportLogsTimer = 0;
 let sharedCountSessionsTimer = 0;
+let sharedCountRetryTimer = 0;
 
 function scheduleSharedImportLogsSync() {
   if (!ENABLE_SHARED_SYNC || !sharedImportLogsAvailable) return;
@@ -2243,6 +2251,20 @@ function scheduleSharedCountSessionsSync() {
     syncSharedCountSessionsToSupabase(true).catch(() => {});
   }, 650);
 }
+
+function scheduleCountSyncRetry() {
+  if (!ENABLE_SHARED_SYNC || !sharedCountSessionsAvailable || navigator.onLine === false) return;
+  clearTimeout(sharedCountRetryTimer);
+  sharedCountRetryTimer = setTimeout(() => {
+    syncSharedCountSessionsToSupabase(true).catch(() => {});
+  }, COUNT_SYNC_RETRY_MS);
+}
+
+window.addEventListener("online", () => {
+  if (state.activeCountSession?.localSyncPending || state.countSessions.some(countSessionHasUnsyncedEdits)) {
+    scheduleSharedCountSessionsSync();
+  }
+});
 
 function allowedItemStates() {
   return ["Active", "Force Order", "Disabled", "Discontinued"];
@@ -3709,6 +3731,132 @@ function countSessionUpdatedMs(session = {}) {
   return Date.parse(session.updatedAt || session.submittedAt || session.savedAt || session.startedAt || "") || 0;
 }
 
+function makeCountIdentifier(prefix = "count") {
+  const id = globalThis.crypto?.randomUUID?.()
+    || `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+  return `${prefix}-${id}`;
+}
+
+function countDeviceId() {
+  let id = localStorage.getItem(COUNT_DEVICE_ID_KEY) || "";
+  if (!id) {
+    id = makeCountIdentifier("device");
+    localStorage.setItem(COUNT_DEVICE_ID_KEY, id);
+  }
+  return id;
+}
+
+function countDeviceLabel() {
+  const ua = String(navigator?.userAgent || "").toLowerCase();
+  const device = ua.includes("silk") || ua.includes("kindle")
+    ? "Kindle"
+    : /iphone|ipad|android|mobile/.test(ua) ? "Mobile" : "Desktop";
+  return `${currentAuditUser()} (${device})`;
+}
+
+function countEntryIdentity(entry = {}, sessionId = "", index = 0) {
+  if (cleanCell(entry.entryId || entry.entry_id)) return cleanCell(entry.entryId || entry.entry_id);
+  return `legacy-${cleanCell(sessionId) || "session"}-${cleanCell(entry.recordedAt || entry.timestamp) || index}-${codeKey(entry.code)}-${cleanCell(entry.mode || "reset")}-${Number(entry.inputQty ?? entry.qty ?? 0)}`;
+}
+
+function normalizeCountEntry(entry = {}, session = {}, statusFallback = "pending", index = 0) {
+  const deviceId = cleanCell(entry.deviceId || entry.device_id || session.deviceId || session.device_id);
+  return {
+    ...entry,
+    entryId: countEntryIdentity(entry, session.id, index),
+    sessionId: cleanCell(entry.sessionId || entry.session_id || session.id),
+    deviceId,
+    deviceLabel: cleanCell(entry.deviceLabel || entry.device_label || session.deviceLabel || session.device_label) || "Legacy device",
+    user: cleanCell(entry.user || session.user) || "System",
+    code: cleanCell(entry.code),
+    plu: cleanCell(entry.plu),
+    itemNumber: cleanCell(entry.itemNumber || entry.item_number),
+    product: cleanCell(entry.product),
+    qty: Number(entry.qty ?? entry.inputQty ?? 0),
+    inputQty: Number(entry.inputQty ?? entry.qty ?? 0),
+    mode: cleanCell(entry.mode || "reset").toLowerCase() === "add" ? "add" : "reset",
+    recordedAt: entry.recordedAt || entry.timestamp || new Date().toISOString(),
+    timestamp: entry.timestamp || entry.recordedAt || new Date().toISOString(),
+    syncStatus: cleanCell(entry.syncStatus || entry.sync_status || statusFallback).toLowerCase() || statusFallback,
+  };
+}
+
+function recomputeCountEntryTotals(entries = []) {
+  const totals = new Map();
+  return entries
+    .slice()
+    .sort((a, b) => String(a.recordedAt || "").localeCompare(String(b.recordedAt || "")) || String(a.entryId || "").localeCompare(String(b.entryId || "")))
+    .map((entry) => {
+      const key = codeKey(entry.code);
+      const before = totals.has(key) ? totals.get(key) : Number(entry.originalQty || 0);
+      const countedQty = entry.mode === "add"
+        ? Math.max(0, before + Number(entry.inputQty || 0))
+        : Math.max(0, Number(entry.inputQty || 0));
+      totals.set(key, countedQty);
+      return { ...entry, countedQty };
+    });
+}
+
+function normalizeCountSession(session = {}, statusFallback = "pending") {
+  if (!session?.id) return session;
+  const entries = (session.entries || []).map((entry, index) => normalizeCountEntry(entry, session, statusFallback, index));
+  return {
+    ...session,
+    deviceId: cleanCell(session.deviceId || session.device_id) || countDeviceId(),
+    deviceLabel: cleanCell(session.deviceLabel || session.device_label) || countDeviceLabel(),
+    entries: recomputeCountEntryTotals(entries),
+  };
+}
+
+function mergeCountSessions(remoteSession, localSession) {
+  if (!remoteSession) return normalizeCountSession(localSession, "pending");
+  if (!localSession) return normalizeCountSession(remoteSession, "synced");
+  const remote = normalizeCountSession(remoteSession, "synced");
+  const local = normalizeCountSession(localSession, "pending");
+  const newest = countSessionUpdatedMs(local) > countSessionUpdatedMs(remote) ? local : remote;
+  const mergedEntries = new Map(remote.entries.map((entry) => [entry.entryId, { ...entry, syncStatus: "synced" }]));
+  local.entries.forEach((entry) => {
+    const remoteEntry = mergedEntries.get(entry.entryId);
+    if (!remoteEntry || ["pending", "failed"].includes(entry.syncStatus)) mergedEntries.set(entry.entryId, entry);
+  });
+  const hasPending = [...mergedEntries.values()].some((entry) => entry.syncStatus !== "synced");
+  return {
+    ...newest,
+    entries: recomputeCountEntryTotals([...mergedEntries.values()]),
+    syncVersion: Math.max(Number(remote.syncVersion || 0), Number(local.syncVersion || 0)),
+    localSyncPending: hasPending || local.localSyncPending === true,
+    lastSyncAt: newest.lastSyncAt || remote.lastSyncAt || "",
+  };
+}
+
+function countEntriesAwaitingSync(session = {}) {
+  return (session.entries || []).filter((entry) => cleanCell(entry.syncStatus).toLowerCase() !== "synced");
+}
+
+function countSessionSyncStats(session = {}) {
+  const entries = session.entries || [];
+  const failed = entries.filter((entry) => entry.syncStatus === "failed").length;
+  const pending = entries.filter((entry) => entry.syncStatus !== "synced" && entry.syncStatus !== "failed").length;
+  const deviceCount = new Set(entries.map((entry) => entry.deviceId || entry.deviceLabel).filter(Boolean)).size;
+  return { pending, failed, synced: Math.max(0, entries.length - pending - failed), deviceCount };
+}
+
+function renderActiveCountSyncStatus(session = state.activeCountSession) {
+  if (!els.activeCountSyncStatus) return;
+  if (!session) {
+    els.activeCountSyncStatus.innerHTML = "";
+    return;
+  }
+  const stats = countSessionSyncStats(session);
+  const status = stats.failed ? "Failed" : stats.pending || session.localSyncPending ? "Pending" : "Synced";
+  const cls = status === "Failed" ? "sync-failed" : status === "Pending" ? "sync-pending" : "";
+  const lastSync = session.lastSyncAt || state._countLastSyncAt;
+  els.activeCountSyncStatus.innerHTML = `
+    <span class="${cls}"><b>${escapeHtml(status)}</b>${stats.pending ? ` - ${stats.pending} pending` : ""}${stats.failed ? ` - ${stats.failed} failed` : ""}</span>
+    <span>Last sync: ${escapeHtml(lastSync ? new Date(lastSync).toLocaleString() : "Not synced yet")}</span>
+    <span>Devices: ${number.format(stats.deviceCount || (session.deviceId ? 1 : 0))}</span>`;
+}
+
 function markCountSessionDirty(session) {
   if (!session) return null;
   const stamp = new Date().toISOString();
@@ -3723,7 +3871,8 @@ function countSessionHasUnsyncedEdits(session) {
 }
 
 function countSessionForRemote(session = {}) {
-  const { localSyncPending, ...payload } = session;
+  const { localSyncPending, syncError, ...payload } = normalizeCountSession(session, "pending");
+  payload.entries = (payload.entries || []).map((entry) => ({ ...entry, syncStatus: "synced" }));
   return payload;
 }
 
@@ -3833,38 +3982,47 @@ function archiveCountSessionEntriesToAdjustmentLog(session) {
   return added;
 }
 
-let _persistCountTimer = null;
 function persistActiveCountSession() {
-  // Defer the local write and remote push off the scan critical path.
   markCountSessionDirty(state.activeCountSession);
-  clearTimeout(_persistCountTimer);
-  _persistCountTimer = setTimeout(() => {
-    localStorage.setItem("posDashboardActiveCountSession:v1", JSON.stringify(state.activeCountSession));
-    scheduleSharedCountSessionsSync();
-  }, 120);
+  // The local journal is immediate; only the remote transfer is debounced.
+  localStorage.setItem("posDashboardActiveCountSession:v1", JSON.stringify(state.activeCountSession));
+  renderActiveCountSyncStatus();
+  scheduleSharedCountSessionsSync();
 }
 
 function allCountCandidateRows() {
   if (state._countCandidateCache && state._countCandidateStamp === state._dataCacheStamp) {
     return state._countCandidateCache;
   }
-  state._countCandidateCache = buildInventoryRows({ ignoreQuery: true, ignoreFilters: true, ignoreStateFilter: true });
+  // PATCH D: ignoreStateFilter:true bypasses the inventory tab's UI dropdown (correct),
+  // but we still exclude Disabled and Discontinued items — they should never appear in a
+  // count search unless the session was explicitly set up targeting those states.
+  const all = buildInventoryRows({ ignoreQuery: true, ignoreFilters: true, ignoreStateFilter: true });
+  state._countCandidateCache = all.filter((item) => {
+    const st = (item.state || "").toLowerCase();
+    return st !== "disabled" && st !== "discontinued";
+  });
   state._countCandidateStamp = state._dataCacheStamp;
   return state._countCandidateCache;
 }
 
 function filteredCountCandidateRows(session = state.activeCountSession) {
   if (!session) return allCountCandidateRows();
-  const cacheKey = (session.id || "") + "|" + state._dataCacheStamp;
+  const cacheKey = [session.id, session.vendor, session.department, session.category, session.status, state._dataCacheStamp].join("|");
   if (state._filteredCountCache && state._filteredCountCacheKey === cacheKey) {
     return state._filteredCountCache;
   }
-  const rows = allCountCandidateRows().filter((item) => {
+  const statusFilter = (session.status || "").trim().toLowerCase();
+  // If this count was explicitly set up to target disabled/discontinued items, use the full
+  // unfiltered pool so those items are reachable. Otherwise use the active-items-only pool.
+  const sourceRows = (statusFilter === "disabled" || statusFilter === "discontinued")
+    ? buildInventoryRows({ ignoreQuery: true, ignoreFilters: true, ignoreStateFilter: true })
+    : allCountCandidateRows();
+  const rows = sourceRows.filter((item) => {
     const vendorFilter = (session.vendor || session.department || "").trim().toUpperCase();
     if (vendorFilter && (item.vendor || "").trim().toUpperCase() !== vendorFilter) return false;
     const catFilter = (session.category || "").trim().toUpperCase();
     if (catFilter && (item.category || "").trim().toUpperCase() !== catFilter) return false;
-    const statusFilter = (session.status || "").trim().toLowerCase();
     if (statusFilter && (item.state || "").trim().toLowerCase() !== statusFilter) return false;
     return true;
   });
@@ -3888,6 +4046,7 @@ function openCountSetupModal() {
   els.countCategoryInput.value = "";
   const statusEl = document.querySelector("#countStatusInput");
   if (statusEl) statusEl.value = "";
+  if (els.countAllowOutOfScopeInput) els.countAllowOutOfScopeInput.checked = false;
   els.countSetupModal.hidden = false;
   els.countDateInput.focus();
 }
@@ -3915,14 +4074,21 @@ function populateCountSetupOptions() {
 
 function startCountSessionFromModal() {
   const statusEl = document.querySelector("#countStatusInput");
+  const deviceId = countDeviceId();
   const session = {
-    id: `count-${Date.now()}`,
+    id: makeCountIdentifier("count"),
     date: els.countDateInput.value || new Date().toISOString().slice(0, 10),
     vendor: els.countVendorInput.value || "",
     category: els.countCategoryInput.value || "",
     status: statusEl ? (statusEl.value || "") : "",
     startedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
+    deviceId,
+    deviceLabel: countDeviceLabel(),
+    user: currentAuditUser(),
+    allowOutOfScope: !isUserRole() && !!els.countAllowOutOfScopeInput?.checked,
+    syncVersion: 0,
+    localSyncPending: true,
     entries: [],
   };
   state.activeCountSession = session;
@@ -3936,13 +4102,18 @@ function startCountSessionFromModal() {
   closeCountSetupModal();
   buildCountSearchIndex();
   renderCountsWorkspace();
-  showToast(`Started count: ${countSessionLabel(session)}`);
+  showToast(
+    state._countSyncUnavailable
+      ? `Started local count: ${countSessionLabel(session)}. Sync will retry when available.`
+      : `Started count: ${countSessionLabel(session)}`,
+    3600,
+    state._countSyncUnavailable ? "warning" : "success",
+  );
 }
 
 function closeActiveCountSession() {
   if (!state.activeCountSession) return;
   state._countSessionOpen = false;
-  state.activeCountSession = null;
   state.selectedCountItemCode = "";
   state.countQtyBuffer = "0";
   state.countStage = "search";
@@ -3952,11 +4123,13 @@ function closeActiveCountSession() {
   renderCountsWorkspace();
 }
 
-function saveCountSession() {
+async function saveCountSession() {
   if (!state.activeCountSession) return;
+  const syncCheckedSession = await ensureCountSessionReadyToApply(state.activeCountSession, "saving");
+  if (!syncCheckedSession) return;
   state._countSessionOpen = false;
   const session = markCountSessionDirty({
-    ...state.activeCountSession,
+    ...syncCheckedSession,
     savedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   });
@@ -4009,22 +4182,31 @@ function saveCountSession() {
   state.countStage = "search";
   state.pendingDuplicateCount = null;
   state.pendingDuplicateMode = null;
-  bumpDataStamp();
+  // PATCH A: Do NOT call bumpDataStamp() or render() here.
+  // Only count state changed — rebuilding all sales/inventory caches is unnecessary and causes
+  // the visible freeze + cascading render loop on save.
+  // Invalidate only the count-specific caches and affected inventory row index entries.
+  state._countCandidateCache = null;
+  state._filteredCountCache = null;
+  state._countCandidateStamp = -1;
+  [...latestByCode.keys()].forEach((key) => state._inventoryRowIndex.delete(key));
   localStorage.setItem("posDashboardAdjustLog:v1", JSON.stringify(state.adjustmentLog));
   persistCountSessions();
   renderCountsWorkspace();
-  // Defer the expensive full render until after modal closes
-  setTimeout(() => render(), 50);
+  // Sync in background. Delay product/inventory fact sync slightly so the UI is not blocked.
   void syncSharedCountSessionsToSupabase(true);
-  void syncSharedProductsByCodes([...latestByCode.keys()], { silent: true });
-  void syncSharedInventoryFactsByCodes([...latestByCode.keys()], { silent: true, updateSyncState: false });
-  showToast(`Count saved Â· ${updatedCount} item stock quantities updated`, 3200, "success");
+  setTimeout(() => {
+    void syncSharedProductsByCodes([...latestByCode.keys()], { silent: true });
+    void syncSharedInventoryFactsByCodes([...latestByCode.keys()], { silent: true, updateSyncState: false });
+  }, 400);
+  showToast(`Count saved · ${updatedCount} item stock quantities updated`, 3200, "success");
 }
 
 function deleteCountSession() {
   if (!state.activeCountSession) return;
   state._countSessionOpen = false;
   const label = countSessionLabel(state.activeCountSession);
+  archiveCountSessionEntriesToAdjustmentLog(state.activeCountSession);
   const deletedId = markCountSessionDeleted(state.activeCountSession.id);
   state.activeCountSession = null;
   state.selectedCountItemCode = "";
@@ -4064,6 +4246,30 @@ function renderCountQuantity() {
   if (els.countQuantityDisplay) els.countQuantityDisplay.textContent = state.countQtyBuffer || "0";
 }
 
+function countSessionAllowsOutOfScope(session = state.activeCountSession) {
+  return !isUserRole() && session?.allowOutOfScope === true;
+}
+
+function countItemIsInScope(item, session = state.activeCountSession) {
+  if (!item) return false;
+  return filteredCountCandidateRows(session).some((candidate) => codeKey(candidate.code) === codeKey(item.code));
+}
+
+function findAnyCountMatch(query) {
+  const raw = cleanCell(query).trim();
+  if (!raw) return null;
+  const needle = raw.toLowerCase();
+  const normalizedNeedle = codeKey(raw);
+  if (!state._countSearchIndex || state._countIndexStamp !== state._dataCacheStamp) buildCountSearchIndex();
+  return state._countExactIndex?.get(normalizedNeedle)
+    || state._countExactIndex?.get(needle)
+    || allCountCandidateRows().find((item) =>
+      [item.code, item.product, item.plu, item.itemNumber, item.vendor, item.category]
+        .some((value) => String(value || "").toLowerCase().includes(needle))
+    )
+    || null;
+}
+
 function findCountMatch(query) {
   const raw = cleanCell(query).trim();
   if (!raw) return null;
@@ -4075,10 +4281,10 @@ function findCountMatch(query) {
   const exactMatch = state._countExactIndex?.get(normalizedNeedle)
     || state._countExactIndex?.get(needle)
     || null;
-  if (exactMatch) return exactMatch;
+  if (exactMatch && (countItemIsInScope(exactMatch) || countSessionAllowsOutOfScope())) return exactMatch;
 
   // Second: try filtered pool with partial text match
-  const filtered = filteredCountCandidateRows();
+  const filtered = countSessionAllowsOutOfScope() ? allCountCandidateRows() : filteredCountCandidateRows();
   return filtered.find((item) =>
     [item.code, item.product, item.plu, item.itemNumber, item.vendor, item.category]
       .some((value) => String(value || "").toLowerCase().includes(needle))
@@ -4089,7 +4295,7 @@ function currentSelectedCountItem() {
   if (!state.selectedCountItemCode) return null;
   const selectedKey = codeKey(state.selectedCountItemCode);
   return filteredCountCandidateRows().find((item) => codeKey(item.code) === selectedKey)
-    || allCountCandidateRows().find((item) => codeKey(item.code) === selectedKey)
+    || (countSessionAllowsOutOfScope() ? allCountCandidateRows().find((item) => codeKey(item.code) === selectedKey) : null)
     || null;
 }
 
@@ -4133,12 +4339,19 @@ function handleCountLookup() {
       els.countSearchInput.classList.add("count-search-error");
       setTimeout(() => els.countSearchInput && els.countSearchInput.classList.remove("count-search-error"), 1200);
     }
-    showToast("Item not found in this count scope.", 3400, "warning");
+    const existsOutsideScope = !!findAnyCountMatch(query);
+    showToast(
+      existsOutsideScope
+        ? "Item is outside this count scope. A manager must enable the override to count it."
+        : "Item not found in this count scope.",
+      4200,
+      "warning",
+    );
     return;
   }
   const inScope = filteredCountCandidateRows().some((item) => codeKey(item.code) === codeKey(match.code));
-  if (!inScope) {
-    showToast("Item is outside the selected count filters, but it was found in the item master and can be counted.", 4200, "warning");
+  if (!inScope && countSessionAllowsOutOfScope()) {
+    showToast("Manager override: this item is outside the selected count scope.", 4200, "warning");
   }
   state.selectedCountItemCode = match.code;
   state.countStage = "qty";
@@ -4194,16 +4407,26 @@ function commitCountEntry(item, qty, mode) {
     ? Math.max(0, Number(existing?.countedQty || 0) + qty)
     : qty;
   session.entries.push({
+    entryId: makeCountIdentifier("entry"),
+    sessionId: session.id,
+    deviceId: countDeviceId(),
+    deviceLabel: countDeviceLabel(),
+    user: currentAuditUser(),
     code: item.code,
+    plu: item.plu || "",
+    itemNumber: item.itemNumber || "",
     product: item.product,
     vendor: item.vendor || "",
     category: item.category || "",
     originalQty: item.stock || 0,
     inputQty: qty,
+    qty,
     countedQty,
     mode,
     unitCost: item.unitCost || 0,
     recordedAt: new Date().toISOString(),
+    timestamp: new Date().toISOString(),
+    syncStatus: "pending",
   });
   state.activeCountSession = session;
   state._countSessionOpen = true;
@@ -4346,10 +4569,10 @@ function renderCountDropdown(query) {
       </div>`;
     }).join("");
   }
-  if (outScopeMatches.length) {
-    html += `<div class="count-dd-group-label count-dd-out-label">Outside scope - can still count</div>`;
+  if (outScopeMatches.length && countSessionAllowsOutOfScope()) {
+    html += `<div class="count-dd-group-label count-dd-out-label">Outside scope - manager override enabled</div>`;
     html += outScopeMatches.map(({ item }) => `
-      <div class="count-dd-item count-dd-out" data-code="${escapeHtml(item.code)}" title="Outside this session's filters; click to count anyway">
+      <div class="count-dd-item count-dd-out" data-code="${escapeHtml(item.code)}" title="Manager override allows this out-of-scope item">
         <span class="count-dd-name">${escapeHtml(item.product)}</span>
         <span class="count-dd-meta">${escapeHtml(item.code)}${item.vendor ? ` Â· ${escapeHtml(item.vendor)}` : ""}</span>
       </div>`).join("");
@@ -4371,9 +4594,9 @@ function selectCountDropdownItem(code) {
   if (!state.activeCountSession) return;
   const key = codeKey(code);
   const filteredItem = filteredCountCandidateRows().find((r) => codeKey(r.code) === key);
-  const item = filteredItem || allCountCandidateRows().find((r) => codeKey(r.code) === key);
+  const item = filteredItem || (countSessionAllowsOutOfScope() ? allCountCandidateRows().find((r) => codeKey(r.code) === key) : null);
   if (!item) { showToast("Item not found in the item master.", 2800, "warning"); return; }
-  if (!filteredItem) showToast("Item is outside the selected count filters, but it was found and can be counted.", 3600, "warning");
+  if (!filteredItem) showToast("Manager override: counting an item outside the selected scope.", 3600, "warning");
   if (els.countSearchInput) els.countSearchInput.value = item.product;
   state.selectedCountItemCode = item.code;
   state.countStage = "qty";
@@ -4416,13 +4639,15 @@ function openCountReport(sessionId = state.activeCountSession?.id, mode = state.
   if (els.countReportMeta) {
     const vendorLabel = session.vendor || session.department || "All vendors";
     const totalCandidates = currentCountSessionCandidates(session).length;
+    const syncStats = countSessionSyncStats(session);
     els.countReportMeta.innerHTML = `
       <span><b>Date</b> ${escapeHtml(session.date || "-")}</span>
       <span><b>Vendor</b> ${escapeHtml(vendorLabel)}</span>
       <span><b>Category</b> ${escapeHtml(session.category || "All")}</span>
       <span><b>Entries</b> ${number.format((session.entries || []).length)}</span>
       <span><b>Items in scope</b> ${number.format(totalCandidates)}</span>
-      <span><b>Started</b> ${escapeHtml(new Date(session.startedAt).toLocaleString())}</span>`;
+      <span><b>Started</b> ${escapeHtml(new Date(session.startedAt).toLocaleString())}</span>
+      <span><b>Sync</b> ${syncStats.failed ? `${number.format(syncStats.failed)} failed` : syncStats.pending || session.localSyncPending ? `${number.format(syncStats.pending)} pending` : "Synced"}</span>`;
   }
   renderCountReportRows(session, mode);
   els.countReportModal.hidden = false;
@@ -4440,6 +4665,10 @@ function exportCountReportPdf() {
   const dateStr = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
   const vendorLabel = session.vendor || session.department || "All vendors";
   const entries = session.entries || [];
+  const syncStats = countSessionSyncStats(session);
+  const syncWarning = syncStats.pending || syncStats.failed || session.localSyncPending
+    ? `WARNING: ${syncStats.pending} pending and ${syncStats.failed} failed sync entries. Verify before POS import.`
+    : "All count entries synced.";
 
   let tableHtml = "";
   if (mode === "comparison") {
@@ -4498,6 +4727,7 @@ function exportCountReportPdf() {
     <span><b>Category</b> ${escapeHtml(session.category || "All")}</span>
     <span><b>Entries</b> ${number.format(entries.length)}</span>
     <span><b>Mode</b> ${mode === "comparison" ? "Comparison" : "Input Log"}</span>
+    <span><b>Sync</b> ${escapeHtml(syncWarning)}</span>
     <span><b>Generated</b> ${dateStr}</span>
   </div>
   ${tableHtml}
@@ -4520,11 +4750,15 @@ async function exportCountReportExcel() {
 
   const vendorLabel = session.vendor || session.department || "All vendors";
   const entries = session.entries || [];
+  const syncStats = countSessionSyncStats(session);
+  const syncNote = syncStats.pending || syncStats.failed || session.localSyncPending
+    ? `WARNING: ${syncStats.pending} pending / ${syncStats.failed} failed sync entries. Verify before POS import.`
+    : "Sync: all entries confirmed.";
   const wb = xlsx.utils.book_new();
 
   // Input log sheet
   const inputData = [
-    ["Physical Count â€” Input Log", "", "", `Date: ${session.date || "-"}`, `Vendor: ${vendorLabel}`, `Category: ${session.category || "All"}`],
+    ["Physical Count - Input Log", "", "", `Date: ${session.date || "-"}`, `Vendor: ${vendorLabel}`, `Category: ${session.category || "All"}`, syncNote],
     [],
     ["Code", "Item", "Vendor", "Category", "Qty Before", "Counted", "Variance", "Mode", "Time"],
     ...[...entries].reverse().map((entry) => {
@@ -4541,7 +4775,7 @@ async function exportCountReportExcel() {
   const latestByCode = new Map();
   entries.forEach((entry) => latestByCode.set(codeKey(entry.code), entry));
   const compData = [
-    ["Physical Count â€” Comparison", "", "", `Date: ${session.date || "-"}`, `Vendor: ${vendorLabel}`, `Category: ${session.category || "All"}`],
+    ["Physical Count - Comparison", "", "", `Date: ${session.date || "-"}`, `Vendor: ${vendorLabel}`, `Category: ${session.category || "All"}`, syncNote],
     [],
     ["Code", "Item", "Vendor", "Category", "Qty Before", "Qty After", "Qty Diff", "Cost Diff", "Status"],
     ...allItems.map((item) => {
@@ -4837,11 +5071,9 @@ async function refreshLatestCountSessions(options = {}) {
   try {
     if (ENABLE_SHARED_SYNC && sharedCountSessionsAvailable) {
       const pulled = await restoreSharedCountSessionsOnlyFromSupabase({ silent: true, history: options.history === true });
-      if (!pulled && !state._countRemoteLoaded) {
-        state.countSessions = (state.countSessions || []).filter(countSessionHasUnsyncedEdits);
-        state.activeCountSession = countSessionHasUnsyncedEdits(state.activeCountSession) ? state.activeCountSession : null;
+      if (!pulled) {
+        state._countSyncUnavailable = true;
         persistCountSessions({ scheduleSync: false });
-        showToast("Could not load the latest count. Unsynced local edits were preserved.", 3200, "warning");
       }
     }
   } finally {
@@ -4857,10 +5089,6 @@ async function openLatestCountOrSetup() {
     renderCountsWorkspace();
     return;
   }
-  if (isUserRole()) {
-    showToast("No active physical count is ready to continue.", 2800, "warning");
-    return;
-  }
   openCountSetupModal();
 }
 
@@ -4872,31 +5100,52 @@ function renderCountsWorkspace(options = {}) {
     return;
   }
   populateCountSetupOptions();
+  if (state.activeCountSession) {
+    state.activeCountSession = normalizeCountSession(
+      state.activeCountSession,
+      countSessionHasUnsyncedEdits(state.activeCountSession) ? "pending" : "synced",
+    );
+  }
   const active = state.activeCountSession;
-  const employeeMode = isUserRole();
   if (els.countSummaryStrip) els.countSummaryStrip.hidden = false;
   if (els.countSessionModal) els.countSessionModal.hidden = !active || !state._countSessionOpen;
   els.countWorkspaceEmpty.hidden = false;
-  if (els.countLaunchCard) els.countLaunchCard.hidden = employeeMode && !active;
-  if (els.countLaunchTitle) els.countLaunchTitle.textContent = active ? "Continue Count" : "New physical count";
+  if (els.countLaunchCard) els.countLaunchCard.hidden = false;
+  if (els.countLaunchTitle) els.countLaunchTitle.textContent = active ? "Continue Count" : "Start New Count";
   if (els.countLaunchDescription) {
     els.countLaunchDescription.textContent = active
       ? "Resume the latest active synced count."
-      : "Choose the scope and begin a new physical count.";
+      : state._countSyncUnavailable
+        ? "Sync is unavailable. Start locally; entries stay on this device and retry automatically."
+        : "No active count exists. Choose the scope and begin a new physical count.";
   }
-  if (els.countLaunchState) els.countLaunchState.textContent = active ? "Continue Count" : "Open count setup";
+  if (els.countLaunchState) {
+    els.countLaunchState.textContent = active
+      ? "Active count found - Continue Count"
+      : state._countSyncUnavailable
+        ? "Sync unavailable - Start local count with warning"
+        : "No active count - Start New Count";
+  }
   if (els.closeCountSessionButton) els.closeCountSessionButton.hidden = true;
   if (els.countReviewButton) els.countReviewButton.hidden = true;
   if (active) {
     els.activeCountTitle.textContent = countSessionLabel(active);
     const vendorLabel = active.vendor || active.department || "All vendors";
+    // PATCH E: Show active count criteria clearly, including whether disabled items are excluded.
+    const statusLabel = active.status
+      ? escapeHtml(active.status)
+      : "<strong>Active items only</strong> (disabled &amp; discontinued excluded)";
     els.activeCountMeta.innerHTML = `
       <span>${escapeHtml(active.date || "-")}</span>
       <span>${escapeHtml(vendorLabel)}</span>
       <span>${escapeHtml(active.category || "All categories")}</span>
-      <span>${number.format((active.entries || []).length)} entries</span>`;
+      <span>Status: ${statusLabel}</span>
+      <span>${number.format((active.entries || []).length)} entries</span>
+      <span>${active.allowOutOfScope && !isUserRole() ? "Manager scope override enabled" : "Scope locked"}</span>`;
+    renderActiveCountSyncStatus(active);
   } else if (els.activeCountMeta) {
     els.activeCountMeta.innerHTML = "";
+    renderActiveCountSyncStatus(null);
   }
   renderCountQuantity();
   renderSelectedCountItem();
@@ -9481,11 +9730,11 @@ function countSessionRowForSupabase(session = {}, active = false) {
 
 function hydrateCountSessionFromSupabase(row = {}) {
   if (!row.session_payload || typeof row.session_payload !== "object") return null;
-  return {
+  return normalizeCountSession({
     ...row.session_payload,
     updatedAt: row.session_payload.updatedAt || row.updated_at || new Date().toISOString(),
     localSyncPending: false,
-  };
+  }, "synced");
 }
 
 function hydrateVendorRuleFromSupabase(row = {}) {
@@ -9846,48 +10095,29 @@ function applySharedImportLogRows(rows = []) {
   return state.uploadLogs.length;
 }
 
-function applySharedCountSessionRows(rows = []) {
+function applySharedCountSessionRows(rows = [], options = {}) {
   pruneDeletedCountSessions();
+  // PATCH B: capture a hash of current count state so we can skip render if nothing changed.
+  const _preApplyHash = [
+    state.activeCountSession?.id || "",
+    state.activeCountSession?.updatedAt || "",
+    (state.countSessions || []).map((s) => `${s.id}:${s.updatedAt}`).join(","),
+  ].join("|");
   const localSavedById = new Map((state.countSessions || [])
     .filter((session) => cleanCell(session?.id) && !countSessionIsDeleted(session.id))
-    .map((session) => [cleanCell(session.id), session]));
-  const localActive = state.activeCountSession;
-  let mergedPendingEntries = false;
-  const chooseRemoteOrDirtyLocal = (remoteSession, localSession) => {
-    if (!localSession || !countSessionHasUnsyncedEdits(localSession)) return remoteSession;
-    if (!remoteSession || countSessionUpdatedMs(localSession) >= countSessionUpdatedMs(remoteSession)) return localSession;
-    if (cleanCell(remoteSession.id) === cleanCell(localSession.id)) {
-      const remoteEntryKeys = new Set((remoteSession.entries || []).map((entry) => [
-        cleanCell(entry.recordedAt),
-        codeKey(entry.code),
-        cleanCell(entry.mode),
-        Number(entry.inputQty || 0),
-      ].join("|")));
-      const localOnlyEntries = (localSession.entries || []).filter((entry) => !remoteEntryKeys.has([
-        cleanCell(entry.recordedAt),
-        codeKey(entry.code),
-        cleanCell(entry.mode),
-        Number(entry.inputQty || 0),
-      ].join("|")));
-      if (localOnlyEntries.length) {
-        mergedPendingEntries = true;
-        return {
-          ...remoteSession,
-          entries: [...(remoteSession.entries || []), ...localOnlyEntries]
-            .sort((a, b) => String(a.recordedAt || "").localeCompare(String(b.recordedAt || ""))),
-          updatedAt: new Date().toISOString(),
-          syncVersion: Math.max(Number(remoteSession.syncVersion || 0), Number(localSession.syncVersion || 0)) + 1,
-          localSyncPending: true,
-        };
-      }
-    }
-    return remoteSession;
-  };
+    .map((session) => [cleanCell(session.id), normalizeCountSession(session, countSessionHasUnsyncedEdits(session) ? "pending" : "synced")]));
+  let localActive = state.activeCountSession
+    ? normalizeCountSession(state.activeCountSession, countSessionHasUnsyncedEdits(state.activeCountSession) ? "pending" : "synced")
+    : null;
   if (!rows?.length) {
     state.countSessions = [...localSavedById.values()].filter(countSessionHasUnsyncedEdits);
     state.activeCountSession = countSessionHasUnsyncedEdits(localActive) ? localActive : null;
+    state._countRemoteLoaded = true;
     persistCountSessions({ scheduleSync: false });
-    if (activeTabName() === "counts") renderCountsWorkspace();
+    if (options.render !== false && activeTabName() === "counts") {
+      const _postHash = [state.activeCountSession?.id || "", state.activeCountSession?.updatedAt || "", (state.countSessions || []).map((s) => `${s.id}:${s.updatedAt}`).join(",")].join("|");
+      if (_postHash !== _preApplyHash) renderCountsWorkspace();
+    }
     return state.countSessions.length + (state.activeCountSession ? 1 : 0);
   }
   const remoteSavedById = new Map();
@@ -9916,17 +10146,30 @@ function applySharedCountSessionRows(rows = []) {
   }
   const mergedSavedById = new Map();
   remoteSavedById.forEach((remoteSession, id) => {
-    mergedSavedById.set(id, chooseRemoteOrDirtyLocal(remoteSession, localSavedById.get(id)));
+    mergedSavedById.set(id, mergeCountSessions(remoteSession, localSavedById.get(id)));
   });
   localSavedById.forEach((localSession, id) => {
     if (!mergedSavedById.has(id) && countSessionHasUnsyncedEdits(localSession)) mergedSavedById.set(id, localSession);
   });
   const remoteActiveId = cleanCell(remoteActive?.id);
   const localActiveId = cleanCell(localActive?.id);
+  const submittedRemoteForLocalActive = localActiveId ? remoteSavedById.get(localActiveId) : null;
+  if (localActive && submittedRemoteForLocalActive?.submittedAt) {
+    const remoteEntryIds = new Set((submittedRemoteForLocalActive.entries || []).map((entry) => entry.entryId));
+    const hasLateLocalEntries = (localActive.entries || []).some((entry) => !remoteEntryIds.has(entry.entryId));
+    if (hasLateLocalEntries) {
+      const mergedLateSession = mergeCountSessions(submittedRemoteForLocalActive, localActive);
+      mergedLateSession.lateEntriesAfterSubmit = true;
+      mergedLateSession.localSyncPending = true;
+      mergedSavedById.set(localActiveId, mergedLateSession);
+    }
+    localActive = null;
+  }
   let nextActive = remoteActive && remoteActiveCountSessionIsFresh({ ...remoteActive, remoteActive: true })
-    ? chooseRemoteOrDirtyLocal(remoteActive, remoteActiveId === localActiveId ? localActive : null)
+    ? mergeCountSessions(remoteActive, remoteActiveId === localActiveId ? localActive : null)
     : null;
   if (countSessionHasUnsyncedEdits(localActive) && (!nextActive || localActiveId !== remoteActiveId)) {
+    if (nextActive?.id && nextActive.id !== localActive.id) mergedSavedById.set(nextActive.id, nextActive);
     nextActive = localActive;
   }
   if (nextActive?.id) mergedSavedById.delete(cleanCell(nextActive.id));
@@ -9935,9 +10178,13 @@ function applySharedCountSessionRows(rows = []) {
     .sort((a, b) => String(b.updatedAt || b.submittedAt || "").localeCompare(String(a.updatedAt || a.submittedAt || "")));
   state.activeCountSession = nextActive;
   state._countRemoteLoaded = true;
+  state._countSyncUnavailable = false;
   persistCountSessions({ scheduleSync: false });
-  if (mergedPendingEntries) scheduleSharedCountSessionsSync();
-  if (activeTabName() === "counts" && !state._countSyncLoading) renderCountsWorkspace();
+  if (nextActive && countSessionHasUnsyncedEdits(nextActive)) scheduleSharedCountSessionsSync();
+  if (options.render !== false && activeTabName() === "counts" && !state._countSyncLoading) {
+    const _postHash = [state.activeCountSession?.id || "", state.activeCountSession?.updatedAt || "", (state.countSessions || []).map((s) => `${s.id}:${s.updatedAt}`).join(",")].join("|");
+    if (_postHash !== _preApplyHash) renderCountsWorkspace();
+  }
   return state.countSessions.length + (state.activeCountSession ? 1 : 0);
 }
 
@@ -10004,17 +10251,19 @@ async function restoreSharedImportLogsOnlyFromSupabase(options = {}) {
 
 async function restoreSharedCountSessionsOnlyFromSupabase(options = {}) {
   if (!ENABLE_SHARED_SYNC || !sharedCountSessionsAvailable) return false;
-  const { silent = false, history = false } = options;
+  const { silent = false, history = false, fromSync = false } = options;
   try {
-    const rows = await supabaseSelectRowsSafe("count_sessions", {
+    const rows = await supabaseSelectRows("count_sessions", {
       select: "*",
       order: "updated_at.desc",
       limit: history ? "60" : "25",
     });
-    applySharedCountSessionRows(rows);
+    applySharedCountSessionRows(rows, { render: !fromSync });
+    state._countSyncUnavailable = false;
     if (!silent) showToast("Shared count sessions loaded.", 2400, "success");
     return true;
   } catch (error) {
+    state._countSyncUnavailable = true;
     if (!silent) showToast("Shared count session refresh failed.", 2600, "warning");
     return false;
   }
@@ -10106,9 +10355,13 @@ async function syncSharedImportLogsToSupabase(silent = false) {
 
 async function syncSharedCountSessionsToSupabase(silent = false) {
   if (!ENABLE_SHARED_SYNC || !sharedCountSessionsAvailable) return false;
+  if (state._countSyncInFlight) return state._countSyncInFlight;
   clearTimeout(sharedCountSessionsTimer);
   sharedCountSessionsTimer = 0;
-  try {
+  state._countSyncInFlight = (async () => {
+    try {
+      const pulled = await restoreSharedCountSessionsOnlyFromSupabase({ silent: true, history: true, fromSync: true });
+      if (!pulled) throw new Error("count sessions remote read failed");
     const deletedIds = [...(state._deletedCountSessionIds || [])].filter(Boolean).slice(-500);
     if (deletedIds.length) {
       await supabaseDeleteRowsByValues("count_sessions", "id", deletedIds.flatMap((id) => [id, `active:${id}`]));
@@ -10134,20 +10387,51 @@ async function syncSharedCountSessionsToSupabase(silent = false) {
         : []),
     ];
     if (rows.length) {
+      // PATCH C: stamp lastLocalSharedSyncAt BEFORE the await so the 2s poll guard
+      // fires immediately and the saving device does not re-pull its own just-pushed data.
+      const syncedAt = new Date().toISOString();
+      lastLocalSharedSyncAt = syncedAt;
       await supabaseUpsertRows("count_sessions", rows, "id");
-      dirtySaved.forEach((session) => { session.localSyncPending = false; });
-      if (dirtyActive) dirtyActive.localSyncPending = false;
+      dirtySaved.forEach((session) => {
+        session.entries = (session.entries || []).map((entry) => ({ ...entry, syncStatus: "synced" }));
+        session.localSyncPending = false;
+        session.lastSyncAt = syncedAt;
+      });
+      if (dirtyActive) {
+        dirtyActive.entries = (dirtyActive.entries || []).map((entry) => ({ ...entry, syncStatus: "synced" }));
+        dirtyActive.localSyncPending = false;
+        dirtyActive.lastSyncAt = syncedAt;
+      }
+      state._countLastSyncAt = syncedAt;
+      state._countSyncUnavailable = false;
       persistCountSessions({ scheduleSync: false });
+      renderActiveCountSyncStatus();
     }
     if (rows.length || deletedIds.length) await updateSharedSyncState("counts");
     return true;
-  } catch (error) {
-    if (String(error?.message || "").includes("(401)") || String(error?.message || "").includes("(403)")) {
-      sharedCountSessionsAvailable = false;
+    } catch (error) {
+      [state.activeCountSession, ...(state.countSessions || [])].filter(Boolean).forEach((session) => {
+        if (!countSessionHasUnsyncedEdits(session)) return;
+        session.entries = (session.entries || []).map((entry) => entry.syncStatus === "synced"
+          ? entry
+          : { ...entry, syncStatus: "failed" });
+        session.syncError = "Shared sync failed";
+      });
+      state._countSyncUnavailable = true;
+      persistCountSessions({ scheduleSync: false });
+      renderActiveCountSyncStatus();
+      if (String(error?.message || "").includes("(401)") || String(error?.message || "").includes("(403)")) {
+        sharedCountSessionsAvailable = false;
+      } else {
+        scheduleCountSyncRetry();
+      }
+      if (!silent) showToast("Shared count session sync failed. Local entries are preserved and will retry.", 3600, "warning");
+      return false;
+    } finally {
+      state._countSyncInFlight = null;
     }
-    if (!silent) showToast("Shared count session sync failed.", 2600, "warning");
-    return false;
-  }
+  })();
+  return state._countSyncInFlight;
 }
 
 function productRowByCodeForSupabase(code) {
@@ -10517,11 +10801,38 @@ async function continueCountFromReport() {
   showToast(`Continuing count: ${countSessionLabel(session)}`, 2800, "success");
 }
 
+async function ensureCountSessionReadyToApply(session, action = "submitting") {
+  if (!session) return null;
+  let current = findCountSessionById(session.id) || session;
+  if (current.localSyncPending || countEntriesAwaitingSync(current).length) {
+    await syncSharedCountSessionsToSupabase(true);
+    current = findCountSessionById(session.id) || current;
+  }
+  const pending = countEntriesAwaitingSync(current);
+  if (!current.localSyncPending && !pending.length) return current;
+  const failedCount = pending.filter((entry) => entry.syncStatus === "failed").length;
+  const message = `Cannot finish ${action}: ${pending.length} count entr${pending.length === 1 ? "y is" : "ies are"} not confirmed in shared sync (${failedCount} failed). Local entries are preserved.`;
+  if (isAdmin() && confirm(`${message}\n\nManager override: continue anyway and record an unsynced warning?`)) {
+    current.managerSyncOverrideAt = new Date().toISOString();
+    current.managerSyncOverrideBy = currentAuditUser();
+    current.finalizedWithUnsyncedEntries = true;
+    persistCountSessions({ scheduleSync: false });
+    return current;
+  }
+  showToast(message, 5200, "warning");
+  renderActiveCountSyncStatus(current);
+  return null;
+}
+
 // â”€â”€ Submit & apply count (from report modal) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-function openConfirmSubmitCount() {
+async function openConfirmSubmitCount() {
   const sessionId = state.countReportOpenId;
   state.pendingSubmitSessionId = sessionId;
-  const session = findCountSessionById(sessionId);
+  const session = await ensureCountSessionReadyToApply(findCountSessionById(sessionId), "submitting");
+  if (!session) {
+    state.pendingSubmitSessionId = null;
+    return;
+  }
   const entryCount = (session?.entries || []).length;
   const candidates = currentCountSessionCandidates(session || {});
   const nullCount = candidates.length - entryCount;
@@ -10577,12 +10888,14 @@ function restorePreviousCount(sessionId) {
   showToast(`Restored â€” ${restored} stock values reverted`, 3200, "success");
 }
 
-function submitAndApplyCount() {
+async function submitAndApplyCount() {
   const sessionId = state.pendingSubmitSessionId;
   state.pendingSubmitSessionId = null;
   document.querySelector("#confirmSubmitCountModal").hidden = true;
-  const session = findCountSessionById(sessionId);
-  if (!session) { showToast("Session not found.", 3000, "warning"); return; }
+  const candidateSession = findCountSessionById(sessionId);
+  if (!candidateSession) { showToast("Session not found.", 3000, "warning"); return; }
+  const session = await ensureCountSessionReadyToApply(candidateSession, "submitting");
+  if (!session) return;
   const entries = session.entries || [];
   const latestByCode = new Map();
   entries.forEach((entry) => latestByCode.set(codeKey(entry.code), entry));
@@ -10980,13 +11293,15 @@ function openFinalCountReport(sessionId) {
   state.finalReportSessionId = sessionId;
   if (els.finalReportTitle) els.finalReportTitle.textContent = `Final Count â€” ${countSessionLabel(session)}`;
   if (els.finalReportMeta) {
+    const syncStats = countSessionSyncStats(session);
     els.finalReportMeta.innerHTML = `
       <span><b>Date</b> ${escapeHtml(session.date || "-")}</span>
       <span><b>Vendor</b> ${escapeHtml(session.vendor || "All")}</span>
       <span><b>Category</b> ${escapeHtml(session.category || "All")}</span>
       <span><b>Status filter</b> ${escapeHtml(session.status || "All")}</span>
       <span><b>Submitted</b> ${escapeHtml(new Date(session.submittedAt).toLocaleString())}</span>
-      <span><b>Entries</b> ${number.format((session.entries || []).length)}</span>`;
+      <span><b>Entries</b> ${number.format((session.entries || []).length)}</span>
+      <span><b>Sync</b> ${syncStats.pending || syncStats.failed || session.finalizedWithUnsyncedEntries ? "WARNING - unconfirmed entries" : "All entries synced"}</span>`;
   }
   renderFinalCountReportRows(session);
   document.querySelector("#finalCountReportModal").hidden = false;
@@ -11034,6 +11349,10 @@ function exportFinalCountReportPdf() {
   const latestByCode = new Map();
   entries.forEach((e) => latestByCode.set(codeKey(e.code), e));
   const candidates = currentCountSessionCandidates(session);
+  const syncStats = countSessionSyncStats(session);
+  const syncWarning = syncStats.pending || syncStats.failed || session.finalizedWithUnsyncedEntries
+    ? "WARNING - export includes entries not confirmed by shared sync."
+    : "All entries synced.";
   const dateStr = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
   const rowsHtml = candidates.map((item) => {
     const key = codeKey(item.code);
@@ -11072,6 +11391,7 @@ function exportFinalCountReportPdf() {
     <span><b>Vendor</b> ${escapeHtml(session.vendor || "All")}</span>
     <span><b>Category</b> ${escapeHtml(session.category || "All")}</span>
     <span><b>Submitted</b> ${escapeHtml(new Date(session.submittedAt).toLocaleString())}</span>
+    <span><b>Sync</b> ${escapeHtml(syncWarning)}</span>
     <span><b>Generated</b> ${dateStr}</span>
   </div>
   <table><thead><tr><th>Code</th><th>Item</th><th>Vendor</th><th>Category</th><th>Qty Start</th><th>Qty End</th><th>Variance</th><th>Cost Var</th><th>Status</th></tr></thead>
@@ -11093,9 +11413,13 @@ async function exportFinalCountReportExcel() {
   const latestByCode = new Map();
   entries.forEach((e) => latestByCode.set(codeKey(e.code), e));
   const candidates = currentCountSessionCandidates(session);
+  const syncStats = countSessionSyncStats(session);
+  const syncNote = syncStats.pending || syncStats.failed || session.finalizedWithUnsyncedEntries
+    ? "WARNING: export includes entries not confirmed by shared sync."
+    : "Sync: all entries confirmed.";
   const wb = xlsx.utils.book_new();
   const data = [
-    ["Final Physical Count Report", "", `Date: ${session.date || "-"}`, `Vendor: ${session.vendor || "All"}`, `Submitted: ${new Date(session.submittedAt).toLocaleString()}`],
+    ["Final Physical Count Report", "", `Date: ${session.date || "-"}`, `Vendor: ${session.vendor || "All"}`, `Submitted: ${new Date(session.submittedAt).toLocaleString()}`, syncNote],
     [],
     ["Code", "Item", "Vendor", "Category", "Qty Start", "Qty End", "Variance", "Cost Variance", "Status"],
     ...candidates.map((item) => {
@@ -12107,7 +12431,11 @@ function generateFinalCountExport(session, candidates, latestByCode, snapshot) {
   const dateStr = new Date().toLocaleDateString("en-US",{year:"numeric",month:"2-digit",day:"2-digit"}).replace(/\//g,"-");
   // Store in state for Reports tab
   if (!state.finalCountReports) state.finalCountReports = [];
-  state.finalCountReports.unshift({ sessionId: session.id, label: countSessionLabel(session), date: dateStr, submittedAt: new Date().toISOString(), entries });
+  const syncStats = countSessionSyncStats(session);
+  const syncWarning = syncStats.pending || syncStats.failed || session.finalizedWithUnsyncedEntries
+    ? "WARNING: unconfirmed shared-sync entries are included."
+    : "";
+  state.finalCountReports.unshift({ sessionId: session.id, label: countSessionLabel(session), date: dateStr, submittedAt: new Date().toISOString(), entries, syncWarning });
   localStorage.setItem("posFinalCountReports:v1", JSON.stringify(state.finalCountReports.slice(0,30)));
   // Offer immediate download
   setTimeout(() => {
@@ -12122,7 +12450,7 @@ async function exportFinalCountToExcel(report) {
   if (!xlsx) { showToast("Excel library not available.", 3000, "warning"); return; }
   const wb = xlsx.utils.book_new();
   const data = [
-    ["Final Inventory Count - " + report.label, "", "", "", "", report.date],
+    ["Final Inventory Count - " + report.label, "", "", "", "", report.date, report.syncWarning || "Sync: all entries confirmed."],
     [],
     ["Code", "Item", "Vendor", "Category", "Qty Before", "QTY", "Variance", "Scanned"],
     ...report.entries.map((e) => [e.code, e.product, e.vendor, e.category, e.qtyStart, e.qty, e.variance, e.scanned ? "Yes" : "No (0)"]),
