@@ -46,8 +46,10 @@
   _filteredSkuIndex: new Map(),
   _loadedFileSignatures: new Set(),
   _activeDetailCode: "",
-  _activeTabRenderToken: 0,
   _activeTabRenderHandle: 0,
+  _activeTabRenderLastAt: 0,
+  _activeTabRenderRequested: false,
+  _activeTabRenderRunning: false,
   _parentPartsCache: new Map(),
   _datePresetsReady: false,
   tabSearches: JSON.parse(localStorage.getItem("posDashboardTabSearches:v1") || "{\"dashboard\":\"\",\"inventory\":\"\",\"ordering\":\"\"}"),
@@ -4907,16 +4909,32 @@ function applyRoleRestrictions(force = false) {
   }
 }
 
+const ACTIVE_TAB_RENDER_GAP_MS = 72;
+
 function queueActiveTabRender() {
-  const token = ++state._activeTabRenderToken;
-  if (state._activeTabRenderHandle) {
-    clearTimeout(state._activeTabRenderHandle);
-  }
+  state._activeTabRenderRequested = true;
+  if (state._activeTabRenderHandle) return;
+
+  const elapsed = Date.now() - (state._activeTabRenderLastAt || 0);
+  const wait = Math.max(0, ACTIVE_TAB_RENDER_GAP_MS - elapsed);
   state._activeTabRenderHandle = setTimeout(() => {
-    if (token !== state._activeTabRenderToken) return;
-    renderActiveTab();
     state._activeTabRenderHandle = 0;
-  }, 0);
+    if (!state._activeTabRenderRequested) return;
+    if (state._activeTabRenderRunning) {
+      queueActiveTabRender();
+      return;
+    }
+
+    state._activeTabRenderRequested = false;
+    state._activeTabRenderRunning = true;
+    try {
+      renderActiveTab();
+      state._activeTabRenderLastAt = Date.now();
+    } finally {
+      state._activeTabRenderRunning = false;
+      if (state._activeTabRenderRequested) queueActiveTabRender();
+    }
+  }, wait);
 }
 
 function render() {

@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "20260523-countsync1";
+  const VERSION = "20260524-layout1";
 
   function makeSearchEditable() {
     const search = document.querySelector("#searchInput");
@@ -14,14 +14,6 @@
     search.setAttribute("data-lpignore", "true");
     search.setAttribute("data-1p-ignore", "true");
     search.setAttribute("data-form-type", "other");
-  }
-
-  function loadCss(href) {
-    if (document.querySelector(`link[href^="${href.split("?")[0]}"]`)) return;
-    const link = document.createElement("link");
-    link.rel = "stylesheet";
-    link.href = href;
-    document.head.appendChild(link);
   }
 
   function loadScript(src) {
@@ -40,7 +32,6 @@
     document.addEventListener("DOMContentLoaded", makeSearchEditable);
   }
 
-  loadCss(`rescue-usable.css?v=${VERSION}`);
   loadScript(`POS SALES + INVENTORY DASHBOARD.core.js?v=${VERSION}`)
     .then(() => {
       makeSearchEditable();
