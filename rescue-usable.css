@@ -289,6 +289,7 @@ body[data-active-tab="ordering"] .order-table thead th {
 .history-col-status { width: 8rem; }
 .history-col-started, .history-col-update { width: 13rem; }
 .history-col-entries { width: 6rem; }
+.history-col-sync { width: 7rem; }
 .history-col-action { width: 7.5rem; }
 
 @media (max-width: 1180px), (pointer: coarse) {

@@ -178,6 +178,9 @@ function createScanPerformanceProfile() {
       detectIntervalMs: 42,
       normalPollMs: SHARED_SYNC_POLL_MS,
       scanPollMs: SHARED_SYNC_POLL_MS,
+      // PERF-B: countPollMs — sync poll interval while Count Mode is active.
+      // Full-tier (desktop): same as normal, counts are interactive and changes should appear quickly.
+      countPollMs: 4000,
       deferRestoresWhileScanning: false,
     },
     medium: {
@@ -185,6 +188,8 @@ function createScanPerformanceProfile() {
       detectIntervalMs: 67,
       normalPollMs: SHARED_SYNC_POLL_MS,
       scanPollMs: 12000,
+      // Medium (phone/tablet): 10s between count syncs — responsive without hammering the device.
+      countPollMs: 10000,
       deferRestoresWhileScanning: true,
     },
     low: {
@@ -192,6 +197,8 @@ function createScanPerformanceProfile() {
       detectIntervalMs: 100,
       normalPollMs: SHARED_SYNC_POLL_MS,
       scanPollMs: 45000,
+      // Low (Kindle/Silk): 30s between count syncs — keeps Kindle responsive while counting.
+      countPollMs: 30000,
       deferRestoresWhileScanning: true,
     },
   };
@@ -288,6 +295,7 @@ function bumpDataStamp() {
   state._priceCheckRowsCache = null;
   state._priceCheckRowsStamp = 0;
   state._countSearchIndex = null; // invalidate count search index too
+  state._countSetupCached = false; // FIX-D: invalidate setup dropdown cache on data load
   state._dashboardDetailsReady = false;
   state._dashboardDetailScheduled = false;
   state._dashboardDetailToken += 1;
@@ -881,9 +889,27 @@ const renderCountDropdownDebounced = debounce((val) => renderCountDropdown(val),
 els.countSearchInput?.addEventListener("input", () => {
   renderCountDropdownDebounced(els.countSearchInput.value);
 });
-els.countSearchInput?.addEventListener("focus", () => els.countSearchInput.select?.());
-els.countSearchInput?.addEventListener("click", () => els.countSearchInput.select?.());
+// KBD-A: On touch/mobile (Kindle, Android) do NOT auto-select on focus/click.
+// That fights the soft keyboard and causes jumps mid-entry.
+// On desktop keep select-on-focus so a barcode scanner's output replaces the prior value.
+els.countSearchInput?.addEventListener("focus", () => {
+  if (!scanPerformanceProfile.isMobile && !scanPerformanceProfile.isSilk) {
+    els.countSearchInput.select?.();
+  }
+});
+els.countSearchInput?.addEventListener("click", () => {
+  if (!scanPerformanceProfile.isMobile && !scanPerformanceProfile.isSilk) {
+    els.countSearchInput.select?.();
+  }
+});
+// KBD-B: Global keystroke-to-search relay — desktop only.
+// On touch/Kindle devices (isMobile, isSilk) the soft keyboard fires 'input' events, not
+// 'keydown' events routed via document. Intercepting here causes double-entry, focus battles,
+// and keyboard flicker. The countSearchInput's own 'input' listener (above) handles all
+// soft-keyboard typing correctly without this relay.
 document.addEventListener("keydown", (event) => {
+  // Skip entirely on touch/mobile — let the browser and soft keyboard work normally.
+  if (scanPerformanceProfile.isMobile || scanPerformanceProfile.isSilk) return;
   if (els.countSessionModal?.hidden || !state.activeCountSession || state.countStage !== "search") return;
   if (els.countDuplicateModal && !els.countDuplicateModal.hidden) return;
   if (!els.countSearchInput || event.target === els.countSearchInput) return;
@@ -4038,6 +4064,22 @@ function countSessionLabel(session) {
   return parts.join(" Â· ");
 }
 
+// ARCH-B: Human-readable status label for count session history rows.
+// Shows: Active | Completed | Paused | Synced | Local Only
+function countSessionStatusLabel(session) {
+  if (!session) return "-";
+  // FIX-B/C: isActiveLive is set when a session is in countSessions[] AND currently active.
+  // Also fall back to comparing with activeCountSession.id in case flag wasn't set.
+  const isActive = session.isActiveLive || state.activeCountSession?.id === session.id;
+  if (isActive) return '<span class="state-badge state-active">Active / Live</span>';
+  if (session.submittedAt) return '<span class="state-badge state-synced">Completed</span>';
+  const synced = !session.localSyncPending && !countSessionHasUnsyncedEdits(session);
+  if (synced && session.lastSyncAt) return '<span class="state-badge state-synced">Synced</span>';
+  if (session.savedAt) return '<span class="state-badge">Paused</span>';
+  if (countSessionHasUnsyncedEdits(session)) return '<span class="state-badge state-badge--warn">Local only</span>';
+  return '<span class="state-badge">In progress</span>';
+}
+
 function openCountSetupModal() {
   els.countDateInput.value = new Date().toISOString().slice(0, 10);
   populateCountSetupOptions();
@@ -4056,7 +4098,12 @@ function closeCountSetupModal() {
 }
 
 function populateCountSetupOptions() {
-  // Pull from ALL inventory rows â€” no filters applied
+  // FIX-D: Cache vendor/category/status lists keyed to the data stamp.
+  // Previously this rebuilt from the full inventory Map on every renderCountsWorkspace call.
+  // On Kindle (10k+ items) that was 100-300ms of synchronous work on each poll tick.
+  if (state._countSetupCacheStamp === state._dataCacheStamp && state._countSetupCached) {
+    return; // lists are still current
+  }
   const allRows = [...state.latestInventory.values()];
   const excelRows = [...state.excelItems.values()];
   const combined = allRows.length ? allRows : excelRows;
@@ -4064,13 +4111,15 @@ function populateCountSetupOptions() {
   fillSelect(els.countCategoryInput, unique(combined.map((r) => r.category).filter(Boolean)));
   const statusEl = document.querySelector("#countStatusInput");
   if (statusEl) {
-    // Collect states from data, but always include the known set
     const knownStates = ["Active", "Disabled", "Discontinued", "Force Order"];
     const dataStates = unique(combined.map((r) => r.state).filter(Boolean));
-    const allStates = unique([...knownStates, ...dataStates]);
-    fillSelect(statusEl, allStates);
+    fillSelect(statusEl, unique([...knownStates, ...dataStates]));
   }
+  state._countSetupCacheStamp = state._dataCacheStamp;
+  state._countSetupCached = true;
 }
+
+
 
 function startCountSessionFromModal() {
   const statusEl = document.querySelector("#countStatusInput");
@@ -4091,16 +4140,25 @@ function startCountSessionFromModal() {
     localSyncPending: true,
     entries: [],
   };
-  state.activeCountSession = session;
+  // FIX-B: Register in countSessions[] immediately with isActiveLive:true so Report History
+  // shows it right away. activeCountSession points to the same object.
+  // isActiveLive is read by countSessionStatusLabel() to show "Active / Live" in the table.
+  const liveSession = { ...session, isActiveLive: true };
+  state.activeCountSession = liveSession;
   state._countSessionOpen = true;
   state.countQtyBuffer = "0";
   state.selectedCountItemCode = "";
   state.countStage = "search";
   state.pendingDuplicateCount = null;
   state.pendingDuplicateMode = null;
+  state.countSessions = [liveSession, ...state.countSessions.filter((s) => s.id !== session.id)];
   persistActiveCountSession();
+  persistCountSessions({ scheduleSync: false });
   closeCountSetupModal();
-  buildCountSearchIndex();
+  // FIX-D: Build the search index lazily — defer until after the UI paints.
+  // On Kindle this was a synchronous ~400ms block before the count screen appeared.
+  // findCountMatch()/findAnyCountMatch() also auto-build on first use (lines 4307/4323).
+  setTimeout(() => buildCountSearchIndex(), 80);
   renderCountsWorkspace();
   showToast(
     state._countSyncUnavailable
@@ -4132,6 +4190,7 @@ async function saveCountSession() {
     ...syncCheckedSession,
     savedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
+    isActiveLive: false,   // FIX-B: clear live flag — session is now saved/paused
   });
   state.countSessions = [session, ...state.countSessions.filter((item) => item.id !== session.id)];
 
@@ -4491,10 +4550,14 @@ function applyCountEntry() {
 
 function focusCountSearch() {
   if (!els.countSearchInput) return;
+  // KBD-C: On touch/Kindle do NOT call select() -- it fights the soft keyboard.
+  // On desktop keep select-all so barcode scanner bursts replace prior text cleanly.
   setTimeout(() => {
     if (!els.countSearchInput) return;
     els.countSearchInput.focus();
-    els.countSearchInput.select?.();
+    if (!scanPerformanceProfile.isMobile && !scanPerformanceProfile.isSilk) {
+      els.countSearchInput.select?.();
+    }
   }, 0);
 }
 
@@ -4860,7 +4923,7 @@ function renderCountReportRows(session, mode = state.countReportMode || "input")
 
 async function openSessionHistoryModal() {
   if (els.sessionHistoryModal) els.sessionHistoryModal.hidden = false;
-  if (els.countSessionBody) els.countSessionBody.innerHTML = `<tr><td colspan="11" class="empty-cell">Loading report history...</td></tr>`;
+  if (els.countSessionBody) els.countSessionBody.innerHTML = `<tr><td colspan="12" class="empty-cell">Loading report history...</td></tr>`;
   if (ENABLE_SHARED_SYNC && sharedCountSessionsAvailable) {
     await restoreSharedCountSessionsOnlyFromSupabase({ silent: true, history: true });
   }
@@ -4932,21 +4995,32 @@ function renderCountSessionRows() {
   const vendorFilter = els.sessionHistoryVendorFilter?.value || "";
   const periodFilter = els.sessionHistoryPeriodFilter?.value || "";
 
-  const filtered = dedupeCountSessionsForDisplay(state.countSessions
+  // FIX-B/C: Always include activeCountSession in the history display, even if it wasn't
+  // persisted into countSessions[] yet (e.g. loaded from localStorage on an older build).
+  const activeSess = state.activeCountSession;
+  const sessionsWithActive = activeSess && !state.countSessions.some((s) => s.id === activeSess.id)
+    ? [{ ...activeSess, isActiveLive: true }, ...state.countSessions]
+    : state.countSessions;
+
+  const filtered = dedupeCountSessionsForDisplay(sessionsWithActive
     .slice()
     .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")))
     .filter((s) => {
       if (countSessionIsDeleted(s.id)) return false;
       if (!remoteActiveCountSessionIsFresh(s)) return false;
-      if (!(s.entries || []).length && !s.savedAt && !s.submittedAt) return false;
-      if (employeeMode && !s.submittedAt) return false;
+      // Show all sessions that have been started, even if 0 entries.
+      if (!s.startedAt && !(s.entries || []).length && !s.savedAt && !s.submittedAt) return false;
+      // FIX-C: In employee mode, show saved/paused/submitted sessions — they all represent
+      // completed work. Only hide sessions that are still actively being counted with no
+      // entries yet (i.e. just opened, nothing scanned, not yet saved).
+      if (employeeMode && !s.submittedAt && !s.savedAt && !(s.entries || []).length) return false;
       if (vendorFilter && (s.vendor || s.department || "") !== vendorFilter) return false;
       if (!sessionMatchesPeriodFilter(s, periodFilter)) return false;
       return true;
     }));
 
   if (!filtered.length) {
-    els.countSessionBody.innerHTML = `<tr><td colspan="11" class="empty-cell">${state.countSessions.length ? "No sessions match filters." : "No physical count sessions saved yet."}</td></tr>`;
+    els.countSessionBody.innerHTML = `<tr><td colspan="12" class="empty-cell">${state.countSessions.length ? "No sessions match filters." : "No physical count sessions saved yet."}</td></tr>`;
     return;
   }
   els.countSessionBody.innerHTML = filtered
@@ -4959,6 +5033,7 @@ function renderCountSessionRows() {
         <td>${escapeHtml(new Date(session.startedAt).toLocaleString())}</td>
         <td class="num">${number.format((session.entries || []).length)}</td>
         <td>${escapeHtml(new Date(session.updatedAt || session.startedAt).toLocaleString())}${session.remoteActive ? ` <span class="muted">(Live)</span>` : ""}</td>
+        <td>${countSessionStatusLabel(session)}</td>
         <td><button type="button" class="secondary-button count-inline-report-button" data-count-report="${escapeHtml(session.id)}">View</button></td>
         <td>${session.submittedAt ? `<button type="button" class="secondary-button final-report-btn" data-final-report="${escapeHtml(session.id)}">Final Report</button>` : `<span class="muted">Not submitted</span>`}</td>
         <td>${!employeeMode && session.preCountSnapshot ? (session.restoredAt ? `<span class="muted">Restored</span>` : `<button type="button" class="restore-count-btn" data-restore-session="${escapeHtml(session.id)}">Restore</button>`) : ""}</td>
@@ -5066,11 +5141,17 @@ function setCountSyncLoading(loading, text = "Loading latest count...") {
 }
 
 async function refreshLatestCountSessions(options = {}) {
-  setCountSyncLoading(true);
-  renderCountsWorkspace({ loading: true });
+  // PERF-E: Only show the loading/blank state if there's genuinely nothing to display yet.
+  const hasLocalData = state.countSessions.length > 0 || state.activeCountSession != null;
+  if (!hasLocalData) {
+    setCountSyncLoading(true);
+    renderCountsWorkspace({ loading: true });
+  }
   try {
     if (ENABLE_SHARED_SYNC && sharedCountSessionsAvailable) {
-      const pulled = await restoreSharedCountSessionsOnlyFromSupabase({ silent: true, history: options.history === true });
+      // Pass render:false — we will call renderCountsWorkspace ourselves in the finally block,
+      // avoiding a double render when applySharedCountSessionRows also tries to render.
+      const pulled = await restoreSharedCountSessionsOnlyFromSupabase({ silent: true, history: options.history === true, render: false });
       if (!pulled) {
         state._countSyncUnavailable = true;
         persistCountSessions({ scheduleSync: false });
@@ -5078,12 +5159,36 @@ async function refreshLatestCountSessions(options = {}) {
     }
   } finally {
     setCountSyncLoading(false);
-    renderCountsWorkspace();
+    if (activeTabName() === "counts") renderCountsWorkspace();
   }
 }
 
 async function openLatestCountOrSetup() {
-  await refreshLatestCountSessions();
+  // PERF-D: Don't await the remote fetch before deciding what to show.
+  // On Kindle this turned a tap on "Start / Continue Count" into a ~30s blank wait.
+  // Instead: use local state immediately. If there's already an active session, open it.
+  // If not, open the setup modal right away. The background sync will update history rows
+  // once it completes, but the user is never blocked waiting for it.
+  if (state.activeCountSession) {
+    state._countSessionOpen = true;
+    renderCountsWorkspace();
+    // Still sync in background to pick up entries from other devices.
+    if (ENABLE_SHARED_SYNC && sharedCountSessionsAvailable) {
+      const delay = scanPerformanceProfile.tier === "low" ? 2000 : 600;
+      setTimeout(() => refreshLatestCountSessions(), delay);
+    }
+    return;
+  }
+  // No local active session — check remote before opening setup, but with a timeout.
+  // On low-tier devices cap the wait so the setup modal opens within 4s regardless.
+  if (ENABLE_SHARED_SYNC && sharedCountSessionsAvailable) {
+    const timeout = scanPerformanceProfile.tier === "low" ? 4000
+      : scanPerformanceProfile.tier === "medium" ? 2500 : 1500;
+    await Promise.race([
+      refreshLatestCountSessions(),
+      new Promise((resolve) => setTimeout(resolve, timeout)),
+    ]);
+  }
   if (state.activeCountSession) {
     state._countSessionOpen = true;
     renderCountsWorkspace();
@@ -5099,7 +5204,12 @@ function renderCountsWorkspace(options = {}) {
     if (els.countSummaryStrip) els.countSummaryStrip.hidden = true;
     return;
   }
-  populateCountSetupOptions();
+  // PERF-C: Only rebuild setup dropdowns when the setup modal is actually open or explicitly requested.
+  // Previously this ran on every poll-triggered render, re-querying all vendors/categories
+  // from the full inventory on every 2s tick — very expensive on Kindle.
+  if (options.populateSetup || (els.countSetupModal && !els.countSetupModal.hidden)) {
+    populateCountSetupOptions();
+  }
   if (state.activeCountSession) {
     state.activeCountSession = normalizeCountSession(
       state.activeCountSession,
@@ -5149,7 +5259,11 @@ function renderCountsWorkspace(options = {}) {
   }
   renderCountQuantity();
   renderSelectedCountItem();
-  renderCountEntryRows();
+  // Only rebuild entry rows when the count session is actually open.
+  // These are no-ops when the modal is hidden but add measurable parse cost on Kindle.
+  if (active && state._countSessionOpen) {
+    renderCountEntryRows();
+  }
   renderCountSessionRows();
   if (active && state.countStage === "search") focusCountSearch();
 }
@@ -7480,7 +7594,20 @@ function switchTab(tab) {
   if (tab === "scanmode") return;
   if (tab === "counts") {
     state._countSessionOpen = false;
-    void refreshLatestCountSessions();
+    // PERF-A: Render immediately from local state — never block the counts UI on a remote fetch.
+    // Previously refreshLatestCountSessions() ran synchronously here: it awaited Supabase,
+    // showed a loading spinner, and blocked the entire tab for ~30s on Kindle/slow wifi.
+    // Now: paint local state first, then sync in the background after a tier-appropriate delay.
+    renderCountsWorkspace();
+    if (ENABLE_SHARED_SYNC && sharedCountSessionsAvailable) {
+      const delay = scanPerformanceProfile.tier === "low" ? 3500
+        : scanPerformanceProfile.tier === "medium" ? 1200
+        : 600;
+      setTimeout(() => {
+        // Only sync if still on the counts tab when the timer fires.
+        if (activeTabName() === "counts") refreshLatestCountSessions();
+      }, delay);
+    }
     return;
   }
   renderSharedQuickTools(tab);
@@ -10168,11 +10295,29 @@ function applySharedCountSessionRows(rows = [], options = {}) {
   let nextActive = remoteActive && remoteActiveCountSessionIsFresh({ ...remoteActive, remoteActive: true })
     ? mergeCountSessions(remoteActive, remoteActiveId === localActiveId ? localActive : null)
     : null;
+  // FIX-B: If the local device has already saved or submitted this session, the remote
+  // active:${id} row is stale. Never let it become nextActive — that would undo the save.
+  // Schedule a background delete of the stale remote row so other devices also converge.
+  if (nextActive?.id) {
+    const localSavedCopy = localSavedById.get(cleanCell(nextActive.id));
+    if (localSavedCopy?.savedAt || localSavedCopy?.submittedAt) {
+      if (ENABLE_SHARED_SYNC && sharedCountSessionsAvailable) {
+        supabaseDeleteRowsByValues("count_sessions", "id", [`active:${cleanCell(nextActive.id)}`]).catch(() => {});
+      }
+      nextActive = null;
+    }
+  }
   if (countSessionHasUnsyncedEdits(localActive) && (!nextActive || localActiveId !== remoteActiveId)) {
     if (nextActive?.id && nextActive.id !== localActive.id) mergedSavedById.set(nextActive.id, nextActive);
     nextActive = localActive;
   }
-  if (nextActive?.id) mergedSavedById.delete(cleanCell(nextActive.id));
+  // FIX-C: Do NOT remove nextActive from mergedSavedById.
+  // Previously this deleted the active session from the sessions list entirely, making it
+  // invisible in Report History. Instead keep it in countSessions[] with isActiveLive:true
+  // so history can show "Active / Live" status while it's still in progress.
+  if (nextActive?.id) {
+    mergedSavedById.set(cleanCell(nextActive.id), { ...nextActive, isActiveLive: true });
+  }
   state.countSessions = dedupeCountSessionsForDisplay([...mergedSavedById.values()])
     .filter((session) => !countSessionIsDeleted(session.id))
     .sort((a, b) => String(b.updatedAt || b.submittedAt || "").localeCompare(String(a.updatedAt || a.submittedAt || "")));
@@ -10251,14 +10396,17 @@ async function restoreSharedImportLogsOnlyFromSupabase(options = {}) {
 
 async function restoreSharedCountSessionsOnlyFromSupabase(options = {}) {
   if (!ENABLE_SHARED_SYNC || !sharedCountSessionsAvailable) return false;
-  const { silent = false, history = false, fromSync = false } = options;
+  // render option: false means applySharedCountSessionRows will not call renderCountsWorkspace.
+  // Used by refreshLatestCountSessions which renders in its own finally block to avoid double render.
+  const { silent = false, history = false, fromSync = false, render: renderOpt } = options;
+  const shouldRender = renderOpt === false ? false : !fromSync;
   try {
     const rows = await supabaseSelectRows("count_sessions", {
       select: "*",
       order: "updated_at.desc",
       limit: history ? "60" : "25",
     });
-    applySharedCountSessionRows(rows, { render: !fromSync });
+    applySharedCountSessionRows(rows, { render: shouldRender });
     state._countSyncUnavailable = false;
     if (!silent) showToast("Shared count sessions loaded.", 2400, "success");
     return true;
@@ -10360,6 +10508,16 @@ async function syncSharedCountSessionsToSupabase(silent = false) {
   sharedCountSessionsTimer = 0;
   state._countSyncInFlight = (async () => {
     try {
+      // FIX-A: Delete stale remote active:${id} rows for any locally-saved sessions BEFORE
+      // pulling remote. If we pull first, the remote active row wins the merge and resurrects
+      // the session as active — undoing the save on the saving device and all other devices.
+      const savedSessionIds = (state.countSessions || [])
+        .filter((session) => cleanCell(session?.id) && !countSessionIsDeleted(session.id) && session.savedAt)
+        .map((session) => cleanCell(session.id))
+        .filter(Boolean);
+      if (savedSessionIds.length) {
+        await supabaseDeleteRowsByValues("count_sessions", "id", savedSessionIds.map((id) => `active:${id}`));
+      }
       const pulled = await restoreSharedCountSessionsOnlyFromSupabase({ silent: true, history: true, fromSync: true });
       if (!pulled) throw new Error("count sessions remote read failed");
     const deletedIds = [...(state._deletedCountSessionIds || [])].filter(Boolean).slice(-500);
@@ -10779,13 +10937,23 @@ function confirmDeleteSavedSession() {
 
 // â”€â”€ Continue count from report (re-open the session as active) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function continueCountFromReport() {
-  await refreshLatestCountSessions({ history: true });
+  // PERF-F: Try to find the session locally first — no need to block on remote fetch if
+  // we already have it. Fall back to a timed remote pull only if it's not found locally.
   const sessionId = state.countReportOpenId;
-  const session = findCountSessionById(sessionId);
+  let session = findCountSessionById(sessionId);
+  if (!session && ENABLE_SHARED_SYNC && sharedCountSessionsAvailable) {
+    const timeout = scanPerformanceProfile.tier === "low" ? 4000 : 2000;
+    await Promise.race([
+      refreshLatestCountSessions({ history: true }),
+      new Promise((resolve) => setTimeout(resolve, timeout)),
+    ]);
+    session = findCountSessionById(sessionId);
+  }
   if (!session) { showToast("Session not found.", 3000, "warning"); return; }
-  // Remove from saved, set as active
-  state.countSessions = state.countSessions.filter((s) => s.id !== sessionId);
-  state.activeCountSession = markCountSessionDirty({ ...session });
+  // FIX-B: Keep in countSessions[] with isActiveLive:true — removing it hid it from history.
+  const liveSession = markCountSessionDirty({ ...session, isActiveLive: true });
+  state.countSessions = [liveSession, ...state.countSessions.filter((s) => s.id !== sessionId)];
+  state.activeCountSession = liveSession;
   state._countSessionOpen = true;
   state.countQtyBuffer = "0";
   state.selectedCountItemCode = "";
@@ -13390,7 +13558,13 @@ if (!state.authRequired || !loadUsers().length) {
   if (!ENABLE_SHARED_SYNC) return;
   let _lastHash = "";
   let pollTimer = 0;
-  const nextPollDelay = () => scanModeIsActive() ? scanPerformanceProfile.scanPollMs : scanPerformanceProfile.normalPollMs;
+  // PERF-B: Use countPollMs when Count Mode is active — Kindle gets 30s, medium 10s, full 4s.
+  // This prevents the 2s Supabase hammer from interrupting count entry on slow devices.
+  const nextPollDelay = () => {
+    if (scanModeIsActive()) return scanPerformanceProfile.scanPollMs;
+    if (activeTabName() === "counts" && scanPerformanceProfile.countPollMs) return scanPerformanceProfile.countPollMs;
+    return scanPerformanceProfile.normalPollMs;
+  };
   async function poll(options = {}) {
     const forceRestore = options.forceRestore === true;
     try {

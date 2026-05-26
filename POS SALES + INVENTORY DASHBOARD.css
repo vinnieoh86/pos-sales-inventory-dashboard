@@ -1022,9 +1022,36 @@ body {
 
 .count-keypad {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  /* Explicit areas — never rely on auto-flow for a keypad.
+     row1: 1 2 3
+     row2: 4 5 6
+     row3: 7 8 9
+     row4: back 0 clear
+     row5: done done done */
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-rows: repeat(5, auto);
+  grid-template-areas:
+    "k1   k2   k3"
+    "k4   k5   k6"
+    "k7   k8   k9"
+    "back k0   clr"
+    "done done done";
   gap: 0.6rem;
 }
+
+.count-key--1 { grid-area: k1; }
+.count-key--2 { grid-area: k2; }
+.count-key--3 { grid-area: k3; }
+.count-key--4 { grid-area: k4; }
+.count-key--5 { grid-area: k5; }
+.count-key--6 { grid-area: k6; }
+.count-key--7 { grid-area: k7; }
+.count-key--8 { grid-area: k8; }
+.count-key--9 { grid-area: k9; }
+.count-key--back { grid-area: back; }
+.count-key--0 { grid-area: k0; }
+.count-key--clear { grid-area: clr; }
+.count-key--done { grid-area: done; }
 
 .count-keypad button {
   min-height: 4.75rem;
@@ -1034,7 +1061,6 @@ body {
 }
 
 .count-keypad__done {
-  grid-row: span 2;
   background: linear-gradient(180deg, #23b369, #16835b);
 }
 
@@ -2004,6 +2030,8 @@ th[data-sort][data-sort-dir="desc"]::after {
   white-space: nowrap;
 }
 .state-active     { background: #d4f5e5; color: #0d6640; }
+.state-synced     { background: #dbeafe; color: #1e40af; }
+.state-badge--warn { background: #fef3c7; color: #92400e; }
 .state-discontinued { background: #dbeafe; color: #1d4ed8; }
 .state-disabled   { background: #fee2e2; color: #b91c1c; }
 .state-forceorder { background: #fde047; color: #6b4f00; font-weight: 800; }
@@ -4577,7 +4605,7 @@ body[data-active-tab="settings"] .sticky-pills {
   #countSessionModal .count-selected-item { min-height: 5.5rem !important; padding: 0.65rem !important; }
   #countSessionModal .count-item-card__meta { grid-template-columns: 1fr !important; }
   #countSessionModal .count-search-label input { min-height: 3.5rem !important; font-size: 1.3rem !important; }
-  #countSessionModal .count-keypad { grid-template-columns: repeat(4, 1fr) !important; gap: 0.4rem !important; }
+  #countSessionModal .count-keypad { gap: 0.4rem !important; }
   #countSessionModal .count-keypad button { min-height: 4rem !important; font-size: 1.6rem !important; }
   .count-modal:not(#countSessionModal) {
     padding: 0.65rem !important;
@@ -4621,13 +4649,7 @@ body[data-active-tab="settings"] .sticky-pills {
     box-sizing: border-box !important;
     -webkit-overflow-scrolling: touch;
   }
-  #countSessionModal .count-keypad {
-    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
-  }
-  #countSessionModal .count-keypad__done {
-    grid-row: auto !important;
-    grid-column: 1 / -1 !important;
-  }
+  /* grid-template-areas defined on .count-keypad already uses 3 cols — no override needed */
 }
 
 #inventory td.order-col {
@@ -5334,15 +5356,7 @@ body[data-active-tab="multi"] .sticky-pills {
     padding: 0.45rem 0.35rem !important;
     font-size: 0.95rem !important;
   }
-
-  #countSessionModal .count-keypad {
-    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
-  }
-
-  #countSessionModal .count-keypad__done {
-    grid-column: 1 / -1 !important;
-    grid-row: auto !important;
-  }
+  /* grid-template-areas on .count-keypad handles layout — no column/row overrides needed */
 }
 
 /* Final stability pass: keep controls inside the page instead of widening the viewport. */
