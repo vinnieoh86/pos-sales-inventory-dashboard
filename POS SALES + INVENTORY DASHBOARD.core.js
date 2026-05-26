@@ -53,6 +53,8 @@
   _activeTabRenderRequested: false,
   _activeTabRenderRunning: false,
   _productsOpened: false,
+  _initialRestoreComplete: false,
+  _scanIndexBuildQueued: false,
   _dashboardDetailsReady: false,
   _dashboardDetailScheduled: false,
   _dashboardDetailToken: 0,
@@ -145,6 +147,17 @@ const SHARED_SYNC_POLL_MS = 2000;
 const SHARED_SYNC_INITIAL_DELAY_MS = 1200;
 const SHARED_PRODUCT_META_PULL_LIMIT = 500;
 
+function performanceNow() {
+  return typeof performance !== "undefined" && typeof performance.now === "function"
+    ? performance.now()
+    : Date.now();
+}
+
+function logPerformanceEnd(label, startedAt, details = {}) {
+  const ms = Number((performanceNow() - startedAt).toFixed(2));
+  console.info(`[AppPerf] ${label} end`, { ms, ...details });
+}
+
 // Scan mode gets a small capability profile so weaker browsers do less work while scanning.
 function createScanPerformanceProfile() {
   const ua = navigator.userAgent || "";
@@ -188,12 +201,43 @@ function scanModeIsActive() {
   return state.scanModeActive || activeTabName() === "scanmode";
 }
 
-function queueScanExactIndexBuild() {
-  const run = () => {
-    if (scanModeIsActive()) ensurePriceCheckExactIndex();
+function setScanLookupStatus(message, readiness = "") {
+  if (!els?.scanModeStatus) return;
+  els.scanModeStatus.textContent = message;
+  if (readiness) els.scanModeStatus.dataset.readiness = readiness;
+  else delete els.scanModeStatus.dataset.readiness;
+}
+
+// Scanner lookup is prioritized ahead of Products DOM work on touch devices.
+function queueScanExactIndexBuild(options = {}) {
+  const isScanActive = scanModeIsActive();
+  if (!isScanActive && options.prioritize !== true) return;
+  if (!state._initialRestoreComplete && !state.latestInventory.size && !state.excelItems.size) {
+    if (isScanActive) setScanLookupStatus("Loading item lookup...", "loading");
+    return;
+  }
+  if (!state.latestInventory.size && !state.excelItems.size) {
+    if (isScanActive) setScanLookupStatus("Offline or not ready", "offline");
+    return;
+  }
+  const currentStamp = `${state._dataCacheStamp}:${state._multiBarcodeIndexStamp || 0}`;
+  if (state._priceCheckExactIndex && state._priceCheckExactIndexStamp === currentStamp) {
+    if (isScanActive) setScanLookupStatus("Scanner ready", "ready");
+    return;
+  }
+  if (state._scanIndexBuildQueued) return;
+  if (isScanActive) setScanLookupStatus("Loading item lookup...", "loading");
+  state._scanIndexBuildQueued = true;
+  const build = () => {
+    state._scanIndexBuildQueued = false;
+    if (!scanModeIsActive() && options.prioritize !== true) return;
+    ensurePriceCheckExactIndex();
+    if (scanModeIsActive() && els.scanModeStatus?.dataset.readiness === "loading") {
+      setScanLookupStatus("Scanner ready", "ready");
+    }
   };
-  if ("requestIdleCallback" in window) window.requestIdleCallback(run, { timeout: 400 });
-  else setTimeout(run, 30);
+  if (isScanActive || options.immediate === true) build();
+  else setTimeout(build, 0);
 }
 
 function setScanPerformanceMode(active) {
@@ -242,6 +286,7 @@ function bumpDataStamp() {
   state._dashboardDetailsReady = false;
   state._dashboardDetailScheduled = false;
   state._dashboardDetailToken += 1;
+  if (scanModeIsActive() && state._initialRestoreComplete) queueScanExactIndexBuild();
 }
 
 function clearInventorySelection() {
@@ -883,7 +928,8 @@ document.querySelector("#scanModeClearButton")?.addEventListener("click", () => 
   const inp = document.querySelector("#scanModeInput");
   if (inp) { inp.value = ""; inp.focus(); }
   renderPriceCheckResult(null);
-  if (els.scanModeStatus) els.scanModeStatus.textContent = "Ready \u2014 scan an item.";
+  setScanLookupStatus(state._priceCheckExactIndex ? "Scanner ready" : "Loading item lookup...", state._priceCheckExactIndex ? "ready" : "loading");
+  if (!state._priceCheckExactIndex) queueScanExactIndexBuild();
 });
 document.querySelector("#scanModeInput")?.addEventListener("keydown", (e) => {
   if (e.key !== "Enter") return;
@@ -1355,13 +1401,6 @@ document.addEventListener("click", (event) => {
     els.detailDrawer.hidden = true;
     state._activeDetailCode = "";
   }
-  const activeTab = activeTabName();
-  if (
-    ["inventory", "ordering"].includes(activeTab) &&
-    !event.target.closest("button, input, select, textarea, details, summary, .detail-drawer, .count-modal, tbody tr, thead")
-  ) {
-    setTimeout(() => els.searchInput?.focus(), 0);
-  }
   if (
     activeTabName() === "pricecheck" &&
     (state.priceCheckStream || state.priceCheckScanner) &&
@@ -1369,9 +1408,12 @@ document.addEventListener("click", (event) => {
   ) {
     return;
   }
-  if (!interactiveTarget && event.target.closest(".app, .panel, .metrics, .controls, .tab-view, .sticky-pills")) {
-    if (activeTabName() === "pricecheck") focusPriceCheckSearch(false);
-    else els.searchInput?.focus();
+  if (
+    !interactiveTarget &&
+    activeTabName() === "pricecheck" &&
+    event.target.closest(".app, .panel, .metrics, .controls, .tab-view, .sticky-pills")
+  ) {
+    focusPriceCheckSearch(false);
   }
   document.querySelectorAll(".column-picker[open]").forEach((detail) => {
     if (!detail.contains(event.target)) detail.removeAttribute("open");
@@ -2831,6 +2873,7 @@ function buildPriceCheckEntry(inventory = {}, excel = {}) {
 function ensurePriceCheckExactIndex() {
   const stamp = `${state._dataCacheStamp}:${state._multiBarcodeIndexStamp || 0}`;
   if (state._priceCheckExactIndex && state._priceCheckExactIndexStamp === stamp) return;
+  const startedAt = performanceNow();
   const exact = new Map();
   const indexEntry = (entry) => {
     [entry.code, entry.plu, entry.itemNumber].forEach((value) => {
@@ -2856,6 +2899,10 @@ function ensurePriceCheckExactIndex() {
   });
   state._priceCheckExactIndex = exact;
   state._priceCheckExactIndexStamp = stamp;
+  console.info("[AppPerf] barcode index ready", {
+    ms: Number((performanceNow() - startedAt).toFixed(2)),
+    entries: exact.size,
+  });
 }
 
 function priceCheckExactMatch(query) {
@@ -2950,7 +2997,10 @@ function setPriceCheckTorchButtons(supported) {
 
 function setSharedScanStatus(message) {
   if (els.priceCheckStatus) els.priceCheckStatus.textContent = message;
-  if (els.scanModeStatus) els.scanModeStatus.textContent = message;
+  if (els.scanModeStatus) {
+    els.scanModeStatus.textContent = message;
+    delete els.scanModeStatus.dataset.readiness;
+  }
 }
 
 async function togglePriceCheckTorch() {
@@ -3701,6 +3751,7 @@ function handleScanModeLookup(value, options = {}) {
     els.scanModeStatus.textContent = item
       ? `\u2713 ${item.product || item.code} \u2014 ready for next scan.`
       : `No match for "${query}". Try again.`;
+    delete els.scanModeStatus.dataset.readiness;
   }
   if (!item && !options.silentNotFound) showToast("Item not found.", 2000, "warning");
   if (options.refocus !== false) {
@@ -4765,7 +4816,16 @@ function updateCountSummaryStrip() {
 }
 
 function setCountSyncLoading(loading, text = "Loading latest count...") {
+  const wasLoading = state._countSyncLoading;
+  if (loading && !wasLoading) {
+    state._countSessionLoadStartedAt = performanceNow();
+    console.info("[AppPerf] count session load start");
+  }
   state._countSyncLoading = !!loading;
+  if (!loading && wasLoading && state._countSessionLoadStartedAt != null) {
+    logPerformanceEnd("count session load", state._countSessionLoadStartedAt);
+    state._countSessionLoadStartedAt = null;
+  }
   if (!els.countSyncStatus) return;
   els.countSyncStatus.hidden = !loading;
   els.countSyncStatus.textContent = text;
@@ -5928,6 +5988,8 @@ function renderTable() {
 }
 
 function renderInventory() {
+  const productsRenderStartedAt = performanceNow();
+  console.info("[AppPerf] products table render start");
   renderSharedQuickTools("inventory");
   const needsIndexBuild = !state._inventoryCache || state._inventoryCacheStamp !== state._dataCacheStamp;
   if (needsIndexBuild) setAppLoadStatus("Building product index");
@@ -5951,6 +6013,7 @@ function renderInventory() {
   if (!rows.length) {
     els.inventoryBody.innerHTML = `<tr><td colspan="20" class="empty-cell">Load CSV inventory or the Excel import to view all items.</td></tr>`;
     clearAppLoadStatus("Building product index");
+    logPerformanceEnd("products table render", productsRenderStartedAt, { rows: 0 });
     return;
   }
 
@@ -5981,6 +6044,7 @@ function renderInventory() {
       wireInventoryInfiniteScroll();
       syncInventoryHeaderOffset();
       clearAppLoadStatus("Building product index");
+      logPerformanceEnd("products table render", productsRenderStartedAt, { rows: visible.length, available: rows.length });
     }
   }
   requestAnimationFrame(renderChunk);
@@ -7162,10 +7226,6 @@ function switchTab(tab) {
     }
   } else if (tab === "inventory") {
     state._productsOpened = true;
-    setTimeout(() => {
-      els.searchInput?.focus();
-      els.searchInput?.select?.();
-    }, 80);
   }
   applyRoleRestrictions(true);
   if (tab === "scanmode") return;
@@ -9125,6 +9185,8 @@ async function savePersistedState() {
 }
 
 async function restorePersistedState() {
+  const startedAt = performanceNow();
+  console.info("[AppPerf] data restore start");
   try {
     setAppLoadStatus("Loading sales");
     const saved = await readPersistedState();
@@ -9181,6 +9243,11 @@ async function restorePersistedState() {
   } catch (error) {
     setAppLoadStatus("");
     console.warn("Could not restore POS dashboard history", error);
+  } finally {
+    logPerformanceEnd("data restore", startedAt, {
+      inventory: state.latestInventory.size,
+      sales: state.rawSales.length,
+    });
   }
 }
 
@@ -10310,6 +10377,8 @@ async function syncSharedDataToSupabase(options = {}) {
 }
 
 async function initApp() {
+  const bootStartedAt = performanceNow();
+  console.info("[AppPerf] app boot start");
   mountInventoryQuickTools();
   if (ENABLE_SHARED_SYNC) {
     refreshUsersFromSupabase({ silent: true }).catch(() => {});
@@ -10326,6 +10395,8 @@ async function initApp() {
   appInitDone = true;
   try {
     await restorePersistedState();
+    state._initialRestoreComplete = true;
+    queueScanExactIndexBuild({ prioritize: true, immediate: true });
     pruneDeletedCountSessions({ persist: true });
     ensureVendorRulesFromData();
     if (ENABLE_SHARED_SYNC && state.vendorRules.length) {
@@ -10341,6 +10412,7 @@ async function initApp() {
     }
     if (!scanModeIsActive()) renderUploadLogs();
   } catch (error) {
+    state._initialRestoreComplete = true;
     console.warn("Background local restore failed", error);
   }
   if (ENABLE_SHARED_SYNC) {
@@ -10363,6 +10435,7 @@ async function initApp() {
           await syncSharedMetaSnapshotToSupabase({ silent: true, includeVendorRules: true });
         } else if (restoredShared) {
           await savePersistedState();
+          queueScanExactIndexBuild({ prioritize: true, immediate: true });
           if (scanModeIsActive()) {
             queueScanExactIndexBuild();
           } else {
@@ -10375,6 +10448,7 @@ async function initApp() {
       }
     }, 150);
   }
+  logPerformanceEnd("app boot", bootStartedAt, { tab: activeTabName() });
 }
 
 function bootAppIfNeeded() {

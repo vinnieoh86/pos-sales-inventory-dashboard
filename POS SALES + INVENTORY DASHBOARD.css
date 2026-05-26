@@ -3513,6 +3513,21 @@ body[data-active-tab="scanmode"] .load-strip {
   font-weight: 700;
 }
 
+#scanModeStatus[data-readiness="loading"] {
+  background: #fff4d8;
+  color: #684b12;
+}
+
+#scanModeStatus[data-readiness="offline"] {
+  background: #fbe9e6;
+  color: #9b3026;
+}
+
+#scanModeStatus[data-readiness="ready"] {
+  background: #e4f6ef;
+  color: #09654d;
+}
+
 .price-check-camera-shell {
   position: relative;
   min-height: 18rem;

@@ -4,8 +4,8 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>POS Sales + Inventory Dashboard</title>
-    <link rel="stylesheet" href="POS SALES + INVENTORY DASHBOARD.css" />
-    <link rel="stylesheet" href="rescue-usable.css?v=20260526-columns1" />
+    <link rel="stylesheet" href="POS SALES + INVENTORY DASHBOARD.css?v=20260526-scanready1" />
+    <link rel="stylesheet" href="rescue-usable.css?v=20260526-productsload1" />
   </head>
   <body>
     <div class="metrics-hover-zone" id="metricsHoverZone">
@@ -72,6 +72,7 @@
         <input id="vendorRulesImportInput" type="file" accept=".xlsx,.xls" hidden />
       </div>
     </header>
+    <div id="appLoadStatus" class="app-load-status" role="status" aria-live="polite" hidden></div>
 
     <main class="app">
       <section class="controls sticky-filters" aria-label="Dashboard filters">
@@ -160,7 +161,7 @@
             <button id="scanModeStartButton" type="button" class="secondary-button">Camera</button>
             <button id="scanModeClearButton" type="button" class="secondary-button">Clear</button>
           </div>
-          <div id="scanModeStatus" class="price-check-status">Scan an item to load price and stock.</div>
+          <div id="scanModeStatus" class="price-check-status" data-readiness="loading">Loading item lookup...</div>
           <div id="scanModeResult" class="price-check-result empty">
             <div class="price-check-result__empty">
               Scan an item to show price, stock, vendor, PLU, and item details.
@@ -278,8 +279,8 @@
             <div class="table-tools inventory-panel-tools" data-inventory-tools>
               <select id="inventoryStateFilter"><option value="">All states</option></select>
               <button id="arrangeColumnsButton" type="button">Arrange columns</button>
-              <details class="column-picker">
-                <summary>Columns</summary>
+              <details class="column-picker" id="inventoryColumnPicker">
+                <summary aria-controls="columnPickerPanel" aria-expanded="false">Columns</summary>
                 <div id="columnPickerPanel"></div>
               </details>
               <button id="downloadInventory" type="button">Download inventory CSV</button>
@@ -1184,6 +1185,6 @@
       </div>
 
         <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-    <script src="POS SALES + INVENTORY DASHBOARD.js?v=20260526-columns1"></script>
+    <script src="POS SALES + INVENTORY DASHBOARD.js?v=20260526-scanready1"></script>
   </body>
 </html>
