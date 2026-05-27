@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>POS Sales + Inventory Dashboard</title>
     <link rel="stylesheet" href="POS SALES + INVENTORY DASHBOARD.css?v=20260526-scanready1" />
-    <link rel="stylesheet" href="rescue-usable.css?v=20260526-countsync1" />
+    <link rel="stylesheet" href="rescue-usable.css?v=20260526-layoutclarity1" />
   </head>
   <body>
     <div class="metrics-hover-zone" id="metricsHoverZone">
@@ -753,14 +753,14 @@
             </div>
             <div class="table-wrap count-stable-scroll">
               <table id="countEntryTable" class="count-report-table count-stable-table">
-                <colgroup><col class="count-col-code" /><col class="count-col-item" /><col class="count-col-vendor" /><col class="count-col-category" /><col class="count-col-entry" /><col class="count-col-physical" /><col class="count-col-mode" /><col class="count-col-variance" /></colgroup>
+                <colgroup><col class="count-col-code" /><col class="count-col-item" /><col class="count-col-vendor" /><col class="count-col-category" /><col class="count-col-entry" /><col class="count-col-entry" /><col class="count-col-physical" /><col class="count-col-mode" /><col class="count-col-variance" /></colgroup>
                 <thead>
                   <tr>
-                    <th>Code</th><th>Item</th><th>Vendor</th><th>Category</th><th>Entry</th><th>Physical count</th><th>Mode</th><th>Variance</th>
+                    <th>Code</th><th>Item</th><th>Vendor</th><th>Category</th><th>POS Stock</th><th>Entered Qty</th><th>Physical Count</th><th>Mode</th><th>Variance</th>
                   </tr>
                 </thead>
                 <tbody id="countEntryBody">
-                  <tr><td colspan="8" class="empty-cell">No items counted yet.</td></tr>
+                  <tr><td colspan="9" class="empty-cell">No items counted yet.</td></tr>
                 </tbody>
               </table>
             </div>
@@ -804,7 +804,7 @@
             <colgroup><col class="count-col-code" /><col class="count-col-item" /><col class="count-col-vendor" /><col class="count-col-category" /><col class="count-col-entry" /><col class="count-col-physical" /><col class="count-col-variance" /><col class="count-col-mode" /><col class="count-col-time" /></colgroup>
             <thead id="countReportHead">
               <tr>
-                <th>Code</th><th>Item</th><th>Vendor</th><th>Category</th><th>Qty before</th><th>Qty after</th><th>Variance</th><th>Mode</th><th>Date/Time</th>
+                <th>Code</th><th>Item</th><th>Vendor</th><th>Category</th><th>POS Stock</th><th>Physical Count</th><th>Variance</th><th>Mode</th><th>Date/Time</th>
               </tr>
             </thead>
             <tbody id="countReportBody">
@@ -966,7 +966,7 @@
           <table id="finalCountReportTable" class="count-report-table count-report-table--variance count-stable-table">
             <colgroup><col class="count-col-code" /><col class="count-col-item" /><col class="count-col-vendor" /><col class="count-col-category" /><col class="count-col-entry" /><col class="count-col-physical" /><col class="count-col-variance" /><col class="count-col-variance" /><col class="count-col-mode" /></colgroup>
             <thead>
-              <tr><th>Code</th><th>Item</th><th>Vendor</th><th>Category</th><th>Qty Start</th><th>Qty End</th><th>Variance</th><th>Cost Variance</th><th>Status</th></tr>
+              <tr><th>Code</th><th>Item</th><th>Vendor</th><th>Category</th><th>POS Stock Before Apply</th><th>Physical Count Applied</th><th>Variance</th><th>Cost Variance</th><th>Status</th></tr>
             </thead>
             <tbody id="finalReportBody">
               <tr><td colspan="9" class="empty-cell">No submitted count found.</td></tr>
@@ -1188,6 +1188,6 @@
       </div>
 
         <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-    <script src="POS SALES + INVENTORY DASHBOARD.js?v=20260526-countsync1"></script>
+    <script src="POS SALES + INVENTORY DASHBOARD.js?v=20260526-layoutclarity1"></script>
   </body>
 </html>
