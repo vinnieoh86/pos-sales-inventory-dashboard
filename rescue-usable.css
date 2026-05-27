@@ -239,6 +239,14 @@ body[data-active-tab="ordering"] .order-table thead th {
   color: #a32e23;
 }
 
+#sessionHistoryModal.count-modal:not([hidden]) {
+  z-index: 10000 !important;
+}
+
+#countReportModal.count-modal:not([hidden]) {
+  z-index: 10010 !important;
+}
+
 .count-stable-scroll {
   width: 100%;
   overflow-x: auto !important;
@@ -332,5 +340,91 @@ body[data-active-tab="ordering"] .order-table thead th {
 
   .count-session-summary-table {
     min-width: 96rem !important;
+  }
+}
+
+/* Tablet physical count workspace: counting controls remain visible beside recent entries. */
+@media (min-width: 900px) and (max-width: 1400px), (min-width: 900px) and (pointer: coarse) {
+  #countSessionModal .count-modal__dialog--workspace {
+    min-width: 0 !important;
+    padding: 0.55rem !important;
+    overflow: hidden !important;
+  }
+
+  #countSessionModal .count-workspace {
+    grid-template-columns: minmax(32rem, 1.2fr) minmax(22rem, 0.9fr) !important;
+    grid-template-areas:
+      "header header"
+      "meta meta"
+      "sync sync"
+      "controls entries" !important;
+    gap: 0.55rem !important;
+    margin: 0 !important;
+    height: 100%;
+  }
+
+  #countSessionModal .count-workspace__header { grid-area: header; }
+  #countSessionModal .count-meta-pills { grid-area: meta; }
+  #countSessionModal .count-session-sync { grid-area: sync; }
+
+  #countSessionModal .count-workspace__grid {
+    grid-area: controls;
+    grid-template-columns: minmax(16rem, 1fr) minmax(14rem, 0.86fr) !important;
+    gap: 0.5rem !important;
+    align-self: start;
+  }
+
+  #countSessionModal .count-panel {
+    padding: 0.55rem !important;
+    gap: 0.48rem !important;
+  }
+
+  #countSessionModal .count-selected-item {
+    min-height: 5.25rem !important;
+    padding: 0.5rem !important;
+  }
+
+  #countSessionModal .count-keypad {
+    gap: 0.32rem !important;
+  }
+
+  #countSessionModal .count-keypad button {
+    min-height: 3.05rem !important;
+    font-size: 1.2rem !important;
+  }
+
+  #countSessionModal .count-workspace > .table-panel {
+    grid-area: entries;
+    margin: 0 !important;
+    min-width: 0;
+    align-self: stretch;
+    overflow: hidden;
+  }
+
+  #countSessionModal .count-workspace > .table-panel .panel-heading {
+    padding: 0.45rem 0.55rem !important;
+  }
+
+  #countSessionModal .count-workspace > .table-panel .count-stable-scroll {
+    max-height: calc(100dvh - 12rem) !important;
+  }
+
+  #countSessionModal #countEntryTable {
+    min-width: 34rem !important;
+  }
+
+  #countSessionModal #countEntryTable .count-col-code { width: 6.5rem; }
+  #countSessionModal #countEntryTable .count-col-item { width: 12rem; }
+  #countSessionModal #countEntryTable .count-col-vendor,
+  #countSessionModal #countEntryTable .count-col-category { display: none; width: 0; }
+  #countSessionModal #countEntryTable .count-col-entry { width: 4.5rem; }
+  #countSessionModal #countEntryTable .count-col-physical { width: 5.5rem; }
+  #countSessionModal #countEntryTable .count-col-mode { width: 4.5rem; }
+  #countSessionModal #countEntryTable .count-col-variance { width: 5rem; }
+  #countSessionModal #countEntryTable th:nth-child(3),
+  #countSessionModal #countEntryTable td:nth-child(3),
+  #countSessionModal #countEntryTable th:nth-child(4),
+  #countSessionModal #countEntryTable td:nth-child(4) {
+    display: none;
   }
 }

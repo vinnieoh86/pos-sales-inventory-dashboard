@@ -845,6 +845,16 @@ els.countSetupModal?.addEventListener("click", (event) => {
 els.countSearchButton?.addEventListener("click", handleCountLookup);
 els.countClearSearchButton?.addEventListener("click", clearCountLookup);
 els.countSearchInput?.addEventListener("keydown", (event) => {
+  if (
+    event.key.length === 1
+    && !event.ctrlKey
+    && !event.altKey
+    && !event.metaKey
+    && state._replaceCountInputOnNextKey
+  ) {
+    els.countSearchInput.value = "";
+    state._replaceCountInputOnNextKey = false;
+  }
   const dropdown = document.querySelector("#countSearchDropdown");
   if (dropdown && !dropdown.hidden) {
     const items = [...dropdown.querySelectorAll(".count-dd-item[data-code]")];
@@ -875,6 +885,7 @@ els.countSearchInput?.addEventListener("keydown", (event) => {
     event.preventDefault();
     event.stopPropagation();
     hideCountDropdown();
+    state._replaceCountInputOnNextKey = true;
     handleCountLookup();
     return;
   }
@@ -932,6 +943,11 @@ document.addEventListener("keydown", (event) => {
   if (event.key.length !== 1 || event.ctrlKey || event.altKey || event.metaKey) return;
   event.preventDefault();
   event.stopPropagation();
+  const now = performanceNow();
+  if (!state._lastCountScannerKeyAt || now - state._lastCountScannerKeyAt > 180) {
+    els.countSearchInput.value = "";
+  }
+  state._lastCountScannerKeyAt = now;
   els.countSearchInput.value = `${els.countSearchInput.value || ""}${event.key}`;
   renderCountDropdownDebounced(els.countSearchInput.value);
   focusCountSearch();
@@ -1029,7 +1045,12 @@ els.countReportModal?.addEventListener("click", (event) => {
 els.countCloseReportButton?.addEventListener("click", closeCountReport);
 document.querySelector("#countPdfReportButton")?.addEventListener("click", () => exportCountReportPdf());
 document.querySelector("#countExcelReportButton")?.addEventListener("click", () => exportCountReportExcel());
-document.querySelector("#countContinueButton")?.addEventListener("click", () => continueCountFromReport());
+document.querySelector("#countContinueButton")?.addEventListener("click", (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  if (!event.isTrusted) return;
+  void continueCountFromReport();
+});
 document.querySelector("#productPoCloseButton")?.addEventListener("click", closeProductPoReviewModal);
 document.querySelector("#productPoSendButton")?.addEventListener("click", () => sendProductPoSelection(false));
 document.querySelector("#productPoSendAllButton")?.addEventListener("click", () => sendProductPoSelection(true));
@@ -3902,7 +3923,26 @@ function countSessionForRemote(session = {}) {
   return payload;
 }
 
+function preferredCountSession(existing, candidate) {
+  if (!existing) return candidate;
+  const existingSaved = !!(existing.submittedAt || existing.savedAt);
+  const candidateSaved = !!(candidate.submittedAt || candidate.savedAt);
+  if (existingSaved !== candidateSaved) return candidateSaved ? candidate : existing;
+  return countSessionUpdatedMs(candidate) >= countSessionUpdatedMs(existing) ? candidate : existing;
+}
+
+function canonicalCountSessions(sessions = []) {
+  const byId = new Map();
+  sessions.filter(Boolean).forEach((session) => {
+    const id = cleanCell(session.id);
+    if (!id || countSessionIsDeleted(id)) return;
+    byId.set(id, preferredCountSession(byId.get(id), session));
+  });
+  return [...byId.values()].sort((a, b) => countSessionUpdatedMs(b) - countSessionUpdatedMs(a));
+}
+
 function persistCountSessions(options = {}) {
+  state.countSessions = canonicalCountSessions(state.countSessions);
   localStorage.setItem("posDashboardCountSessions:v1", JSON.stringify(state.countSessions));
   localStorage.setItem("posDashboardActiveCountSession:v1", JSON.stringify(state.activeCountSession));
   if (options.scheduleSync !== false) scheduleSharedCountSessionsSync();
@@ -4078,6 +4118,14 @@ function countSessionStatusLabel(session) {
   if (session.savedAt) return '<span class="state-badge">Paused</span>';
   if (countSessionHasUnsyncedEdits(session)) return '<span class="state-badge state-badge--warn">Local only</span>';
   return '<span class="state-badge">In progress</span>';
+}
+
+function countSessionCanDelete(session) {
+  if (!session) return false;
+  if (isAdmin()) return true;
+  const userOwnsSession = cleanCell(session.user) && cleanCell(session.user) === currentAuditUser();
+  const deviceOwnsSession = cleanCell(session.deviceId) && cleanCell(session.deviceId) === countDeviceId();
+  return !!(userOwnsSession || deviceOwnsSession);
 }
 
 function openCountSetupModal() {
@@ -4417,6 +4465,8 @@ function handleCountLookup() {
   state.countQtyBuffer = "0";
   state.pendingDuplicateMode = null;
   hideCountDropdown();
+  els.countSearchInput.value = "";
+  state._replaceCountInputOnNextKey = false;
   els.countSearchInput?.blur();
   renderSelectedCountItem();
   renderCountQuantity();
@@ -4424,6 +4474,7 @@ function handleCountLookup() {
 
 function clearCountLookup() {
   if (els.countSearchInput) els.countSearchInput.value = "";
+  state._replaceCountInputOnNextKey = false;
   hideCountDropdown();
   state.selectedCountItemCode = "";
   state.countQtyBuffer = "0";
@@ -4500,6 +4551,7 @@ function commitCountEntry(item, qty, mode) {
   renderCountQuantity();
   updateCountSummaryStrip();
   if (els.countSearchInput) els.countSearchInput.value = "";
+  state._replaceCountInputOnNextKey = false;
   hideCountDropdown();
   focusCountSearch();
   if (mode === "add") {
@@ -4660,7 +4712,7 @@ function selectCountDropdownItem(code) {
   const item = filteredItem || (countSessionAllowsOutOfScope() ? allCountCandidateRows().find((r) => codeKey(r.code) === key) : null);
   if (!item) { showToast("Item not found in the item master.", 2800, "warning"); return; }
   if (!filteredItem) showToast("Manager override: counting an item outside the selected scope.", 3600, "warning");
-  if (els.countSearchInput) els.countSearchInput.value = item.product;
+  if (els.countSearchInput) els.countSearchInput.value = "";
   state.selectedCountItemCode = item.code;
   state.countStage = "qty";
   state.countQtyBuffer = "0";
@@ -4689,6 +4741,7 @@ function openCountReport(sessionId = state.activeCountSession?.id, mode = state.
   }
   state.countReportMode = mode;
   state.countReportOpenId = sessionId;
+  els.countContinueButton?.blur();
   if (els.countReportTitle) {
     els.countReportTitle.textContent = mode === "comparison"
       ? `${countSessionLabel(session)} Â· Comparison report`
@@ -4977,16 +5030,7 @@ function remoteActiveCountSessionIsFresh(session) {
 }
 
 function dedupeCountSessionsForDisplay(sessions = []) {
-  const merged = new Map();
-  sessions.forEach((session) => {
-    const key = countSessionDisplayKey(session) || cleanCell(session.id);
-    if (!key) return;
-    const existing = merged.get(key);
-    const currentTime = Date.parse(session.updatedAt || session.submittedAt || session.startedAt || 0) || 0;
-    const existingTime = Date.parse(existing?.updatedAt || existing?.submittedAt || existing?.startedAt || 0) || 0;
-    if (!existing || currentTime >= existingTime) merged.set(key, session);
-  });
-  return [...merged.values()];
+  return canonicalCountSessions(sessions);
 }
 
 function renderCountSessionRows() {
@@ -5002,7 +5046,7 @@ function renderCountSessionRows() {
     ? [{ ...activeSess, isActiveLive: true }, ...state.countSessions]
     : state.countSessions;
 
-  const filtered = dedupeCountSessionsForDisplay(sessionsWithActive
+  const filtered = dedupeCountSessionsForDisplay(sessionsWithActive)
     .slice()
     .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")))
     .filter((s) => {
@@ -5017,7 +5061,7 @@ function renderCountSessionRows() {
       if (vendorFilter && (s.vendor || s.department || "") !== vendorFilter) return false;
       if (!sessionMatchesPeriodFilter(s, periodFilter)) return false;
       return true;
-    }));
+    });
 
   if (!filtered.length) {
     els.countSessionBody.innerHTML = `<tr><td colspan="12" class="empty-cell">${state.countSessions.length ? "No sessions match filters." : "No physical count sessions saved yet."}</td></tr>`;
@@ -5037,7 +5081,7 @@ function renderCountSessionRows() {
         <td><button type="button" class="secondary-button count-inline-report-button" data-count-report="${escapeHtml(session.id)}">View</button></td>
         <td>${session.submittedAt ? `<button type="button" class="secondary-button final-report-btn" data-final-report="${escapeHtml(session.id)}">Final Report</button>` : `<span class="muted">Not submitted</span>`}</td>
         <td>${!employeeMode && session.preCountSnapshot ? (session.restoredAt ? `<span class="muted">Restored</span>` : `<button type="button" class="restore-count-btn" data-restore-session="${escapeHtml(session.id)}">Restore</button>`) : ""}</td>
-        <td>${!employeeMode ? `<button type="button" class="delete-session-btn" data-delete-session="${escapeHtml(session.id)}">Delete</button>` : ""}</td>
+        <td>${countSessionCanDelete(session) ? `<button type="button" class="delete-session-btn" data-delete-session="${escapeHtml(session.id)}">Delete</button>` : ""}</td>
       </tr>`)
     .join("");
 
@@ -10263,7 +10307,7 @@ function applySharedCountSessionRows(rows = [], options = {}) {
   });
   if (remoteActive?.id) {
     const submittedCopy = remoteSavedById.get(cleanCell(remoteActive.id));
-    if (submittedCopy && countSessionUpdatedMs(submittedCopy) >= countSessionUpdatedMs(remoteActive)) {
+    if (submittedCopy && (submittedCopy.savedAt || submittedCopy.submittedAt)) {
       const staleActiveId = `active:${cleanCell(remoteActive.id)}`;
       remoteActive = null;
       if (ENABLE_SHARED_SYNC && sharedCountSessionsAvailable) {
@@ -10318,7 +10362,7 @@ function applySharedCountSessionRows(rows = [], options = {}) {
   if (nextActive?.id) {
     mergedSavedById.set(cleanCell(nextActive.id), { ...nextActive, isActiveLive: true });
   }
-  state.countSessions = dedupeCountSessionsForDisplay([...mergedSavedById.values()])
+  state.countSessions = canonicalCountSessions([...mergedSavedById.values()])
     .filter((session) => !countSessionIsDeleted(session.id))
     .sort((a, b) => String(b.updatedAt || b.submittedAt || "").localeCompare(String(a.updatedAt || a.submittedAt || "")));
   state.activeCountSession = nextActive;
@@ -10525,7 +10569,12 @@ async function syncSharedCountSessionsToSupabase(silent = false) {
       await supabaseDeleteRowsByValues("count_sessions", "id", deletedIds.flatMap((id) => [id, `active:${id}`]));
     }
     const dirtySaved = (state.countSessions || [])
-      .filter((session) => cleanCell(session?.id) && !countSessionIsDeleted(session.id) && countSessionHasUnsyncedEdits(session));
+      .filter((session) =>
+        cleanCell(session?.id)
+        && !countSessionIsDeleted(session.id)
+        && countSessionHasUnsyncedEdits(session)
+        && !(session.id === state.activeCountSession?.id && session.isActiveLive === true)
+      );
     const dirtyActive = state.activeCountSession?.id
       && !countSessionIsDeleted(state.activeCountSession.id)
       && countSessionHasUnsyncedEdits(state.activeCountSession)
@@ -10919,12 +10968,21 @@ function confirmDeleteSavedSession() {
   state.pendingDeleteSessionId = null;
   document.querySelector("#confirmDeleteSessionModal").hidden = true;
   if (!id) return;
-  const session = state.countSessions.find((s) => s.id === id);
+  const session = state.countSessions.find((s) => s.id === id)
+    || (state.activeCountSession?.id === id ? state.activeCountSession : null);
+  if (!countSessionCanDelete(session)) {
+    showToast("Only the count owner or an admin can delete this session.", 3000, "warning");
+    return;
+  }
   archiveCountSessionEntriesToAdjustmentLog(session);
   markCountSessionDeleted(id);
   state.countSessions = state.countSessions.filter((s) => s.id !== id);
+  if (state.activeCountSession?.id === id) {
+    state.activeCountSession = null;
+    state._countSessionOpen = false;
+  }
   persistCountSessions();
-  renderCountSessionRows();
+  renderCountsWorkspace();
   void (async () => {
     if (ENABLE_SHARED_SYNC && sharedCountSessionsAvailable) {
       await supabaseDeleteRowsByValues("count_sessions", "id", [id, `active:${id}`]);
@@ -10932,7 +10990,7 @@ function confirmDeleteSavedSession() {
     }
     await syncSharedCountSessionsToSupabase(true);
   })().catch(() => {});
-  showToast("Saved count deleted.", 2400, "warning");
+  showToast("Physical count deleted locally and queued for shared removal.", 2800, "warning");
 }
 
 // â”€â”€ Continue count from report (re-open the session as active) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
