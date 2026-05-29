@@ -4079,9 +4079,9 @@ function filteredCountCandidateRows(session = state.activeCountSession) {
     return state._filteredCountCache;
   }
   const statusFilter = (session.status || "").trim().toLowerCase();
-  // If this count was explicitly set up to target disabled/discontinued items, use the full
-  // unfiltered pool so those items are reachable. Otherwise use the active-items-only pool.
-  const sourceRows = (statusFilter === "disabled" || statusFilter === "discontinued")
+  // If this count was explicitly set up to target disabled/discontinued items, OR if status
+  // is empty ("All"), use the full unfiltered pool so all items are reachable.
+  const sourceRows = (!statusFilter || statusFilter === "disabled" || statusFilter === "discontinued")
     ? buildInventoryRows({ ignoreQuery: true, ignoreFilters: true, ignoreStateFilter: true })
     : allCountCandidateRows();
   const rows = sourceRows.filter((item) => {
@@ -4344,7 +4344,13 @@ function handleCountKey(key) {
   } else if (key === ".") {
     if (!state.countQtyBuffer.includes(".")) state.countQtyBuffer += ".";
   } else {
-    state.countQtyBuffer = state.countQtyBuffer === "0" ? key : `${state.countQtyBuffer}${key}`;
+    const next = state.countQtyBuffer === "0" ? key : `${state.countQtyBuffer}${key}`;
+    // Ceiling guard: if this would put qty above 9999, reject the digit and warn
+    if (Number(next) > 9999) {
+      showToast("Qty limit is 9,999 — use Back to correct if a barcode was scanned as a qty.", 3500, "warning");
+      return;
+    }
+    state.countQtyBuffer = next;
   }
   renderCountQuantity();
 }
@@ -4432,6 +4438,20 @@ function renderSelectedCountItem() {
 
 function handleCountLookup() {
   if (!state.activeCountSession) {
+    // If there's a saved session, open it rather than just showing an error
+    if (state.countSessions && state.countSessions.length > 0) {
+      const latestSession = state.countSessions.find((s) => !s.submittedAt) || state.countSessions[0];
+      if (latestSession) {
+        state.activeCountSession = { ...latestSession, isActiveLive: true };
+        state._countSessionOpen = true;
+        state.countQtyBuffer = "0";
+        state.countStage = "search";
+        persistActiveCountSession();
+        renderCountsWorkspace();
+        showToast("Count session resumed.", 2000, "success");
+        return;
+      }
+    }
     showToast("Start a physical count first.", 3000, "warning");
     return;
   }
@@ -4585,6 +4605,13 @@ function applyCountEntry() {
     return;
   }
   const qty = Math.max(0, Number(state.countQtyBuffer || "0"));
+  // Safety ceiling: if qty > 9999, likely a double-scan entered a barcode as qty
+  if (qty > 9999) {
+    showToast(`Quantity ${number.format(qty)} looks too high — please verify. Max single entry is 9,999.`, 4500, "warning");
+    state.countQtyBuffer = "0";
+    renderCountQuantity();
+    return;
+  }
   const existing = state.activeCountSession.entries?.filter((entry) => codeKey(entry.code) === codeKey(item.code)).at(-1);
   if (existing) {
     const chosenMode = state.pendingDuplicateMode && codeKey(state.pendingDuplicateMode.code) === codeKey(item.code)
@@ -7861,9 +7888,9 @@ function showDetail(item, options = {}) {
       </div>
       <div class="table-wrap">
         <table class="count-report-table inner-auto-table">
-          <thead><tr><th>Date/Time</th><th>Action</th><th>Change</th><th>Before</th><th>After</th><th>User</th><th>Reason</th></tr></thead>
+          <thead><tr><th>Date/Time</th><th>Action</th><th>Before</th><th>Change</th><th>After</th><th>User</th><th>Reason</th></tr></thead>
           <tbody>${historyRows.length
-            ? historyRows.map((entry) => `<tr><td>${escapeHtml(new Date(entry.recordedAt).toLocaleString())}</td><td>${escapeHtml(entry.action || "-")}</td><td class="num">${number.format(entry.qtyChange || 0)}</td><td class="num">${number.format(entry.qtyBefore || 0)}</td><td class="num">${number.format(entry.qtyAfter || 0)}</td><td>${escapeHtml(entry.user || "System")}</td><td>${escapeHtml(entry.reason || "-")}</td></tr>`).join("")
+            ? historyRows.map((entry) => `<tr><td>${escapeHtml(new Date(entry.recordedAt).toLocaleString())}</td><td>${escapeHtml(entry.action || "-")}</td><td class="num">${number.format(entry.qtyBefore || 0)}</td><td class="num">${number.format(entry.qtyChange || 0)}</td><td class="num">${number.format(entry.qtyAfter || 0)}</td><td>${escapeHtml(entry.user || "System")}</td><td>${escapeHtml(entry.reason || "-")}</td></tr>`).join("")
             : `<tr><td colspan="7" class="empty-cell">No stock history recorded for this item yet.</td></tr>`}
           </tbody>
         </table>
@@ -11399,8 +11426,8 @@ function renderAdjustLog() {
       <td>${escapeHtml(entry.vendor || "-")}</td>
       <td>${escapeHtml(entry.category || "-")}</td>
       <td>${escapeHtml((entry.action || "-").toUpperCase())}</td>
-      <td class="num ${cls}">${changeLabel}</td>
       <td class="num">${number.format(entry.qtyBefore ?? 0)}</td>
+      <td class="num ${cls}">${changeLabel}</td>
       <td class="num">${number.format(entry.qtyAfter ?? 0)}</td>
       <td><span class="reason-chip" style="background:${bg}">${escapeHtml((entry.reason || "-").toUpperCase())}</span></td>
     </tr>`;
@@ -11415,7 +11442,7 @@ function renderAdjustLog() {
         <details class="auto-entries-details">
           <summary>${autoEntries.length} auto-generated entr${autoEntries.length === 1 ? "y" : "ies"} (NULLâ†’0 / RESTORE / ZERO NEGATIVES)</summary>
           <table class="count-report-table inner-auto-table">
-            <thead><tr><th>Date/Time</th><th>Code</th><th>Item</th><th>Vendor</th><th>Category</th><th>Action</th><th>Change</th><th>Before</th><th>After</th><th>Reason</th></tr></thead>
+            <thead><tr><th>Date/Time</th><th>Code</th><th>Item</th><th>Vendor</th><th>Category</th><th>Action</th><th>Before</th><th>Change</th><th>After</th><th>Reason</th></tr></thead>
             <tbody>${autoEntries.map(rowHtml).join("")}</tbody>
           </table>
         </details>
@@ -11457,8 +11484,8 @@ async function exportAdjustLogPdf() {
       <td>${escapeHtml(entry.vendor || "-")}</td>
       <td>${escapeHtml(entry.category || "-")}</td>
       <td>${escapeHtml(entry.action || "-")}</td>
-      <td class="num">${changeLabel}</td>
       <td class="num">${number.format(entry.qtyBefore ?? 0)}</td>
+      <td class="num">${changeLabel}</td>
       <td class="num">${number.format(entry.qtyAfter ?? 0)}</td>
       <td><span style="display:inline-block;padding:2px 7px;border-radius:4px;background:${bg};color:#fff;font-weight:700;font-size:9px">${escapeHtml((entry.reason || "-").toUpperCase())}</span></td>
     </tr>`;
@@ -11477,7 +11504,7 @@ async function exportAdjustLogPdf() {
   </style></head><body>
   <h1>Stock Adjustment Log</h1>
   <div class="meta">Generated ${dateStr} &nbsp;Â·&nbsp; ${exportRows.length} records</div>
-  <table><thead><tr><th>Date/Time</th><th>Code</th><th>Item</th><th>Vendor</th><th>Category</th><th>Action</th><th>Change</th><th>Qty Before</th><th>Qty After</th><th>Reason</th></tr></thead>
+  <table><thead><tr><th>Date/Time</th><th>Code</th><th>Item</th><th>Vendor</th><th>Category</th><th>Action</th><th>Qty Before</th><th>Qty Change</th><th>Qty After</th><th>Reason</th></tr></thead>
   <tbody>${rows}</tbody></table></body></html>`;
   const win = window.open("", "_blank", "width=1100,height=750");
   if (!win) { showToast("Pop-up blocked â€” please allow pop-ups.", 3500, "warning"); return; }
@@ -11495,11 +11522,11 @@ async function exportAdjustLogExcel() {
   const data = [
     ["Stock Adjustment Log", "", "", "", "", "", "", "", "", `Generated: ${new Date().toLocaleDateString()}`],
     [],
-    ["Date/Time", "Code", "Item", "Vendor", "Category", "Action", "Qty Change", "Qty Before", "Qty After", "Reason"],
+    ["Date/Time", "Code", "Item", "Vendor", "Category", "Action", "Qty Before", "Qty Change", "Qty After", "Reason"],
     ...exportRows.map((entry) => [
       new Date(entry.recordedAt).toLocaleString(),
       entry.code || "", entry.product || "", entry.vendor || "", entry.category || "",
-      entry.action || "", entry.qtyChange || 0, entry.qtyBefore ?? 0, entry.qtyAfter ?? 0, (entry.reason || "").toUpperCase(),
+      entry.action || "", entry.qtyBefore ?? 0, entry.qtyChange || 0, entry.qtyAfter ?? 0, (entry.reason || "").toUpperCase(),
     ]),
   ];
   const ws = xlsx.utils.aoa_to_sheet(data);

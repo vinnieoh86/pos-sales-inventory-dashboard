@@ -4020,11 +4020,12 @@ body[data-active-tab="scanmode"] .load-strip {
 #sessionHistoryModal { z-index: 141; }
 #countReportModal,
 #finalCountReportModal,
-#confirmDeleteSessionModal,
 #confirmSubmitCountModal,
 #confirmZeroNegModal,
 #stockAdjustModal,
 #vendorPoModal { z-index: 200; }
+/* Delete confirm must appear above session history modal */
+#confirmDeleteSessionModal { z-index: 300; }
 #lockScreen { z-index: 9999 !important; }
 
 /* ── Lock screen — main UI theme ─────────────────────────────────────────── */
