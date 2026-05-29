@@ -4074,14 +4074,15 @@ function allCountCandidateRows() {
 
 function filteredCountCandidateRows(session = state.activeCountSession) {
   if (!session) return allCountCandidateRows();
-  const cacheKey = [session.id, session.vendor, session.department, session.category, session.status, state._dataCacheStamp].join("|");
+  const cacheKey = [session.id, session.vendor, session.department, session.category, session.status, session.updatedAt, (session.entries || []).length, state._dataCacheStamp].join("|");
   if (state._filteredCountCache && state._filteredCountCacheKey === cacheKey) {
     return state._filteredCountCache;
   }
   const statusFilter = (session.status || "").trim().toLowerCase();
-  // If this count was explicitly set up to target disabled/discontinued items, OR if status
-  // is empty ("All"), use the full unfiltered pool so all items are reachable.
-  const sourceRows = (!statusFilter || statusFilter === "disabled" || statusFilter === "discontinued")
+  const scannedCodes = new Set((session.entries || []).map((entry) => codeKey(entry.code)).filter(Boolean));
+  // Default comparison/count scope is active/orderable items. Pull the full pool only when
+  // the session explicitly targets inactive states or when a scanned inactive item must show.
+  const sourceRows = (statusFilter === "disabled" || statusFilter === "discontinued" || scannedCodes.size)
     ? buildInventoryRows({ ignoreQuery: true, ignoreFilters: true, ignoreStateFilter: true })
     : allCountCandidateRows();
   const rows = sourceRows.filter((item) => {
@@ -4089,7 +4090,10 @@ function filteredCountCandidateRows(session = state.activeCountSession) {
     if (vendorFilter && (item.vendor || "").trim().toUpperCase() !== vendorFilter) return false;
     const catFilter = (session.category || "").trim().toUpperCase();
     if (catFilter && (item.category || "").trim().toUpperCase() !== catFilter) return false;
-    if (statusFilter && (item.state || "").trim().toLowerCase() !== statusFilter) return false;
+    const itemState = (item.state || "").trim().toLowerCase();
+    const wasScanned = scannedCodes.has(codeKey(item.code));
+    if (statusFilter && itemState !== statusFilter) return false;
+    if (!statusFilter && ["disabled", "discontinued"].includes(itemState) && !wasScanned) return false;
     return true;
   });
   state._filteredCountCache = rows;
@@ -4206,7 +4210,7 @@ function startCountSessionFromModal() {
   // FIX-D: Build the search index lazily — defer until after the UI paints.
   // On Kindle this was a synchronous ~400ms block before the count screen appeared.
   // findCountMatch()/findAnyCountMatch() also auto-build on first use (lines 4307/4323).
-  setTimeout(() => buildCountSearchIndex(), 80);
+  setTimeout(() => buildCountSearchIndex(), 20);
   renderCountsWorkspace();
   showToast(
     state._countSyncUnavailable
@@ -4345,9 +4349,9 @@ function handleCountKey(key) {
     if (!state.countQtyBuffer.includes(".")) state.countQtyBuffer += ".";
   } else {
     const next = state.countQtyBuffer === "0" ? key : `${state.countQtyBuffer}${key}`;
-    // Ceiling guard: if this would put qty above 9999, reject the digit and warn
-    if (Number(next) > 9999) {
-      showToast("Qty limit is 9,999 — use Back to correct if a barcode was scanned as a qty.", 3500, "warning");
+    // Ceiling guard: if this would put qty above 999, reject the digit and warn
+    if (Number(next) > 999) {
+      showToast("Qty limit is 999 — use Back to correct if a barcode was scanned as a qty.", 3500, "warning");
       return;
     }
     state.countQtyBuffer = next;
@@ -4363,9 +4367,16 @@ function countSessionAllowsOutOfScope(session = state.activeCountSession) {
   return !isUserRole() && session?.allowOutOfScope === true;
 }
 
+function countSearchIndexKey(session = state.activeCountSession) {
+  if (!session) return `none:${state._dataCacheStamp}`;
+  return [session.id, session.vendor, session.department, session.category, session.status, session.updatedAt, session.allowOutOfScope ? "1" : "0", state._dataCacheStamp].join("|");
+}
+
 function countItemIsInScope(item, session = state.activeCountSession) {
   if (!item) return false;
-  return filteredCountCandidateRows(session).some((candidate) => codeKey(candidate.code) === codeKey(item.code));
+  if (!state._countFilteredCodes || state._countIndexStamp !== state._dataCacheStamp || state._countIndexSessionKey !== countSearchIndexKey(session)) buildCountSearchIndex();
+  return state._countFilteredCodes?.has(codeKey(item.code))
+    || filteredCountCandidateRows(session).some((candidate) => codeKey(candidate.code) === codeKey(item.code));
 }
 
 function findAnyCountMatch(query) {
@@ -4373,7 +4384,7 @@ function findAnyCountMatch(query) {
   if (!raw) return null;
   const needle = raw.toLowerCase();
   const normalizedNeedle = codeKey(raw);
-  if (!state._countSearchIndex || state._countIndexStamp !== state._dataCacheStamp) buildCountSearchIndex();
+  if (!state._countSearchIndex || state._countIndexStamp !== state._dataCacheStamp || state._countIndexSessionKey !== countSearchIndexKey()) buildCountSearchIndex();
   return state._countExactIndex?.get(normalizedNeedle)
     || state._countExactIndex?.get(needle)
     || allCountCandidateRows().find((item) =>
@@ -4389,7 +4400,7 @@ function findCountMatch(query) {
   const needle = raw.toLowerCase();
   const normalizedNeedle = codeKey(raw); // strips leading zeros for numeric matching
 
-  if (!state._countSearchIndex || state._countIndexStamp !== state._dataCacheStamp) buildCountSearchIndex();
+  if (!state._countSearchIndex || state._countIndexStamp !== state._dataCacheStamp || state._countIndexSessionKey !== countSearchIndexKey()) buildCountSearchIndex();
   // Scanner submissions use the exact map before any text search.
   const exactMatch = state._countExactIndex?.get(normalizedNeedle)
     || state._countExactIndex?.get(needle)
@@ -4533,10 +4544,11 @@ function commitCountEntry(item, qty, mode) {
     entries: [...(state.activeCountSession.entries || [])],
   };
   const existing = session.entries.filter((entry) => codeKey(entry.code) === codeKey(item.code)).at(-1);
+  const originalQty = Number(existing?.originalQty ?? item.stock ?? 0);
   const countedQty = mode === "add"
     ? Math.max(0, Number(existing?.countedQty || 0) + qty)
     : qty;
-  session.entries.push({
+  const entry = {
     entryId: makeCountIdentifier("entry"),
     sessionId: session.id,
     deviceId: countDeviceId(),
@@ -4548,7 +4560,7 @@ function commitCountEntry(item, qty, mode) {
     product: item.product,
     vendor: item.vendor || "",
     category: item.category || "",
-    originalQty: item.stock || 0,
+    originalQty,
     inputQty: qty,
     qty,
     countedQty,
@@ -4557,13 +4569,15 @@ function commitCountEntry(item, qty, mode) {
     recordedAt: new Date().toISOString(),
     timestamp: new Date().toISOString(),
     syncStatus: "pending",
-  });
+  };
+  session.entries.push(entry);
   state.activeCountSession = session;
   state._countSessionOpen = true;
   state.countQtyBuffer = "0";
   state.countStage = "search";
   state.selectedCountItemCode = "";
   state.pendingDuplicateMode = null;
+  applyLiveCountStockUpdate(item, countedQty, entry, session);
   persistActiveCountSession();
   // Fast path: prepend new row, update summary, reset UI â€” no full workspace rebuild
   renderCountEntryRows(true);
@@ -4605,9 +4619,9 @@ function applyCountEntry() {
     return;
   }
   const qty = Math.max(0, Number(state.countQtyBuffer || "0"));
-  // Safety ceiling: if qty > 9999, likely a double-scan entered a barcode as qty
-  if (qty > 9999) {
-    showToast(`Quantity ${number.format(qty)} looks too high — please verify. Max single entry is 9,999.`, 4500, "warning");
+  // Safety ceiling: if qty > 999, likely a double-scan entered a barcode as qty
+  if (qty > 999) {
+    showToast(`Quantity ${number.format(qty)} looks too high — please verify. Max single entry is 999.`, 4500, "warning");
     state.countQtyBuffer = "0";
     renderCountQuantity();
     return;
@@ -4649,15 +4663,16 @@ function buildCountSearchIndex() {
   // Force-refresh the candidate cache on session start
   state._countCandidateCache = null;
   state._filteredCountCache = null;
-  const allRows = allCountCandidateRows();
-  state._countSearchIndex = allRows.map((item) => ({
+  const scopedRows = filteredCountCandidateRows();
+  const exactRows = countSessionAllowsOutOfScope() ? allCountCandidateRows() : scopedRows;
+  state._countSearchIndex = scopedRows.map((item) => ({
     item,
     haystack: [item.code, item.product, item.plu, item.itemNumber, item.vendor, item.category]
       .map((v) => String(v || "").toLowerCase()).join("|"),
     codeKey: codeKey(item.code),
   }));
   state._countExactIndex = new Map();
-  allRows.forEach((item) => {
+  exactRows.forEach((item) => {
     [item.code, item.plu, item.itemNumber].forEach((value) => {
       const rawKey = cleanCell(value).toLowerCase();
       const normalizedKey = codeKey(value);
@@ -4667,9 +4682,10 @@ function buildCountSearchIndex() {
   });
   // Pre-compute filtered scope codes
   state._countFilteredCodes = new Set(
-    filteredCountCandidateRows().map((r) => codeKey(r.code))
+    scopedRows.map((r) => codeKey(r.code))
   );
   state._countIndexStamp = state._dataCacheStamp;
+  state._countIndexSessionKey = countSearchIndexKey();
 }
 
 function renderCountDropdown(query) {
@@ -4781,7 +4797,9 @@ function openCountReport(sessionId = state.activeCountSession?.id, mode = state.
   }
   if (els.countReportMeta) {
     const vendorLabel = session.vendor || session.department || "All vendors";
-    const totalCandidates = currentCountSessionCandidates(session).length;
+    const totalCandidates = mode === "comparison"
+      ? currentCountSessionCandidates(session).length
+      : (session.entries || []).length;
     const syncStats = countSessionSyncStats(session);
     els.countReportMeta.innerHTML = `
       <span><b>Date</b> ${escapeHtml(session.date || "-")}</span>
@@ -4822,7 +4840,7 @@ function exportCountReportPdf() {
       <thead><tr><th>Code</th><th>Item</th><th>Vendor</th><th>Category</th><th class="num">Qty Before</th><th class="num">Qty After</th><th class="num">Qty Diff</th><th class="num">Cost Diff</th><th>Status</th></tr></thead>
       <tbody>${allItems.map((item) => {
         const entry = latestByCode.get(codeKey(item.code));
-        const orig = Number(item.stock || 0);
+        const orig = entry ? Number(entry.originalQty ?? item.stock ?? 0) : Number(item.stock || 0);
         const final = entry ? Number(entry.countedQty || 0) : null;
         const diff = entry ? final - orig : null;
         const costDiff = entry ? diff * Number(item.unitCost || 0) : null;
@@ -4923,7 +4941,7 @@ async function exportCountReportExcel() {
     ["Code", "Item", "Vendor", "Category", "Qty Before", "Qty After", "Qty Diff", "Cost Diff", "Status"],
     ...allItems.map((item) => {
       const entry = latestByCode.get(codeKey(item.code));
-      const orig = Number(item.stock || 0);
+      const orig = entry ? Number(entry.originalQty ?? item.stock ?? 0) : Number(item.stock || 0);
       const final = entry ? Number(entry.countedQty || 0) : null;
       const diff = entry != null ? final - orig : null;
       const costDiff = entry != null ? diff * Number(item.unitCost || 0) : null;
@@ -4952,7 +4970,7 @@ function renderCountReportRows(session, mode = state.countReportMode || "input")
     els.countReportBody.innerHTML = allItems
       .map((item) => {
         const entry = latestByCode.get(codeKey(item.code));
-        const originalQty = Number(item.stock || 0);
+        const originalQty = entry ? Number(entry.originalQty ?? item.stock ?? 0) : Number(item.stock || 0);
         const finalQty = entry ? Number(entry.countedQty || 0) : null;
         const qtyDiff = entry ? finalQty - originalQty : null;
         const costDiff = entry ? qtyDiff * Number(item.unitCost || 0) : null;
@@ -5003,18 +5021,25 @@ function renderCountReportRows(session, mode = state.countReportMode || "input")
 
 async function openSessionHistoryModal() {
   if (els.sessionHistoryModal) els.sessionHistoryModal.hidden = false;
-  if (els.countSessionBody) els.countSessionBody.innerHTML = `<tr><td colspan="12" class="empty-cell">Loading report history...</td></tr>`;
+  renderSessionHistoryFilters();
+  renderCountSessionRows();
   if (ENABLE_SHARED_SYNC && sharedCountSessionsAvailable) {
-    await restoreSharedCountSessionsOnlyFromSupabase({ silent: true, history: true });
+    restoreSharedCountSessionsOnlyFromSupabase({ silent: true, history: true })
+      .then(() => {
+        renderSessionHistoryFilters();
+        renderCountSessionRows();
+      })
+      .catch(() => {});
   }
-  // Populate vendor filter
+}
+
+function renderSessionHistoryFilters() {
   const vendors = [...new Set(state.countSessions.map((s) => s.vendor || s.department || "").filter(Boolean))];
   if (els.sessionHistoryVendorFilter) {
     const cur = els.sessionHistoryVendorFilter.value;
     els.sessionHistoryVendorFilter.innerHTML = `<option value="">All vendors</option>` +
       vendors.map((v) => `<option value="${escapeHtml(v)}" ${v === cur ? "selected" : ""}>${escapeHtml(v)}</option>`).join("");
   }
-  renderCountSessionRows();
 }
 
 function sessionMatchesPeriodFilter(session, period) {
@@ -6999,6 +7024,46 @@ function patchInventoryModelStock(code, stock) {
   }
   const indexed = state._inventoryRowIndex?.get?.(key);
   if (indexed) indexed.stock = stock;
+}
+
+function applyLiveCountStockUpdate(item, afterStock, entry, session) {
+  const key = codeKey(item?.code);
+  if (!key) return;
+  const existing = state.latestInventory.get(key) || item;
+  const beforeStock = Number(existing?.stock || 0);
+  const nextStock = Number(afterStock || 0);
+  existing.stock = nextStock;
+  state.latestInventory.set(key, existing);
+  state.latestInventory.forEach((inv) => {
+    if (codeKey(inv.code) === key) inv.stock = nextStock;
+  });
+  state._localProductMetaEdits.set(key, Date.now());
+  patchInventoryModelStock(item.code, nextStock);
+  patchVisibleStockCell(item.code, nextStock);
+  patchCachedInventoryItem(item.code);
+  state._priceCheckExactIndex = null;
+  state._priceCheckExactIndexStamp = 0;
+  if (beforeStock !== nextStock) {
+    state.adjustmentLog.unshift({
+      recordedAt: entry.recordedAt || new Date().toISOString(),
+      user: currentAuditUser(),
+      code: item.code,
+      product: item.product || entry.product || "",
+      vendor: item.vendor || entry.vendor || "",
+      category: item.category || entry.category || "",
+      action: "COUNT ENTRY",
+      qtyChange: nextStock - beforeStock,
+      qtyBefore: beforeStock,
+      qtyAfter: nextStock,
+      reason: `Physical count live update: ${countSessionLabel(session)} (${entry.mode || "reset"})`,
+      countSessionId: session.id,
+    });
+    localStorage.setItem("posDashboardAdjustLog:v1", JSON.stringify(state.adjustmentLog));
+  }
+  setTimeout(() => {
+    void syncSharedProductsByCodes([item.code], { silent: true });
+    void syncSharedInventoryFactsByCodes([item.code], { silent: true, updateSyncState: false });
+  }, 60);
 }
 
 function moveColumn(from, to) {
@@ -10988,6 +11053,7 @@ function openConfirmDeleteSession(sessionId) {
       : "Delete this count? This cannot be undone.";
   }
   document.querySelector("#confirmDeleteSessionModal").hidden = false;
+  setTimeout(() => els.confirmDeleteSessionYes?.focus(), 0);
 }
 
 function confirmDeleteSavedSession() {
@@ -11022,18 +11088,9 @@ function confirmDeleteSavedSession() {
 
 // â”€â”€ Continue count from report (re-open the session as active) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function continueCountFromReport() {
-  // PERF-F: Try to find the session locally first — no need to block on remote fetch if
-  // we already have it. Fall back to a timed remote pull only if it's not found locally.
+  // Re-open only sessions already loaded in history. Do not block the UI on remote sync here.
   const sessionId = state.countReportOpenId;
-  let session = findCountSessionById(sessionId);
-  if (!session && ENABLE_SHARED_SYNC && sharedCountSessionsAvailable) {
-    const timeout = scanPerformanceProfile.tier === "low" ? 4000 : 2000;
-    await Promise.race([
-      refreshLatestCountSessions({ history: true }),
-      new Promise((resolve) => setTimeout(resolve, timeout)),
-    ]);
-    session = findCountSessionById(sessionId);
-  }
+  const session = findCountSessionById(sessionId);
   if (!session) { showToast("Session not found.", 3000, "warning"); return; }
   // FIX-B: Keep in countSessions[] with isActiveLive:true — removing it hid it from history.
   const liveSession = markCountSessionDirty({ ...session, isActiveLive: true });
@@ -11151,11 +11208,19 @@ async function submitAndApplyCount() {
   if (!session) return;
   const entries = session.entries || [];
   const latestByCode = new Map();
+  const originalByCode = new Map();
   entries.forEach((entry) => latestByCode.set(codeKey(entry.code), entry));
+  entries.forEach((entry) => {
+    const key = codeKey(entry.code);
+    if (key && !originalByCode.has(key)) originalByCode.set(key, Number(entry.originalQty ?? 0));
+  });
 
   // Save pre-count snapshot for restore
   const snapshot = {};
-  state.latestInventory.forEach((item, key) => { snapshot[key] = item.stock; });
+  state.latestInventory.forEach((item, key) => {
+    const itemKey = codeKey(item.code) || key;
+    snapshot[key] = originalByCode.has(itemKey) ? originalByCode.get(itemKey) : item.stock;
+  });
   const savedSession = markCountSessionDirty({ ...session, preCountSnapshot: snapshot, submittedAt: new Date().toISOString() });
   state.countSessions = state.countSessions.map((s) => s.id === sessionId ? savedSession : s);
 
@@ -11166,26 +11231,29 @@ async function submitAndApplyCount() {
   state.latestInventory.forEach((item, key) => {
     if (!scopeCodes.has(key) && !scopeCodes.has(codeKey(item.code))) return;
     const entry = latestByCode.get(key) || latestByCode.get(codeKey(item.code));
-    const before = item.stock;
+    const before = entry ? Number(entry.originalQty ?? item.stock ?? 0) : Number(item.stock || 0);
     const after = entry ? Number(entry.countedQty || 0) : 0; // NULL â†’ 0
-    if (before === after) return;
-    item.stock = after;
-    state.latestInventory.set(key, item);
+    if (Number(item.stock || 0) !== after) {
+      item.stock = after;
+      state.latestInventory.set(key, item);
+    }
     state._localProductMetaEdits.set(codeKey(item.code), Date.now());
-    updated++;
-    state.adjustmentLog.unshift({
-      recordedAt: new Date().toISOString(),
-      user: currentAuditUser(),
-      code: item.code,
-      product: item.product,
-      vendor: item.vendor || "",
-      category: item.category || "",
-      action: "COUNT SUBMIT",
-      qtyChange: after - before,
-      qtyBefore: before,
-      qtyAfter: after,
-      reason: entry ? `Physical count: ${countSessionLabel(session)}` : `NULL â†’ 0: ${countSessionLabel(session)}`,
-    });
+    if (before !== after) {
+      updated++;
+      state.adjustmentLog.unshift({
+        recordedAt: new Date().toISOString(),
+        user: currentAuditUser(),
+        code: item.code,
+        product: item.product,
+        vendor: item.vendor || "",
+        category: item.category || "",
+        action: "COUNT SUBMIT",
+        qtyChange: after - before,
+        qtyBefore: before,
+        qtyAfter: after,
+        reason: entry ? `Physical count: ${countSessionLabel(session)}` : `NULL â†’ 0: ${countSessionLabel(session)}`,
+      });
+    }
   });
   localStorage.setItem("posDashboardAdjustLog:v1", JSON.stringify(state.adjustmentLog));
   persistCountSessions();
@@ -12677,7 +12745,9 @@ function generateFinalCountExport(session, candidates, latestByCode, snapshot) {
   const entries = candidates.map((item) => {
     const key = codeKey(item.code);
     const entry = latestByCode.get(key);
-    const qtyStart = snapshot ? (snapshot[key] ?? item.stock ?? 0) : (item.stock ?? 0);
+    const qtyStart = snapshot
+      ? (snapshot[key] ?? entry?.originalQty ?? item.stock ?? 0)
+      : (entry?.originalQty ?? item.stock ?? 0);
     const qtyEnd = entry ? Number(entry.countedQty || 0) : 0;
     return { code: item.code, product: item.product, vendor: item.vendor||"", category: item.category||"", qtyStart, qty: qtyEnd, variance: qtyEnd - qtyStart, scanned: !!entry };
   });
