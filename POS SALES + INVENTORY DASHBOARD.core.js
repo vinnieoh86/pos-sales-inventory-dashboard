@@ -1,4 +1,4 @@
-﻿const state = {
+const state = {
   rawSales: [],
   inventories: new Map(),
   latestInventory: new Map(),
@@ -2282,6 +2282,8 @@ function scheduleSharedVendorRulesSync() {
 let sharedImportLogsTimer = 0;
 let sharedCountSessionsTimer = 0;
 let sharedCountRetryTimer = 0;
+let countProductSyncTimer = 0;
+const pendingCountProductSyncCodes = new Set();
 
 function scheduleSharedImportLogsSync() {
   if (!ENABLE_SHARED_SYNC || !sharedImportLogsAvailable) return;
@@ -2294,9 +2296,35 @@ function scheduleSharedImportLogsSync() {
 function scheduleSharedCountSessionsSync() {
   if (!ENABLE_SHARED_SYNC || !sharedCountSessionsAvailable) return;
   clearTimeout(sharedCountSessionsTimer);
+  // Count mode must stay responsive first. On weak tablets/Silk, syncing after every
+  // scan causes fetch + JSON + IndexedDB/localStorage work to stack up and freeze input.
+  const countModeBusy = activeTabName() === "counts" || state._countSessionOpen;
+  const delay = countModeBusy
+    ? (scanPerformanceProfile.tier === "low" ? 15000 : scanPerformanceProfile.tier === "medium" ? 8000 : 3500)
+    : 650;
   sharedCountSessionsTimer = setTimeout(() => {
     syncSharedCountSessionsToSupabase(true).catch(() => {});
-  }, 650);
+  }, delay);
+}
+
+function scheduleCountProductSync(codes = []) {
+  if (!ENABLE_SHARED_SYNC) return;
+  (codes || []).forEach((code) => {
+    const key = codeKey(code);
+    if (key) pendingCountProductSyncCodes.add(key);
+  });
+  clearTimeout(countProductSyncTimer);
+  const countModeBusy = activeTabName() === "counts" || state._countSessionOpen;
+  const delay = countModeBusy
+    ? (scanPerformanceProfile.tier === "low" ? 20000 : scanPerformanceProfile.tier === "medium" ? 10000 : 5000)
+    : 250;
+  countProductSyncTimer = setTimeout(() => {
+    const batch = [...pendingCountProductSyncCodes];
+    pendingCountProductSyncCodes.clear();
+    if (!batch.length) return;
+    void syncSharedProductsByCodes(batch, { silent: true });
+    void syncSharedInventoryFactsByCodes(batch, { silent: true, updateSyncState: false });
+  }, delay);
 }
 
 function scheduleCountSyncRetry() {
@@ -7033,10 +7061,8 @@ function applyLiveCountStockUpdate(item, afterStock, entry, session) {
   const beforeStock = Number(existing?.stock || 0);
   const nextStock = Number(afterStock || 0);
   existing.stock = nextStock;
+  // latestInventory is already keyed by normalized code; avoid scanning every inventory row on each count.
   state.latestInventory.set(key, existing);
-  state.latestInventory.forEach((inv) => {
-    if (codeKey(inv.code) === key) inv.stock = nextStock;
-  });
   state._localProductMetaEdits.set(key, Date.now());
   patchInventoryModelStock(item.code, nextStock);
   patchVisibleStockCell(item.code, nextStock);
@@ -7060,10 +7086,8 @@ function applyLiveCountStockUpdate(item, afterStock, entry, session) {
     });
     localStorage.setItem("posDashboardAdjustLog:v1", JSON.stringify(state.adjustmentLog));
   }
-  setTimeout(() => {
-    void syncSharedProductsByCodes([item.code], { silent: true });
-    void syncSharedInventoryFactsByCodes([item.code], { silent: true, updateSyncState: false });
-  }, 60);
+  // Batch remote product/inventory writes while counting so scanners never wait behind network work.
+  scheduleCountProductSync([item.code]);
 }
 
 function moveColumn(from, to) {
