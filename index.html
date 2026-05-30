@@ -8,7 +8,7 @@
     <link rel="stylesheet" href="rescue-usable.css?v=20260526-layoutclarity1" />
   </head>
   <body>
-    <div class="metrics-hover-zone metrics-hover-zone--disabled" id="metricsHoverZone" hidden aria-hidden="true">
+    <div class="metrics-hover-zone" id="metricsHoverZone">
       <div class="metrics-peek-bar">▼ Sales summary — hover to expand</div>
       <section class="metrics metrics-dropdown" aria-label="Key metrics">
         <article><span>Total Sales</span><strong id="totalSales">$0</strong><small id="salesDelta">Load CSVs to begin.</small></article>
@@ -682,7 +682,6 @@
           <label>Date <input id="countDateInput" type="date" /></label>
           <label>Vendor <select id="countVendorInput"></select></label>
           <label>Category <select id="countCategoryInput"></select></label>
-          <label>Name / PLU / Code <input id="countItemFilterInput" type="search" placeholder="Example: Adore, PLU, item code..." autocomplete="off" /></label>
           <label>Item Status <select id="countStatusInput"></select></label>
           <label data-admin-only><input id="countAllowOutOfScopeInput" type="checkbox" /> Allow manager out-of-scope entries</label>
         </div>
@@ -720,11 +719,9 @@
                   <div id="countSearchDropdown" class="count-search-dropdown" hidden></div>
                 </div>
               </label>
-              <div class="count-search-actions count-search-actions--wrap">
+              <div class="count-search-actions">
                 <button id="countSearchButton" type="button">Find item</button>
                 <button id="countClearSearchButton" type="button" class="secondary-button">Delete</button>
-                <button id="countAutoModeButton" type="button" class="secondary-button count-auto-toggle" aria-pressed="false">Auto +1 OFF</button>
-                <button id="countUndoLastButton" type="button" class="secondary-button count-undo-button">Undo Last</button>
               </div>
               <div id="countSelectedItem" class="count-selected-item">
                 <p class="muted">Scan or search an item to begin counting.</p>

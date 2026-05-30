@@ -80,8 +80,6 @@ const state = {
   countQtyBuffer: "0",
   selectedCountItemCode: "",
   countStage: "search",
-  countAutoMode: false,
-  lastCountEntryId: "",
   pendingDuplicateCount: null,
   pendingDuplicateMode: null,
   countReportMode: "input",
@@ -498,9 +496,6 @@ const els = {
   countDateInput: document.querySelector("#countDateInput"),
   countVendorInput: document.querySelector("#countVendorInput"),
   countCategoryInput: document.querySelector("#countCategoryInput"),
-  countItemFilterInput: document.querySelector("#countItemFilterInput"),
-  countAutoModeButton: document.querySelector("#countAutoModeButton"),
-  countUndoLastButton: document.querySelector("#countUndoLastButton"),
   countAllowOutOfScopeInput: document.querySelector("#countAllowOutOfScopeInput"),
   countStartButton: document.querySelector("#countStartButton"),
   countCancelButton: document.querySelector("#countCancelButton"),
@@ -851,8 +846,6 @@ els.countSetupModal?.addEventListener("click", (event) => {
 });
 els.countSearchButton?.addEventListener("click", handleCountLookup);
 els.countClearSearchButton?.addEventListener("click", clearCountLookup);
-els.countAutoModeButton?.addEventListener("click", toggleCountAutoMode);
-els.countUndoLastButton?.addEventListener("click", undoLastCountEntry);
 els.countSearchInput?.addEventListener("keydown", (event) => {
   if (
     event.key.length === 1
@@ -916,7 +909,7 @@ els.countSearchInput?.addEventListener("focus", () => {
   els.countSearchInput.select?.();
 });
 els.countSearchInput?.addEventListener("click", () => {
-  els.countSearchInput?.select?.();
+  activateCountSearchFromScreen();
 });
 // Removed global blank-area focus: search is activated only by tapping the search field.
 // Bluetooth/manual scanner relay: when count screen is open, typed/scanned characters
@@ -1282,8 +1275,6 @@ document.addEventListener("keydown", (event) => {
     } else if (focused === els.countVendorInput) {
       els.countCategoryInput.focus();
     } else if (focused === els.countCategoryInput) {
-      if (els.countItemFilterInput) els.countItemFilterInput.focus(); else { const statusEl = document.querySelector("#countStatusInput"); if (statusEl) statusEl.focus(); else startCountSessionFromModal(); }
-    } else if (focused === els.countItemFilterInput) {
       const statusEl = document.querySelector("#countStatusInput");
       if (statusEl) statusEl.focus(); else startCountSessionFromModal();
     } else {
@@ -1307,8 +1298,21 @@ document.addEventListener("keydown", (event) => {
     return;
   }
   if (!els.countDuplicateModal.hidden) return;
-  // Count screen no longer steals focus from blank taps/clicks.
-  // Bluetooth-scanner keyboard relay is handled only while the count stage is search.
+  if (
+    !els.countSessionModal.hidden &&
+    state.activeCountSession &&
+    state.countStage === "search" &&
+    event.target !== els.countSearchInput &&
+    !event.target.closest?.("input, textarea, select, button") &&
+    (event.key === "Enter" || event.key.length === 1)
+  ) {
+    els.countSearchInput?.focus();
+    if (event.key === "Enter") {
+      event.preventDefault();
+      handleCountLookup();
+      return;
+    }
+  }
   if (!els.countSessionModal.hidden && event.target === els.countSearchInput && event.key === "Enter") return;
   if (!els.countReportModal.hidden) return;
   if (!els.countSessionModal.hidden && state.activeCountSession && state.countStage === "qty") {
@@ -4102,12 +4106,14 @@ function allCountCandidateRows() {
   if (state._countCandidateCache && state._countCandidateStamp === state._dataCacheStamp) {
     return state._countCandidateCache;
   }
-  // Physical count must use the true item master/current inventory scope, not the Products
-  // tab's visible filters. Include Active, Disabled, and Discontinued here. Status filtering
-  // happens only when the user explicitly selects a Status in count setup. This keeps ALL +
-  // blank Name/PLU from accidentally producing an empty scan scope, and lets old/disabled
-  // items be counted when they physically exist on shelf.
-  state._countCandidateCache = buildInventoryRows({ ignoreQuery: true, ignoreFilters: true, ignoreStateFilter: true });
+  // PATCH D: ignoreStateFilter:true bypasses the inventory tab's UI dropdown (correct),
+  // but we still exclude Disabled and Discontinued items — they should never appear in a
+  // count search unless the session was explicitly set up targeting those states.
+  const all = buildInventoryRows({ ignoreQuery: true, ignoreFilters: true, ignoreStateFilter: true });
+  state._countCandidateCache = all.filter((item) => {
+    const st = (item.state || "").toLowerCase();
+    return st !== "disabled" && st !== "discontinued";
+  });
   state._countCandidateStamp = state._dataCacheStamp;
   return state._countCandidateCache;
 }
@@ -4116,27 +4122,26 @@ function filteredCountCandidateRows(session = state.activeCountSession) {
   if (!session) return allCountCandidateRows();
   // HOTFIX: cache key must be stable while scanning. Entries/updatedAt change after every scan
   // and were invalidating the filtered rows, causing the next lookup to rebuild the full list.
-  const cacheKey = [session.id, session.vendor, session.department, session.category, session.itemFilter || "", session.status, state._dataCacheStamp].join("|");
+  const cacheKey = [session.id, session.vendor, session.department, session.category, session.status, state._dataCacheStamp].join("|");
   if (state._filteredCountCache && state._filteredCountCacheKey === cacheKey) {
     return state._filteredCountCache;
   }
   const statusFilter = (session.status || "").trim().toLowerCase();
-  // Use one already-cached all-status candidate list. Blank status means ALL statuses.
-  // Explicit status still narrows the scope.
-  const sourceRows = allCountCandidateRows();
+  const scannedCodes = new Set(); // stable lookup scope; report rendering can read session.entries separately
+  // Default comparison/count scope is active/orderable items. Do not switch to a full rebuild just
+  // because entries exist — that was the main post-scan slowdown.
+  const sourceRows = (statusFilter === "disabled" || statusFilter === "discontinued")
+    ? buildInventoryRows({ ignoreQuery: true, ignoreFilters: true, ignoreStateFilter: true })
+    : allCountCandidateRows();
   const rows = sourceRows.filter((item) => {
     const vendorFilter = (session.vendor || session.department || "").trim().toUpperCase();
     if (vendorFilter && (item.vendor || "").trim().toUpperCase() !== vendorFilter) return false;
     const catFilter = (session.category || "").trim().toUpperCase();
     if (catFilter && (item.category || "").trim().toUpperCase() !== catFilter) return false;
     const itemState = (item.state || "").trim().toLowerCase();
-    const keyword = cleanCell(session.itemFilter || "").toLowerCase();
-    if (keyword) {
-      const hay = [item.product, item.plu, item.code, item.itemNumber, item.vendor, item.category].map((v) => String(v || "").toLowerCase()).join("|");
-      const normalizedKeyword = codeKey(keyword);
-      if (!hay.includes(keyword) && !(normalizedKeyword && hay.includes(normalizedKeyword))) return false;
-    }
+    const wasScanned = scannedCodes.has(codeKey(item.code));
     if (statusFilter && itemState !== statusFilter) return false;
+    if (!statusFilter && ["disabled", "discontinued"].includes(itemState) && !wasScanned) return false;
     return true;
   });
   state._filteredCountCache = rows;
@@ -4148,7 +4153,6 @@ function countSessionLabel(session) {
   if (!session) return "Physical count";
   const vendorLabel = session.vendor || session.department || "All vendors";
   const parts = [session.date || "No date", vendorLabel, session.category || "All categories"];
-  if (session.itemFilter) parts.push(session.itemFilter);
   return parts.join(" Â· ");
 }
 
@@ -4182,7 +4186,6 @@ function openCountSetupModal() {
   // Always reset to "All" for a fresh count
   els.countVendorInput.value = "";
   els.countCategoryInput.value = "";
-  if (els.countItemFilterInput) els.countItemFilterInput.value = "";
   const statusEl = document.querySelector("#countStatusInput");
   if (statusEl) statusEl.value = "";
   if (els.countAllowOutOfScopeInput) els.countAllowOutOfScopeInput.checked = false;
@@ -4195,17 +4198,17 @@ function closeCountSetupModal() {
 }
 
 function populateCountSetupOptions() {
-  // Build setup choices from the same full count candidate source used by scanning.
-  // This prevents the Vendor dropdown from missing vendors that exist in the current
-  // inventory/master file but are not visible on the Products page or latest cache slice.
+  // FIX-D: Cache vendor/category/status lists keyed to the data stamp.
+  // Previously this rebuilt from the full inventory Map on every renderCountsWorkspace call.
+  // On Kindle (10k+ items) that was 100-300ms of synchronous work on each poll tick.
   if (state._countSetupCacheStamp === state._dataCacheStamp && state._countSetupCached) {
     return; // lists are still current
   }
-  const allRows = allCountCandidateRows();
+  const allRows = [...state.latestInventory.values()];
   const excelRows = [...state.excelItems.values()];
   const combined = allRows.length ? allRows : excelRows;
-  fillSelect(els.countVendorInput, unique(combined.map((r) => cleanCell(r.vendor)).filter(Boolean)));
-  fillSelect(els.countCategoryInput, unique(combined.map((r) => cleanCell(r.category)).filter(Boolean)));
+  fillSelect(els.countVendorInput, unique(combined.map((r) => r.vendor).filter(Boolean)));
+  fillSelect(els.countCategoryInput, unique(combined.map((r) => r.category).filter(Boolean)));
   const statusEl = document.querySelector("#countStatusInput");
   if (statusEl) {
     const knownStates = ["Active", "Disabled", "Discontinued", "Force Order"];
@@ -4226,7 +4229,6 @@ function startCountSessionFromModal() {
     date: els.countDateInput.value || new Date().toISOString().slice(0, 10),
     vendor: els.countVendorInput.value || "",
     category: els.countCategoryInput.value || "",
-    itemFilter: els.countItemFilterInput ? cleanCell(els.countItemFilterInput.value) : "",
     status: statusEl ? (statusEl.value || "") : "",
     startedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -4247,8 +4249,6 @@ function startCountSessionFromModal() {
   state.countQtyBuffer = "0";
   state.selectedCountItemCode = "";
   state.countStage = "search";
-  state.countAutoMode = false;
-  state.lastCountEntryId = "";
   state.pendingDuplicateCount = null;
   state.pendingDuplicateMode = null;
   state.countSessions = [liveSession, ...state.countSessions.filter((s) => s.id !== session.id)];
@@ -4421,7 +4421,6 @@ function handleCountKey(key) {
     state.countQtyBuffer = next;
   }
   renderCountQuantity();
-  updateCountAutoModeButton?.();
 }
 
 function renderCountQuantity() {
@@ -4437,7 +4436,7 @@ function countSearchIndexKey(session = state.activeCountSession) {
   // HOTFIX: scan lookup index must NOT be invalidated by updatedAt or entry count.
   // Those change after every scan and were forcing a full inventory rebuild before the next scan.
   // Scope only changes when the starting filters or source data change.
-  return [session.id, session.vendor, session.department, session.category, session.itemFilter || "", session.status, session.allowOutOfScope ? "1" : "0", state._dataCacheStamp].join("|");
+  return [session.id, session.vendor, session.department, session.category, session.status, session.allowOutOfScope ? "1" : "0", state._dataCacheStamp].join("|");
 }
 
 function countItemIsInScope(item, session = state.activeCountSession) {
@@ -4514,57 +4513,6 @@ function renderSelectedCountItem() {
     </div>`;
 }
 
-function updateCountAutoModeButton() {
-  if (!els.countAutoModeButton) return;
-  const on = !!state.countAutoMode;
-  els.countAutoModeButton.textContent = on ? "Auto +1 ON" : "Auto +1 OFF";
-  els.countAutoModeButton.classList.toggle("is-active", on);
-  els.countAutoModeButton.setAttribute("aria-pressed", on ? "true" : "false");
-}
-
-function toggleCountAutoMode() {
-  if (!state.activeCountSession) {
-    showToast("Start a physical count first.", 2400, "warning");
-    return;
-  }
-  state.countAutoMode = !state.countAutoMode;
-  state.countStage = "search";
-  state.countQtyBuffer = "0";
-  state.pendingDuplicateMode = null;
-  updateCountAutoModeButton();
-  renderCountQuantity();
-  focusCountSearch();
-  showToast(state.countAutoMode ? "Auto +1 mode ON: each scan adds 1." : "Manual qty mode ON.", 2200, state.countAutoMode ? "success" : "warning");
-}
-
-function undoLastCountEntry() {
-  const session = state.activeCountSession;
-  if (!session || !(session.entries || []).length) {
-    showToast("No count entry to undo.", 2200, "warning");
-    return;
-  }
-  const entries = [...session.entries];
-  const removed = entries.pop();
-  state.activeCountSession = markCountSessionDirty({
-    ...session,
-    entries,
-    updatedAt: new Date().toISOString(),
-  });
-  state.countSessions = [state.activeCountSession, ...state.countSessions.filter((s) => s.id !== session.id)];
-  state.selectedCountItemCode = removed?.code || state.selectedCountItemCode;
-  state.countQtyBuffer = "0";
-  state.countStage = "search";
-  state.lastCountEntryId = entries.at(-1)?.entryId || "";
-  persistActiveCountSession({ scheduleSync: false });
-  persistCountSessions({ scheduleSync: false });
-  renderCountEntryRows();
-  renderSelectedCountItem();
-  renderCountQuantity();
-  updateCountSummaryStrip();
-  focusCountSearch();
-  showToast(`Undid last count: ${removed?.product || removed?.code || "item"}`, 2200, "warning");
-}
-
 function handleCountLookup() {
   if (!state.activeCountSession) {
     // If there's a saved session, open it rather than just showing an error
@@ -4608,13 +4556,6 @@ function handleCountLookup() {
   if (!inScope && countSessionAllowsOutOfScope()) {
     showToast("Manager override: this item is outside the selected count scope.", 4200, "warning");
   }
-  if (state.countAutoMode) {
-    hideCountDropdown();
-    if (els.countSearchInput) els.countSearchInput.value = "";
-    state._replaceCountInputOnNextKey = false;
-    commitCountEntry(match, 1, "add", { keepSelected: true, auto: true });
-    return;
-  }
   state.selectedCountItemCode = match.code;
   state.countStage = "qty";
   state.countQtyBuffer = "0";
@@ -4636,7 +4577,6 @@ function clearCountLookup() {
   state.countStage = "search";
   state.pendingDuplicateMode = null;
   renderCountQuantity();
-  updateCountAutoModeButton?.();
   renderSelectedCountItem();
   focusCountSearch();
 }
@@ -4662,7 +4602,7 @@ function closeDuplicateCountModal() {
   focusCountSearch();
 }
 
-function commitCountEntry(item, qty, mode, options = {}) {
+function commitCountEntry(item, qty, mode) {
   const session = {
     ...state.activeCountSession,
     updatedAt: new Date().toISOString(),
@@ -4700,8 +4640,7 @@ function commitCountEntry(item, qty, mode, options = {}) {
   state._countSessionOpen = true;
   state.countQtyBuffer = "0";
   state.countStage = "search";
-  state.selectedCountItemCode = options.keepSelected ? item.code : "";
-  state.lastCountEntryId = entry.entryId;
+  state.selectedCountItemCode = "";
   state.pendingDuplicateMode = null;
   applyLiveCountStockUpdate(item, countedQty, entry, session);
   persistActiveCountSession({ scheduleSync: false });
@@ -4887,10 +4826,6 @@ function selectCountDropdownItem(code) {
   if (!item) { showToast("Item not found in the item master.", 2800, "warning"); return; }
   if (!filteredItem) showToast("Manager override: counting an item outside the selected scope.", 3600, "warning");
   if (els.countSearchInput) els.countSearchInput.value = "";
-  if (state.countAutoMode) {
-    commitCountEntry(item, 1, "add", { keepSelected: true, auto: true });
-    return;
-  }
   state.selectedCountItemCode = item.code;
   state.countStage = "qty";
   state.countQtyBuffer = "0";
@@ -4932,7 +4867,7 @@ function comparisonReportRows(session) {
     const item = scopedByCode.get(key) || anyByCode.get(key) || { code: entry.code, product: entry.product, vendor: entry.vendor, category: entry.category, stock: entry.originalQty, unitCost: entry.unitCost, state: entry.state || "Active" };
     const status = countItemStatusLabel(item, entry);
     return { item, entry, status };
-  }).filter(({ entry }) => !!codeKey(entry.code));
+  }).filter(({ status }) => countStatusIsActive(status));
 }
 
 function openCountReport(sessionId = state.activeCountSession?.id, mode = state.countReportMode || "input") {
@@ -5495,7 +5430,6 @@ function renderCountsWorkspace(options = {}) {
       <span>${escapeHtml(active.date || "-")}</span>
       <span>${escapeHtml(vendorLabel)}</span>
       <span>${escapeHtml(active.category || "All categories")}</span>
-      ${active.itemFilter ? `<span>Filter: ${escapeHtml(active.itemFilter)}</span>` : ""}
       <span>Status: ${statusLabel}</span>
       <span>${number.format((active.entries || []).length)} entries</span>
       <span>${active.allowOutOfScope && !isUserRole() ? "Manager scope override enabled" : "Scope locked"}</span>`;
@@ -5588,13 +5522,14 @@ function applyRoleRestrictions(force = false) {
     "#exportPoExcel", "#exportPoPdf", "#downloadOrder",
     "#exportAdjustPdfButton", "#exportAdjustExcelButton",
     "#clearAdjustLogButton", ".arrange-columns-btn", "#arrangeColumnsButton",
-    ".column-picker", "#downloadInventory", "#createPoShortcut"
+    ".column-picker", "#downloadInventory", "#createPoShortcut",
+    "#countContinueButton", "#countSubmitButton", "#countPdfReportButton", "#countExcelReportButton", "#countComparisonViewButton"
   ];
   adminOnly.forEach((sel) => {
     document.querySelectorAll(sel).forEach((el) => { el.style.display = userMode ? "none" : ""; });
   });
   const metricsZone = document.querySelector("#metricsHoverZone");
-  if (metricsZone) metricsZone.style.display = "none";
+  if (metricsZone) metricsZone.style.display = userMode ? "none" : "";
   // Hide cost columns for user role
   if (userMode) {
     document.querySelectorAll("#inventory th[data-col='unitCost'], #inventoryBody td[data-col='unitCost'], #inventory th[data-col='inventoryCost'], #inventoryBody td[data-col='inventoryCost']").forEach((el) => { el.style.display = "none"; });
@@ -10661,47 +10596,32 @@ async function restoreSharedProductsOnlyFromSupabase(options = {}) {
   if (!ENABLE_SHARED_SYNC) return false;
   const { silent = false } = options;
   try {
-    // IMPORTANT: secondary/tablet devices may have a partial local product cache.
-    // Pull the full shared product master here (products + product_meta) so Products,
-    // Scan Mode, and Physical Count all build lookup maps from the same complete
-    // inventory universe as the laptop.  We still avoid pulling daily_sales here,
-    // so the UI stays much leaner than a full dashboard restore.
-    if (!silent) setAppLoadStatus("Syncing product master");
-    const [productRows, productMetaRows] = await Promise.all([
-      supabaseSelectRows("products", { select: "*" }),
-      supabaseSelectRowsSafe("product_meta", { select: "*" }),
-    ]);
-    const mergedRows = mergeSharedProductRows(productRows, productMetaRows);
-    if (!mergedRows.length) return false;
-
-    const beforeCount = Math.max(state.latestInventory.size, state.excelItems.size);
-    const applied = applySharedProductRows(mergedRows);
-    if (!applied) return false;
-
-    // Persist the complete product master locally so a Kindle/tablet refresh does not
-    // fall back to an old partial IndexedDB/localStorage snapshot.
-    await savePersistedState();
-    queueScanExactIndexBuild({ prioritize: true, immediate: true });
-    try { buildCountSearchIndex(); } catch (_) {}
-
+    const productMetaRows = await supabaseSelectRowsSafe("product_meta", {
+      select: "*",
+      order: "updated_at.desc",
+      limit: String(SHARED_PRODUCT_META_PULL_LIMIT),
+    });
+    const changedCodes = applySharedProductMetaRowsLight(productMetaRows);
+    if (!changedCodes.length) return false;
+    await persistPostCountInventoryState(changedCodes);
     if (!state.activeCountSession) {
       if (activeTabName() === "inventory") {
-        // Re-render the visible Products rows only; renderInventory already chunks DOM work
-        // and limits visible rows, so this does not dump the whole master onto Kindle.
-        queueActiveTabRender();
+        const visibleCodes = new Set([...(els.inventoryBody?.querySelectorAll("tr[data-item-code]") || [])]
+          .map((row) => row.dataset.itemCode)
+          .filter(Boolean)
+          .map(codeKey));
+        changedCodes.filter((code) => visibleCodes.has(codeKey(code))).forEach((code) => patchInventoryRowFromCache(code));
+        renderInventorySummary(state.inventoryRows || currentInventoryRows());
         refreshDetailDrawer();
       } else if (activeTabName() === "ordering") {
         renderOrders();
       }
     }
-    const afterCount = Math.max(state.latestInventory.size, state.excelItems.size);
-    if (!silent) showToast(`Product master synced: ${number.format(afterCount)} items`, 2200, "success");
-    return afterCount !== beforeCount || applied > 0;
+    if (!silent) showToast(`Shared product updates loaded (${number.format(changedCodes.length)} items)`, 1800, "success");
+    return true;
   } catch (error) {
     if (!silent) showToast("Shared product refresh failed.", 2600, "warning");
     return false;
-  } finally {
-    clearAppLoadStatus("Syncing product master");
   }
 }
 

@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "20260530-full-product-index-pass1";
+  const VERSION = "20260530-focused-ui-sync-pass1";
 
   function makeSearchEditable() {
     const search = document.querySelector("#searchInput");
