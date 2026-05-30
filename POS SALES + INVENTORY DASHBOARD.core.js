@@ -4129,15 +4129,17 @@ function allCountCandidateRows() {
 
 function filteredCountCandidateRows(session = state.activeCountSession) {
   if (!session) return allCountCandidateRows();
-  const cacheKey = [session.id, session.vendor, session.department, session.category, session.status, session.updatedAt, (session.entries || []).length, state._dataCacheStamp].join("|");
+  // HOTFIX: cache key must be stable while scanning. Entries/updatedAt change after every scan
+  // and were invalidating the filtered rows, causing the next lookup to rebuild the full list.
+  const cacheKey = [session.id, session.vendor, session.department, session.category, session.status, state._dataCacheStamp].join("|");
   if (state._filteredCountCache && state._filteredCountCacheKey === cacheKey) {
     return state._filteredCountCache;
   }
   const statusFilter = (session.status || "").trim().toLowerCase();
-  const scannedCodes = new Set((session.entries || []).map((entry) => codeKey(entry.code)).filter(Boolean));
-  // Default comparison/count scope is active/orderable items. Pull the full pool only when
-  // the session explicitly targets inactive states or when a scanned inactive item must show.
-  const sourceRows = (statusFilter === "disabled" || statusFilter === "discontinued" || scannedCodes.size)
+  const scannedCodes = new Set(); // stable lookup scope; report rendering can read session.entries separately
+  // Default comparison/count scope is active/orderable items. Do not switch to a full rebuild just
+  // because entries exist — that was the main post-scan slowdown.
+  const sourceRows = (statusFilter === "disabled" || statusFilter === "discontinued")
     ? buildInventoryRows({ ignoreQuery: true, ignoreFilters: true, ignoreStateFilter: true })
     : allCountCandidateRows();
   const rows = sourceRows.filter((item) => {
@@ -4425,14 +4427,18 @@ function countSessionAllowsOutOfScope(session = state.activeCountSession) {
 
 function countSearchIndexKey(session = state.activeCountSession) {
   if (!session) return `none:${state._dataCacheStamp}`;
-  return [session.id, session.vendor, session.department, session.category, session.status, session.updatedAt, session.allowOutOfScope ? "1" : "0", state._dataCacheStamp].join("|");
+  // HOTFIX: scan lookup index must NOT be invalidated by updatedAt or entry count.
+  // Those change after every scan and were forcing a full inventory rebuild before the next scan.
+  // Scope only changes when the starting filters or source data change.
+  return [session.id, session.vendor, session.department, session.category, session.status, session.allowOutOfScope ? "1" : "0", state._dataCacheStamp].join("|");
 }
 
 function countItemIsInScope(item, session = state.activeCountSession) {
   if (!item) return false;
   if (!state._countFilteredCodes || state._countIndexStamp !== state._dataCacheStamp || state._countIndexSessionKey !== countSearchIndexKey(session)) buildCountSearchIndex();
-  return state._countFilteredCodes?.has(codeKey(item.code))
-    || filteredCountCandidateRows(session).some((candidate) => codeKey(candidate.code) === codeKey(item.code));
+  // HOTFIX: O(1) scope check. Do not call filteredCountCandidateRows().some() here; on Kindle
+  // that can walk the full master list after every scan.
+  return state._countFilteredCodes?.has(codeKey(item.code));
 }
 
 function findAnyCountMatch(query) {
@@ -4441,12 +4447,10 @@ function findAnyCountMatch(query) {
   const needle = raw.toLowerCase();
   const normalizedNeedle = codeKey(raw);
   if (!state._countSearchIndex || state._countIndexStamp !== state._dataCacheStamp || state._countIndexSessionKey !== countSearchIndexKey()) buildCountSearchIndex();
+  // HOTFIX: For scanner not-found checks, exact-map only. The old fallback scanned every item
+  // with includes(), making a bad scan or out-of-scope item take 10-30+ seconds on Kindle.
   return state._countExactIndex?.get(normalizedNeedle)
     || state._countExactIndex?.get(needle)
-    || allCountCandidateRows().find((item) =>
-      [item.code, item.product, item.plu, item.itemNumber, item.vendor, item.category]
-        .some((value) => String(value || "").toLowerCase().includes(needle))
-    )
     || null;
 }
 
@@ -4463,20 +4467,20 @@ function findCountMatch(query) {
     || null;
   if (exactMatch && (countItemIsInScope(exactMatch) || countSessionAllowsOutOfScope())) return exactMatch;
 
-  // Second: try filtered pool with partial text match
-  const filtered = countSessionAllowsOutOfScope() ? allCountCandidateRows() : filteredCountCandidateRows();
-  return filtered.find((item) =>
-    [item.code, item.product, item.plu, item.itemNumber, item.vendor, item.category]
-      .some((value) => String(value || "").toLowerCase().includes(needle))
-  );
+  // Scanner speed path: if the user typed a partial description, use the prebuilt search index
+  // instead of rebuilding/filtering the inventory array. Limit to first match.
+  const index = state._countSearchIndex || [];
+  for (const entry of index) {
+    if (entry.haystack.includes(needle)) return entry.item;
+  }
+  return null;
 }
 
 function currentSelectedCountItem() {
   if (!state.selectedCountItemCode) return null;
   const selectedKey = codeKey(state.selectedCountItemCode);
-  return filteredCountCandidateRows().find((item) => codeKey(item.code) === selectedKey)
-    || (countSessionAllowsOutOfScope() ? allCountCandidateRows().find((item) => codeKey(item.code) === selectedKey) : null)
-    || null;
+  if (!state._countExactIndex || state._countIndexStamp !== state._dataCacheStamp || state._countIndexSessionKey !== countSearchIndexKey()) buildCountSearchIndex();
+  return state._countExactIndex?.get(selectedKey) || null;
 }
 
 function renderSelectedCountItem() {
@@ -4543,7 +4547,7 @@ function handleCountLookup() {
     );
     return;
   }
-  const inScope = filteredCountCandidateRows().some((item) => codeKey(item.code) === codeKey(match.code));
+  const inScope = countItemIsInScope(match);
   if (!inScope && countSessionAllowsOutOfScope()) {
     showToast("Manager override: this item is outside the selected count scope.", 4200, "warning");
   }
@@ -4716,9 +4720,8 @@ function hideCountDropdown() {
 }
 
 function buildCountSearchIndex() {
-  // Force-refresh the candidate cache on session start
-  state._countCandidateCache = null;
-  state._filteredCountCache = null;
+  // HOTFIX: Do NOT force-clear candidate caches here. buildCountSearchIndex() is called by
+  // lookup paths; clearing these caches made every scan rebuild the master rows.
   const scopedRows = filteredCountCandidateRows();
   const exactRows = countSessionAllowsOutOfScope() ? allCountCandidateRows() : scopedRows;
   state._countSearchIndex = scopedRows.map((item) => ({
@@ -4807,8 +4810,9 @@ function selectCountDropdownItem(code) {
   hideCountDropdown();
   if (!state.activeCountSession) return;
   const key = codeKey(code);
-  const filteredItem = filteredCountCandidateRows().find((r) => codeKey(r.code) === key);
-  const item = filteredItem || (countSessionAllowsOutOfScope() ? allCountCandidateRows().find((r) => codeKey(r.code) === key) : null);
+  if (!state._countExactIndex || state._countIndexStamp !== state._dataCacheStamp || state._countIndexSessionKey !== countSearchIndexKey()) buildCountSearchIndex();
+  const item = state._countExactIndex?.get(key) || null;
+  const filteredItem = item && countItemIsInScope(item) ? item : null;
   if (!item) { showToast("Item not found in the item master.", 2800, "warning"); return; }
   if (!filteredItem) showToast("Manager override: counting an item outside the selected scope.", 3600, "warning");
   if (els.countSearchInput) els.countSearchInput.value = "";
@@ -7083,26 +7087,11 @@ function patchInventoryModelStock(code, stock) {
 }
 
 function applyLiveCountStockUpdate(item, afterStock, entry, session) {
-  const key = codeKey(item?.code);
-  if (!key) return;
-  const existing = state.latestInventory.get(key) || item;
-  const beforeStock = Number(existing?.stock || 0);
-  const nextStock = Number(afterStock || 0);
-  existing.stock = nextStock;
-  // latestInventory is already keyed by normalized code; avoid scanning every inventory row on each count.
-  state.latestInventory.set(key, existing);
-  state._localProductMetaEdits.set(key, Date.now());
-  patchInventoryModelStock(item.code, nextStock);
-  patchVisibleStockCell(item.code, nextStock);
-  patchCachedInventoryItem(item.code);
-  state._priceCheckExactIndex = null;
-  state._priceCheckExactIndexStamp = 0;
-  if (beforeStock !== nextStock) {
-    // Keep live scan lightweight. Adjustment-log persistence is deferred until Save/Submit/Delete.
-    // Writing a large adjustmentLog to localStorage after every scan was freezing Kindle/Silk.
-  }
-  // Remote product/inventory writes are intentionally blocked while scanning.
-  scheduleCountProductSync([item.code]);
+  // HOTFIX: During physical count, scan entry must be UI/local-session only.
+  // Do not mutate master inventory, visible inventory tables, caches, price-check indexes, or sync queues here.
+  // Those operations walk large arrays and caused 30s+ delays after each scan on Kindle/Silk.
+  // The actual stock update and Supabase sync happen once from saveCountSession().
+  return;
 }
 
 function moveColumn(from, to) {
