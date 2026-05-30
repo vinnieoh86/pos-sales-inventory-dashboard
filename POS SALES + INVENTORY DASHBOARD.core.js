@@ -148,8 +148,9 @@ let sharedVendorRulesAvailable = true;
 let sharedProductMetaAvailable = true;
 let sharedImportLogsAvailable = true;
 let sharedCountSessionsAvailable = true;
-const SHARED_SYNC_POLL_MS = 2000;
-const SHARED_SYNC_INITIAL_DELAY_MS = 1200;
+// Shared auto-sync is intentionally slow/idle-first. Critical actions (Save/Submit/Sync Now) still sync immediately.
+const SHARED_SYNC_POLL_MS = 10 * 60 * 1000;
+const SHARED_SYNC_INITIAL_DELAY_MS = 15 * 1000;
 const SHARED_PRODUCT_META_PULL_LIMIT = 500;
 
 function performanceNow() {
@@ -176,8 +177,8 @@ function createScanPerformanceProfile() {
     full: {
       camera: { width: 1280, height: 720, fps: 24, qrbox: { width: 260, height: 130 } },
       detectIntervalMs: 42,
-      normalPollMs: SHARED_SYNC_POLL_MS,
-      scanPollMs: SHARED_SYNC_POLL_MS,
+      normalPollMs: 5 * 60 * 1000,
+      scanPollMs: 45 * 60 * 1000,
       // PERF-B: countPollMs — sync poll interval while Count Mode is active.
       // Full-tier (desktop): same as normal, counts are interactive and changes should appear quickly.
       countPollMs: 4000,
@@ -186,8 +187,8 @@ function createScanPerformanceProfile() {
     medium: {
       camera: { width: 960, height: 540, fps: 15, qrbox: { width: 230, height: 115 } },
       detectIntervalMs: 67,
-      normalPollMs: SHARED_SYNC_POLL_MS,
-      scanPollMs: 12000,
+      normalPollMs: 10 * 60 * 1000,
+      scanPollMs: 45 * 60 * 1000,
       // Medium (phone/tablet): 10s between count syncs — responsive without hammering the device.
       countPollMs: 10000,
       deferRestoresWhileScanning: true,
@@ -195,8 +196,8 @@ function createScanPerformanceProfile() {
     low: {
       camera: { width: 640, height: 480, fps: 10, qrbox: { width: 200, height: 100 } },
       detectIntervalMs: 100,
-      normalPollMs: SHARED_SYNC_POLL_MS,
-      scanPollMs: 45000,
+      normalPollMs: 15 * 60 * 1000,
+      scanPollMs: 45 * 60 * 1000,
       // Low (Kindle/Silk): 30s between count syncs — keeps Kindle responsive while counting.
       countPollMs: 30000,
       deferRestoresWhileScanning: true,
@@ -432,6 +433,7 @@ const els = {
   downloadOrder: document.querySelector("#downloadOrder"),
   downloadSku: document.querySelector("#downloadSku"),
   downloadInventory: document.querySelector("#downloadInventory"),
+  inventorySyncNow: document.querySelector("#inventorySyncNow"),
   downloadParents: document.querySelector("#downloadParents"),
   uploadLogBody: document.querySelector("#uploadLogBody"),
   uploadLogSummary: document.querySelector("#uploadLogSummary"),
@@ -1490,6 +1492,7 @@ document.querySelector("#exportPoExcel")?.addEventListener("click", () => export
 document.querySelector("#exportPoPdf")?.addEventListener("click", () => exportPoPdf());
 els.downloadSku.addEventListener("click", () => downloadCsv("sku-performance.csv", state.filteredSkus));
 els.downloadInventory.addEventListener("click", () => downloadCsv("all-inventory.csv", state.inventoryRows));
+els.inventorySyncNow?.addEventListener("click", () => forceSharedSyncNow());
 els.downloadParents.addEventListener("click", () => downloadCsv("parent-styles.csv", state.parentRows));
 els.inventoryBody?.addEventListener("click", (event) => {
   // Checkbox toggle
@@ -7250,14 +7253,14 @@ function buildInventoryRows(options = {}) {
     const inventoryIndex = state.latestInventory;
     const salesByCode = new Map(buildSkuRows({ ignoreQuery: true, ignoreFilters: true }).map((sku) => [codeKey(sku.code), sku]));
     const hasCurrentInventory = inventoryIndex.size > 0;
-    // Product page must remain a full item master. The clean UI pass made Products
-    // paint quickly, but using only latestInventory keys when any current snapshot
-    // existed could hide master/excel-only items from search on Kindle/tablet.
-    // Keep the fast paint/render limit, but hydrate the cache from every source.
+    // Products page speed rule: use the actual product master/current inventory only.
+    // Do NOT union every historical sales-only SKU into the Products cache on Kindle;
+    // that made the page and count mode unusable again.
+    // Current inventory rows + Excel item master rows are enough for product lookup,
+    // while old sales-only rows stay available in SKU/sales analysis.
     const codes = new Set([
       ...inventoryIndex.keys(),
       ...[...state.excelItems.values()].map((item) => item.code).filter(Boolean),
-      ...[...salesByCode.values()].map((sku) => sku.code).filter(Boolean),
     ].map((code) => codeKey(code)).filter(Boolean));
 
     state._inventoryCache = [...codes].map((code) => {
@@ -13820,6 +13823,45 @@ if (!state.authRequired || !loadUsers().length) {
   if (!state.authRequired) bootAppIfNeeded();
 }
 
+
+async function forceSharedSyncNow() {
+  if (!ENABLE_SHARED_SYNC) {
+    showToast("Shared sync is disabled for this build.", 2400, "warning");
+    return false;
+  }
+  const btn = els.inventorySyncNow || document.querySelector("#inventorySyncNow");
+  const oldText = btn?.textContent || "Sync Now";
+  if (btn) { btn.disabled = true; btn.textContent = "Syncing..."; }
+  try {
+    // If this device has pending stock edits from Products/count submit, push them first.
+    if (pendingSharedProductCodes?.size) {
+      const codes = [...pendingSharedProductCodes];
+      pendingSharedProductCodes.clear();
+      await syncSharedInventoryFactsByCodes(codes, { silent: true, updateSyncState: true });
+    }
+    // Then pull the newest saved truth from Supabase. This intentionally bypasses stale
+    // localStorage/local cache so refresh/manual sync cannot resurrect old Kindle QOH.
+    const restored = await restoreSharedDataFromSupabase({ silent: true, preferCurrentState: false });
+    bumpDataStamp();
+    if (activeTabName() === "inventory") renderInventory();
+    else render();
+    if (typeof rebuildCountLookupIndex === "function") {
+      try { rebuildCountLookupIndex(); } catch (_) {}
+    }
+    if (typeof rebuildScanLookupIndex === "function") {
+      try { rebuildScanLookupIndex(); } catch (_) {}
+    }
+    showToast(restored ? `Synced latest inventory ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : "No newer shared inventory found.", 2600, restored ? "success" : "warning");
+    return !!restored;
+  } catch (error) {
+    showToast("Sync Now failed. Check connection/Supabase.", 3200, "warning");
+    return false;
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = oldText; }
+  }
+}
+window.forceSharedSyncNow = forceSharedSyncNow;
+
 // Multi-device sync: poll a tiny shared sync_state row so devices can refresh
 // products-only changes quickly without constantly refetching full sales data.
 (function startSyncPoller() {
@@ -13835,6 +13877,10 @@ if (!state.authRequired || !loadUsers().length) {
   };
   async function poll(options = {}) {
     const forceRestore = options.forceRestore === true;
+    if (!forceRestore && (state.activeCountSession || activeTabName() === "counts" || scanModeIsActive())) {
+      state._deferredSharedSync = true;
+      return;
+    }
     try {
       const url = new URL(`${SUPABASE_URL}/rest/v1/sync_state`);
       url.searchParams.set("select", "id,last_sync_kind,updated_at,latest_inventory_date,latest_sales_date,product_count,sales_count");
