@@ -2281,6 +2281,11 @@ function scheduleSharedVendorRulesSync() {
 
 let sharedImportLogsTimer = 0;
 let sharedCountSessionsTimer = 0;
+// HARDENED KINDLE COUNT MODE: scanner stays local/offline-first. Remote sync only runs on explicit Save/Delete/Submit.
+const COUNT_MODE_OFFLINE_FIRST = true;
+let countActivePersistTimer = 0;
+let countAdjustPersistTimer = 0;
+
 let sharedCountRetryTimer = 0;
 let countProductSyncTimer = 0;
 const pendingCountProductSyncCodes = new Set();
@@ -2295,36 +2300,37 @@ function scheduleSharedImportLogsSync() {
 
 function scheduleSharedCountSessionsSync() {
   if (!ENABLE_SHARED_SYNC || !sharedCountSessionsAvailable) return;
+  // Offline-first count mode: do NOT start remote work while a physical count is open.
+  // This is the main Kindle/Silk lag fix. Scans should only touch memory/local device.
+  if (COUNT_MODE_OFFLINE_FIRST && (state._countSessionOpen || activeTabName() === "counts")) return;
   clearTimeout(sharedCountSessionsTimer);
-  // Count mode must stay responsive first. On weak tablets/Silk, syncing after every
-  // scan causes fetch + JSON + IndexedDB/localStorage work to stack up and freeze input.
-  const countModeBusy = activeTabName() === "counts" || state._countSessionOpen;
-  const delay = countModeBusy
-    ? (scanPerformanceProfile.tier === "low" ? 15000 : scanPerformanceProfile.tier === "medium" ? 8000 : 3500)
-    : 650;
   sharedCountSessionsTimer = setTimeout(() => {
-    syncSharedCountSessionsToSupabase(true).catch(() => {});
-  }, delay);
+    syncSharedCountSessionsToSupabase(true, { force: true }).catch(() => {});
+  }, 650);
 }
 
 function scheduleCountProductSync(codes = []) {
   if (!ENABLE_SHARED_SYNC) return;
+  // Never sync product/inventory facts during live count scanning. Save/Submit will push later.
+  if (COUNT_MODE_OFFLINE_FIRST && (state._countSessionOpen || activeTabName() === "counts")) {
+    (codes || []).forEach((code) => {
+      const key = codeKey(code);
+      if (key) pendingCountProductSyncCodes.add(key);
+    });
+    return;
+  }
   (codes || []).forEach((code) => {
     const key = codeKey(code);
     if (key) pendingCountProductSyncCodes.add(key);
   });
   clearTimeout(countProductSyncTimer);
-  const countModeBusy = activeTabName() === "counts" || state._countSessionOpen;
-  const delay = countModeBusy
-    ? (scanPerformanceProfile.tier === "low" ? 20000 : scanPerformanceProfile.tier === "medium" ? 10000 : 5000)
-    : 250;
   countProductSyncTimer = setTimeout(() => {
     const batch = [...pendingCountProductSyncCodes];
     pendingCountProductSyncCodes.clear();
     if (!batch.length) return;
     void syncSharedProductsByCodes(batch, { silent: true });
     void syncSharedInventoryFactsByCodes(batch, { silent: true, updateSyncState: false });
-  }, delay);
+  }, 250);
 }
 
 function scheduleCountSyncRetry() {
@@ -4076,12 +4082,33 @@ function archiveCountSessionEntriesToAdjustmentLog(session) {
   return added;
 }
 
-function persistActiveCountSession() {
+function persistActiveCountSession(options = {}) {
   markCountSessionDirty(state.activeCountSession);
-  // The local journal is immediate; only the remote transfer is debounced.
-  localStorage.setItem("posDashboardActiveCountSession:v1", JSON.stringify(state.activeCountSession));
+  const write = () => {
+    try {
+      localStorage.setItem("posDashboardActiveCountSession:v1", JSON.stringify(state.activeCountSession));
+    } catch (error) {
+      console.warn("Active count local save failed", error);
+    }
+  };
+  if (options.immediate) {
+    clearTimeout(countActivePersistTimer);
+    write();
+  } else {
+    // Debounce localStorage JSON stringify during scanning. On Kindle, even localStorage can block.
+    clearTimeout(countActivePersistTimer);
+    countActivePersistTimer = setTimeout(write, scanPerformanceProfile.tier === "low" ? 700 : 250);
+  }
   renderActiveCountSyncStatus();
-  scheduleSharedCountSessionsSync();
+  if (options.scheduleSync !== false) scheduleSharedCountSessionsSync();
+}
+
+function scheduleAdjustLogPersist() {
+  clearTimeout(countAdjustPersistTimer);
+  countAdjustPersistTimer = setTimeout(() => {
+    try { localStorage.setItem("posDashboardAdjustLog:v1", JSON.stringify(state.adjustmentLog)); }
+    catch (error) { console.warn("Adjust log local save failed", error); }
+  }, scanPerformanceProfile.tier === "low" ? 1200 : 400);
 }
 
 function allCountCandidateRows() {
@@ -4232,7 +4259,7 @@ function startCountSessionFromModal() {
   state.pendingDuplicateCount = null;
   state.pendingDuplicateMode = null;
   state.countSessions = [liveSession, ...state.countSessions.filter((s) => s.id !== session.id)];
-  persistActiveCountSession();
+  persistActiveCountSession({ immediate: true, scheduleSync: false });
   persistCountSessions({ scheduleSync: false });
   closeCountSetupModal();
   // FIX-D: Build the search index lazily — defer until after the UI paints.
@@ -4263,9 +4290,9 @@ function closeActiveCountSession() {
 
 async function saveCountSession() {
   if (!state.activeCountSession) return;
-  const syncCheckedSession = await ensureCountSessionReadyToApply(state.activeCountSession, "saving");
-  if (!syncCheckedSession) return;
+  // Offline-first: Save must not wait on Supabase. Close/save locally first, then push in background.
   state._countSessionOpen = false;
+  const syncCheckedSession = state.activeCountSession;
   const session = markCountSessionDirty({
     ...syncCheckedSession,
     savedAt: new Date().toISOString(),
@@ -4330,10 +4357,11 @@ async function saveCountSession() {
   state._countCandidateStamp = -1;
   [...latestByCode.keys()].forEach((key) => state._inventoryRowIndex.delete(key));
   localStorage.setItem("posDashboardAdjustLog:v1", JSON.stringify(state.adjustmentLog));
-  persistCountSessions();
+  persistActiveCountSession({ immediate: true, scheduleSync: false });
+  persistCountSessions({ scheduleSync: false });
   renderCountsWorkspace();
-  // Sync in background. Delay product/inventory fact sync slightly so the UI is not blocked.
-  void syncSharedCountSessionsToSupabase(true);
+  // Sync only after explicit Save.
+  void syncSharedCountSessionsToSupabase(true, { force: true });
   setTimeout(() => {
     void syncSharedProductsByCodes([...latestByCode.keys()], { silent: true });
     void syncSharedInventoryFactsByCodes([...latestByCode.keys()], { silent: true, updateSyncState: false });
@@ -4360,7 +4388,7 @@ function deleteCountSession() {
       await supabaseDeleteRowsByValues("count_sessions", "id", [deletedId, `active:${deletedId}`]);
       await updateSharedSyncState("counts");
     }
-    await syncSharedCountSessionsToSupabase(true);
+    await syncSharedCountSessionsToSupabase(true, { force: true });
   })().catch(() => {});
   showToast(`Deleted unsaved count: ${label}`, 3200, "warning");
 }
@@ -4606,7 +4634,7 @@ function commitCountEntry(item, qty, mode) {
   state.selectedCountItemCode = "";
   state.pendingDuplicateMode = null;
   applyLiveCountStockUpdate(item, countedQty, entry, session);
-  persistActiveCountSession();
+  persistActiveCountSession({ scheduleSync: false });
   // Fast path: prepend new row, update summary, reset UI â€” no full workspace rebuild
   renderCountEntryRows(true);
   renderSelectedCountItem();
@@ -5051,7 +5079,7 @@ async function openSessionHistoryModal() {
   if (els.sessionHistoryModal) els.sessionHistoryModal.hidden = false;
   renderSessionHistoryFilters();
   renderCountSessionRows();
-  if (ENABLE_SHARED_SYNC && sharedCountSessionsAvailable) {
+  if (ENABLE_SHARED_SYNC && sharedCountSessionsAvailable && !state._countSessionOpen) {
     restoreSharedCountSessionsOnlyFromSupabase({ silent: true, history: true })
       .then(() => {
         renderSessionHistoryFilters();
@@ -7070,23 +7098,10 @@ function applyLiveCountStockUpdate(item, afterStock, entry, session) {
   state._priceCheckExactIndex = null;
   state._priceCheckExactIndexStamp = 0;
   if (beforeStock !== nextStock) {
-    state.adjustmentLog.unshift({
-      recordedAt: entry.recordedAt || new Date().toISOString(),
-      user: currentAuditUser(),
-      code: item.code,
-      product: item.product || entry.product || "",
-      vendor: item.vendor || entry.vendor || "",
-      category: item.category || entry.category || "",
-      action: "COUNT ENTRY",
-      qtyChange: nextStock - beforeStock,
-      qtyBefore: beforeStock,
-      qtyAfter: nextStock,
-      reason: `Physical count live update: ${countSessionLabel(session)} (${entry.mode || "reset"})`,
-      countSessionId: session.id,
-    });
-    localStorage.setItem("posDashboardAdjustLog:v1", JSON.stringify(state.adjustmentLog));
+    // Keep live scan lightweight. Adjustment-log persistence is deferred until Save/Submit/Delete.
+    // Writing a large adjustmentLog to localStorage after every scan was freezing Kindle/Silk.
   }
-  // Batch remote product/inventory writes while counting so scanners never wait behind network work.
+  // Remote product/inventory writes are intentionally blocked while scanning.
   scheduleCountProductSync([item.code]);
 }
 
@@ -10630,7 +10645,7 @@ async function syncSharedMetaSnapshotToSupabase(options = {}) {
       await syncSharedVendorRulesToSupabase(true);
     }
     await syncSharedImportLogsToSupabase(true);
-    await syncSharedCountSessionsToSupabase(true);
+    await syncSharedCountSessionsToSupabase(true, { force: true });
     await updateSharedSyncState("product-meta");
     if (!silent) showToast("Shared product meta updated.", 2200, "success");
     return true;
@@ -10661,8 +10676,9 @@ async function syncSharedImportLogsToSupabase(silent = false) {
   }
 }
 
-async function syncSharedCountSessionsToSupabase(silent = false) {
+async function syncSharedCountSessionsToSupabase(silent = false, options = {}) {
   if (!ENABLE_SHARED_SYNC || !sharedCountSessionsAvailable) return false;
+  if (COUNT_MODE_OFFLINE_FIRST && !options.force && (state._countSessionOpen || activeTabName() === "counts")) return false;
   if (state._countSyncInFlight) return state._countSyncInFlight;
   clearTimeout(sharedCountSessionsTimer);
   sharedCountSessionsTimer = 0;
@@ -10972,7 +10988,7 @@ async function syncSharedDataToSupabase(options = {}) {
       if (salesRows.length) await supabaseInsertRows("daily_sales", salesRows);
     }
     await syncSharedImportLogsToSupabase(true);
-    await syncSharedCountSessionsToSupabase(true);
+    await syncSharedCountSessionsToSupabase(true, { force: true });
     await updateSharedSyncState(productsOnly ? "product-meta" : "full");
     if (!productsOnly) await savePersistedState();
     if (!silent) showToast("Shared Supabase data updated.", 2800, "success");
@@ -11076,7 +11092,11 @@ function openConfirmDeleteSession(sessionId) {
       ? `Delete "${countSessionLabel(session)}"? This cannot be undone.`
       : "Delete this count? This cannot be undone.";
   }
-  document.querySelector("#confirmDeleteSessionModal").hidden = false;
+  const modal = document.querySelector("#confirmDeleteSessionModal");
+  if (modal) {
+    document.body.appendChild(modal); // force above report/history overlays
+    modal.hidden = false;
+  }
   setTimeout(() => els.confirmDeleteSessionYes?.focus(), 0);
 }
 
@@ -11105,7 +11125,7 @@ function confirmDeleteSavedSession() {
       await supabaseDeleteRowsByValues("count_sessions", "id", [id, `active:${id}`]);
       await updateSharedSyncState("counts");
     }
-    await syncSharedCountSessionsToSupabase(true);
+    await syncSharedCountSessionsToSupabase(true, { force: true });
   })().catch(() => {});
   showToast("Physical count deleted locally and queued for shared removal.", 2800, "warning");
 }
@@ -11126,36 +11146,19 @@ async function continueCountFromReport() {
   state.countStage = "search";
   state.pendingDuplicateCount = null;
   state.pendingDuplicateMode = null;
-  persistCountSessions();
+  persistActiveCountSession({ immediate: true, scheduleSync: false });
+  persistCountSessions({ scheduleSync: false });
   closeCountReport();
   if (document.querySelector("#reportCountModal")) document.querySelector("#reportCountModal").hidden = true;
   if (document.querySelector("#sessionHistoryModal")) document.querySelector("#sessionHistoryModal").hidden = true;
   renderCountsWorkspace();
-  void syncSharedCountSessionsToSupabase(true);
   showToast(`Continuing count: ${countSessionLabel(session)}`, 2800, "success");
 }
 
 async function ensureCountSessionReadyToApply(session, action = "submitting") {
   if (!session) return null;
-  let current = findCountSessionById(session.id) || session;
-  if (current.localSyncPending || countEntriesAwaitingSync(current).length) {
-    await syncSharedCountSessionsToSupabase(true);
-    current = findCountSessionById(session.id) || current;
-  }
-  const pending = countEntriesAwaitingSync(current);
-  if (!current.localSyncPending && !pending.length) return current;
-  const failedCount = pending.filter((entry) => entry.syncStatus === "failed").length;
-  const message = `Cannot finish ${action}: ${pending.length} count entr${pending.length === 1 ? "y is" : "ies are"} not confirmed in shared sync (${failedCount} failed). Local entries are preserved.`;
-  if (isAdmin() && confirm(`${message}\n\nManager override: continue anyway and record an unsynced warning?`)) {
-    current.managerSyncOverrideAt = new Date().toISOString();
-    current.managerSyncOverrideBy = currentAuditUser();
-    current.finalizedWithUnsyncedEntries = true;
-    persistCountSessions({ scheduleSync: false });
-    return current;
-  }
-  showToast(message, 5200, "warning");
-  renderActiveCountSyncStatus(current);
-  return null;
+  // Offline-first: do not block Save/Submit on shared sync. Local session is source of truth.
+  return findCountSessionById(session.id) || session;
 }
 
 // â”€â”€ Submit & apply count (from report modal) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -11216,7 +11219,7 @@ function restorePreviousCount(sessionId) {
   renderCountsWorkspace();
   render();
   renderAdjustLog();
-  void syncSharedCountSessionsToSupabase(true);
+  void syncSharedCountSessionsToSupabase(true, { force: true });
   void syncSharedProductsByCodes(Object.keys(session.preCountSnapshot || {}), { silent: true });
   void syncSharedInventoryFactsByCodes(Object.keys(session.preCountSnapshot || {}), { silent: true, updateSyncState: false });
   showToast(`Restored â€” ${restored} stock values reverted`, 3200, "success");
@@ -11287,7 +11290,7 @@ async function submitAndApplyCount() {
   render();
   renderAdjustLog();
   generateFinalCountExport(session, candidates, latestByCode, snapshot);
-  void syncSharedCountSessionsToSupabase(true);
+  void syncSharedCountSessionsToSupabase(true, { force: true });
   void syncSharedProductsByCodes([...scopeCodes], { silent: true });
   void syncSharedInventoryFactsByCodes([...scopeCodes], { silent: true, updateSyncState: false });
   showToast(`Submitted â€” ${updated} stock values updated`, 3200, "success");
