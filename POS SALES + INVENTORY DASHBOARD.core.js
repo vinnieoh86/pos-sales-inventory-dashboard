@@ -4102,14 +4102,12 @@ function allCountCandidateRows() {
   if (state._countCandidateCache && state._countCandidateStamp === state._dataCacheStamp) {
     return state._countCandidateCache;
   }
-  // PATCH D: ignoreStateFilter:true bypasses the inventory tab's UI dropdown (correct),
-  // but we still exclude Disabled and Discontinued items — they should never appear in a
-  // count search unless the session was explicitly set up targeting those states.
-  const all = buildInventoryRows({ ignoreQuery: true, ignoreFilters: true, ignoreStateFilter: true });
-  state._countCandidateCache = all.filter((item) => {
-    const st = (item.state || "").toLowerCase();
-    return st !== "disabled" && st !== "discontinued";
-  });
+  // Physical count must use the true item master/current inventory scope, not the Products
+  // tab's visible filters. Include Active, Disabled, and Discontinued here. Status filtering
+  // happens only when the user explicitly selects a Status in count setup. This keeps ALL +
+  // blank Name/PLU from accidentally producing an empty scan scope, and lets old/disabled
+  // items be counted when they physically exist on shelf.
+  state._countCandidateCache = buildInventoryRows({ ignoreQuery: true, ignoreFilters: true, ignoreStateFilter: true });
   state._countCandidateStamp = state._dataCacheStamp;
   return state._countCandidateCache;
 }
@@ -4123,12 +4121,9 @@ function filteredCountCandidateRows(session = state.activeCountSession) {
     return state._filteredCountCache;
   }
   const statusFilter = (session.status || "").trim().toLowerCase();
-  const scannedCodes = new Set(); // stable lookup scope; report rendering can read session.entries separately
-  // Default comparison/count scope is active/orderable items. Do not switch to a full rebuild just
-  // because entries exist — that was the main post-scan slowdown.
-  const sourceRows = (statusFilter === "disabled" || statusFilter === "discontinued")
-    ? buildInventoryRows({ ignoreQuery: true, ignoreFilters: true, ignoreStateFilter: true })
-    : allCountCandidateRows();
+  // Use one already-cached all-status candidate list. Blank status means ALL statuses.
+  // Explicit status still narrows the scope.
+  const sourceRows = allCountCandidateRows();
   const rows = sourceRows.filter((item) => {
     const vendorFilter = (session.vendor || session.department || "").trim().toUpperCase();
     if (vendorFilter && (item.vendor || "").trim().toUpperCase() !== vendorFilter) return false;
@@ -4141,9 +4136,7 @@ function filteredCountCandidateRows(session = state.activeCountSession) {
       const normalizedKeyword = codeKey(keyword);
       if (!hay.includes(keyword) && !(normalizedKeyword && hay.includes(normalizedKeyword))) return false;
     }
-    const wasScanned = scannedCodes.has(codeKey(item.code));
     if (statusFilter && itemState !== statusFilter) return false;
-    if (!statusFilter && ["disabled", "discontinued"].includes(itemState) && !wasScanned) return false;
     return true;
   });
   state._filteredCountCache = rows;
@@ -4202,17 +4195,17 @@ function closeCountSetupModal() {
 }
 
 function populateCountSetupOptions() {
-  // FIX-D: Cache vendor/category/status lists keyed to the data stamp.
-  // Previously this rebuilt from the full inventory Map on every renderCountsWorkspace call.
-  // On Kindle (10k+ items) that was 100-300ms of synchronous work on each poll tick.
+  // Build setup choices from the same full count candidate source used by scanning.
+  // This prevents the Vendor dropdown from missing vendors that exist in the current
+  // inventory/master file but are not visible on the Products page or latest cache slice.
   if (state._countSetupCacheStamp === state._dataCacheStamp && state._countSetupCached) {
     return; // lists are still current
   }
-  const allRows = [...state.latestInventory.values()];
+  const allRows = allCountCandidateRows();
   const excelRows = [...state.excelItems.values()];
   const combined = allRows.length ? allRows : excelRows;
-  fillSelect(els.countVendorInput, unique(combined.map((r) => r.vendor).filter(Boolean)));
-  fillSelect(els.countCategoryInput, unique(combined.map((r) => r.category).filter(Boolean)));
+  fillSelect(els.countVendorInput, unique(combined.map((r) => cleanCell(r.vendor)).filter(Boolean)));
+  fillSelect(els.countCategoryInput, unique(combined.map((r) => cleanCell(r.category)).filter(Boolean)));
   const statusEl = document.querySelector("#countStatusInput");
   if (statusEl) {
     const knownStates = ["Active", "Disabled", "Discontinued", "Force Order"];
@@ -4939,7 +4932,7 @@ function comparisonReportRows(session) {
     const item = scopedByCode.get(key) || anyByCode.get(key) || { code: entry.code, product: entry.product, vendor: entry.vendor, category: entry.category, stock: entry.originalQty, unitCost: entry.unitCost, state: entry.state || "Active" };
     const status = countItemStatusLabel(item, entry);
     return { item, entry, status };
-  }).filter(({ status }) => countStatusIsActive(status));
+  }).filter(({ entry }) => !!codeKey(entry.code));
 }
 
 function openCountReport(sessionId = state.activeCountSession?.id, mode = state.countReportMode || "input") {
