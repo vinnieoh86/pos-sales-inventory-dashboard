@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "20260526-countsync1";
+  const VERSION = "20260529-kindle-startfast1";
 
   function makeSearchEditable() {
     const search = document.querySelector("#searchInput");

@@ -4261,21 +4261,36 @@ function startCountSessionFromModal() {
   state.pendingDuplicateCount = null;
   state.pendingDuplicateMode = null;
   state.countSessions = [liveSession, ...state.countSessions.filter((s) => s.id !== session.id)];
-  persistActiveCountSession({ immediate: true, scheduleSync: false });
-  persistCountSessions({ scheduleSync: false });
+
+  // KINDLE FAST-START: open the count UI before any blocking work.
+  // localStorage JSON writes, history-table rendering, toast layout, and index building can all
+  // stall Amazon Silk. Start count should feel instant; sync is still handled on Save/Submit.
   closeCountSetupModal();
-  // FIX-D: Build the search index lazily — defer until after the UI paints.
-  // On Kindle this was a synchronous ~400ms block before the count screen appeared.
-  // findCountMatch()/findAnyCountMatch() also auto-build on first use (lines 4307/4323).
-  setTimeout(() => buildCountSearchIndex(), 20);
-  renderCountsWorkspace();
-  showToast(
-    state._countSyncUnavailable
-      ? `Started local count: ${countSessionLabel(session)}. Sync will retry when available.`
-      : `Started count: ${countSessionLabel(session)}`,
-    3600,
-    state._countSyncUnavailable ? "warning" : "success",
-  );
+  renderCountsWorkspace({ skipHistory: true });
+  focusCountSearch();
+
+  requestAnimationFrame(() => {
+    // Save the local draft after the first paint, but do not schedule shared sync here.
+    // This preserves offline recovery without turning Start Count into a network/sync gate.
+    persistActiveCountSession({ immediate: true, scheduleSync: false });
+    persistCountSessions({ scheduleSync: false });
+
+    setTimeout(() => {
+      try { buildCountSearchIndex(); }
+      catch (error) { console.warn("Count index warmup failed", error); }
+    }, 0);
+
+    setTimeout(() => {
+      renderCountSessionRows();
+      showToast(
+        state._countSyncUnavailable
+          ? `Started local count: ${countSessionLabel(session)}. Sync will retry when available.`
+          : `Started count: ${countSessionLabel(session)}`,
+        2200,
+        state._countSyncUnavailable ? "warning" : "success",
+      );
+    }, 50);
+  });
 }
 
 function closeActiveCountSession() {
@@ -4350,24 +4365,24 @@ async function saveCountSession() {
   state.countStage = "search";
   state.pendingDuplicateCount = null;
   state.pendingDuplicateMode = null;
-  // PATCH A: Do NOT call bumpDataStamp() or render() here.
-  // Only count state changed — rebuilding all sales/inventory caches is unnecessary and causes
-  // the visible freeze + cascading render loop on save.
-  // Invalidate only the count-specific caches and affected inventory row index entries.
-  state._countCandidateCache = null;
-  state._filteredCountCache = null;
-  state._countCandidateStamp = -1;
-  [...latestByCode.keys()].forEach((key) => state._inventoryRowIndex.delete(key));
+  // Keep same-device Products + Scan Mode in sync immediately after explicit Save.
+  // Do not bump/render the whole dashboard here; just reconcile inventory caches
+  // and persist the corrected inventory snapshot so refresh cannot restore old qty.
+  const changedCodes = [...latestByCode.keys()];
   localStorage.setItem("posDashboardAdjustLog:v1", JSON.stringify(state.adjustmentLog));
+  await persistPostCountInventoryState(changedCodes);
   persistActiveCountSession({ immediate: true, scheduleSync: false });
   persistCountSessions({ scheduleSync: false });
   renderCountsWorkspace();
-  // Sync only after explicit Save.
-  void syncSharedCountSessionsToSupabase(true, { force: true });
-  setTimeout(() => {
-    void syncSharedProductsByCodes([...latestByCode.keys()], { silent: true });
-    void syncSharedInventoryFactsByCodes([...latestByCode.keys()], { silent: true, updateSyncState: false });
-  }, 400);
+  if (activeTabName() === "inventory") {
+    changedCodes.forEach((code) => patchInventoryRowFromCache(code));
+    renderInventorySummary(state.inventoryRows || currentInventoryRows());
+  }
+  // Sync only after explicit Save, then update sync_state so other devices refresh.
+  void (async () => {
+    await syncSharedCountSessionsToSupabase(true, { force: true });
+    await syncSharedInventoryFactsByCodes(changedCodes, { silent: true, updateSyncState: true });
+  })();
   showToast(`Count saved · ${updatedCount} item stock quantities updated`, 3200, "success");
 }
 
@@ -5420,7 +5435,7 @@ function renderCountsWorkspace(options = {}) {
   if (active && state._countSessionOpen) {
     renderCountEntryRows();
   }
-  renderCountSessionRows();
+  if (!options.skipHistory) renderCountSessionRows();
   if (active && state.countStage === "search") focusCountSearch();
 }
 
@@ -9689,6 +9704,54 @@ async function readPersistedState() {
   return null;
 }
 
+
+// POST-COUNT INVENTORY RECONCILIATION
+// Physical counts are offline-first while scanning, but once the user explicitly
+// Saves/Submits, every inventory-backed view on this same device must see the
+// new qty immediately and refresh must not reload stale IndexedDB inventory.
+function reconcilePostCountInventoryCaches(codes = []) {
+  const uniqueCodes = [...new Set((codes || []).map((code) => codeKey(code)).filter(Boolean))];
+  const latestDate = latestInventoryDate() || new Date().toISOString().slice(0, 10);
+
+  // Keep the persisted inventory snapshot aligned with latestInventory.  Earlier
+  // builds only patched latestInventory, so a refresh on the same Kindle could
+  // restore old stock from IndexedDB and make Scan Mode / Products look stale.
+  state.inventories.set(latestDate, [...state.latestInventory.values()].map((item) => ({ ...item, date: item.date || latestDate })));
+
+  uniqueCodes.forEach((key) => {
+    const item = state.latestInventory.get(key);
+    if (item) state._inventoryRowIndex?.set?.(key, item);
+  });
+
+  // Invalidate lookup caches that can hold old stock values. They will rebuild
+  // from latestInventory the next time Products/Scan Mode/Count lookup needs them.
+  state._priceCheckExactIndex = null;
+  state._priceCheckExactIndexStamp = 0;
+  state._countSearchIndex = null;
+  state._countExactIndex = null;
+  state._countFilteredCodes = null;
+  state._countIndexStamp = 0;
+  state._countCandidateCache = null;
+  state._filteredCountCache = null;
+  state._countCandidateStamp = -1;
+
+  try {
+    localStorage.setItem('posDashboardInventoryChanged:v1', JSON.stringify({
+      at: new Date().toISOString(),
+      codes: uniqueCodes.slice(0, 500),
+    }));
+  } catch (_) {}
+}
+
+async function persistPostCountInventoryState(codes = []) {
+  reconcilePostCountInventoryCaches(codes);
+  try {
+    await savePersistedState();
+  } catch (error) {
+    console.warn('Post-count inventory persisted-state refresh failed', error);
+  }
+}
+
 async function savePersistedState() {
   const payload = {
     rawSales: state.rawSales,
@@ -10508,6 +10571,7 @@ async function restoreSharedProductsOnlyFromSupabase(options = {}) {
     });
     const changedCodes = applySharedProductMetaRowsLight(productMetaRows);
     if (!changedCodes.length) return false;
+    await persistPostCountInventoryState(changedCodes);
     if (!state.activeCountSession) {
       if (activeTabName() === "inventory") {
         const visibleCodes = new Set([...(els.inventoryBody?.querySelectorAll("tr[data-item-code]") || [])]
@@ -10816,10 +10880,8 @@ async function syncSharedInventoryFactsByCodes(codes = [], options = {}) {
       .map(productMetaRowByCodeForSupabase)
       .filter((row) => cleanCell(row?.code));
     if (productMetaRows.length) await supabaseUpsertRows("product_meta", productMetaRows, "code");
-    if (updateSyncState && productMetaRows.length) await updateSharedSyncState("product-meta");
-    if (productRows.length) {
-      supabaseUpsertRows("products", productRows, "code").catch(() => {});
-    }
+    if (productRows.length) await supabaseUpsertRows("products", productRows, "code");
+    if (updateSyncState && (productMetaRows.length || productRows.length)) await updateSharedSyncState("product-meta");
     if (!silent) showToast(`Shared ${uniqueCodes.length === 1 ? "item" : "items"} synced.`, 2200, "success");
     return true;
   } catch (error) {
@@ -11271,17 +11333,22 @@ async function submitAndApplyCount() {
       });
     }
   });
+  const changedCodes = [...scopeCodes];
   localStorage.setItem("posDashboardAdjustLog:v1", JSON.stringify(state.adjustmentLog));
-  persistCountSessions();
+  await persistPostCountInventoryState(changedCodes);
+  persistCountSessions({ scheduleSync: false });
   bumpDataStamp();
   closeCountReport();
   renderCountsWorkspace();
   render();
   renderAdjustLog();
   generateFinalCountExport(session, candidates, latestByCode, snapshot);
-  void syncSharedCountSessionsToSupabase(true, { force: true });
-  void syncSharedProductsByCodes([...scopeCodes], { silent: true });
-  void syncSharedInventoryFactsByCodes([...scopeCodes], { silent: true, updateSyncState: false });
+  // Explicit Submit is the single sync point: push inventory facts and bump
+  // sync_state so laptops/other tablets refresh Products + Scan Mode.
+  void (async () => {
+    await syncSharedCountSessionsToSupabase(true, { force: true });
+    await syncSharedInventoryFactsByCodes(changedCodes, { silent: true, updateSyncState: true });
+  })();
   showToast(`Submitted â€” ${updated} stock values updated`, 3200, "success");
 }
 
