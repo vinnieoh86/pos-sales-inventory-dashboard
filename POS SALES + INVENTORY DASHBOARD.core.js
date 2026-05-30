@@ -10594,109 +10594,32 @@ function applySharedCountSessionRows(rows = [], options = {}) {
 
 async function restoreSharedProductsOnlyFromSupabase(options = {}) {
   if (!ENABLE_SHARED_SYNC) return false;
-  const { silent = false, render: renderOpt = true } = options;
+  const { silent = false } = options;
   try {
-    // KINDLE FULL-INDEX FIX:
-    // Product-only sync used to pull only the last 500 product_meta rows. On Kindle,
-    // that made Products/Scan Mode/Count Mode search a partial mid-alphabet dataset
-    // (for example starting around "Onyx"), so scans for earlier items returned
-    // "not found". Product-only restore must load the full products table, but it
-    // must NOT render every row. Rendering stays chunked/lazy in renderInventory().
-    const [productRows, productMetaRows] = await Promise.all([
-      supabaseSelectRows("products", { select: "*", order: "code.asc" }),
-      supabaseSelectRowsSafe("product_meta", { select: "*", order: "code.asc" }),
-    ]);
-    let mergedProductRows = mergeSharedProductRows(productRows, productMetaRows);
-    if (!mergedProductRows.length) return false;
-
-    // Preserve local unsynced edits if this device edited a product more recently
-    // than the remote row timestamp.
-    mergedProductRows = mergedProductRows.map((row) => {
-      const key = codeKey(row.code);
-      const localEditMs = state._localProductMetaEdits?.get?.(key) || 0;
-      const remoteEditMs = Date.parse(row.updated_at || row.snapshot_date || "") || 0;
-      if (!localEditMs || (remoteEditMs && remoteEditMs >= localEditMs - 1000)) return row;
-      const localItem = state.latestInventory.get(key);
-      if (!localItem) return row;
-      return { ...row, stock: localItem.stock, price: localItem.price ?? row.price, unit_cost: localItem.cost ?? row.unit_cost };
+    const productMetaRows = await supabaseSelectRowsSafe("product_meta", {
+      select: "*",
+      order: "updated_at.desc",
+      limit: String(SHARED_PRODUCT_META_PULL_LIMIT),
     });
-
-    state.excelItems = new Map();
-    state.excelByPlu = new Map();
-    state.excelByItemNumber = new Map();
-    const nextOverrides = {};
-    const nextItemMeta = { ...(state.itemMeta || {}) };
-
-    mergedProductRows.map(hydrateExcelFromSupabase).forEach((item) => addExcelIndex(item));
-    mergedProductRows.forEach((row) => {
-      const code = normalizeCode(row.code);
-      if (!code) return;
-      const existingMeta = nextItemMeta[code] || {};
-      nextItemMeta[code] = {
-        ...existingMeta,
-        ...(row.state != null ? { state: cleanCell(row.state), stateManual: true } : {}),
-        ...(row.case_size != null ? { caseSize: normalizedCaseSize(row.case_size), caseSizeManual: existingMeta.caseSizeManual === true } : {}),
-        ...(row.add_date ? { addDate: normalizeItemDate(row.add_date) } : {}),
-        orderingRuleMode: cleanCell(row.ordering_rule_mode) || existingMeta.orderingRuleMode || "vendor",
-        safetyDaysOverride: row.safety_days_override != null ? Math.max(0, Math.round(toNumber(row.safety_days_override) || 0)) : null,
-        daysOfInventoryOverride: row.days_of_inventory_override != null ? Math.max(0, Math.round(toNumber(row.days_of_inventory_override) || 0)) : null,
-      };
-      const overrideMin = row.reorder_min_override;
-      const overrideMax = row.reorder_max_override;
-      if (overrideMin != null || overrideMax != null) {
-        nextOverrides[code] = {
-          ...(overrideMin != null ? { min: toNumber(overrideMin) } : {}),
-          ...(overrideMax != null ? { max: toNumber(overrideMax) } : {}),
-        };
+    const changedCodes = applySharedProductMetaRowsLight(productMetaRows);
+    if (!changedCodes.length) return false;
+    await persistPostCountInventoryState(changedCodes);
+    if (!state.activeCountSession) {
+      if (activeTabName() === "inventory") {
+        const visibleCodes = new Set([...(els.inventoryBody?.querySelectorAll("tr[data-item-code]") || [])]
+          .map((row) => row.dataset.itemCode)
+          .filter(Boolean)
+          .map(codeKey));
+        changedCodes.filter((code) => visibleCodes.has(codeKey(code))).forEach((code) => patchInventoryRowFromCache(code));
+        renderInventorySummary(state.inventoryRows || currentInventoryRows());
+        refreshDetailDrawer();
+      } else if (activeTabName() === "ordering") {
+        renderOrders();
       }
-    });
-    state.itemMeta = nextItemMeta;
-    saveItemMeta();
-    state.reorderOverrides = nextOverrides;
-    localStorage.setItem("posDashboardReorderOverrides:v1", JSON.stringify(state.reorderOverrides));
-    rebuildExcelIndexes();
-
-    const inventoryRows = mergedProductRows.map(hydrateInventoryFromSupabase).filter((row) => row.code || row.product);
-    state.inventories = new Map();
-    if (inventoryRows.length) {
-      const inventoryDate = inventoryRows.map((row) => row.date).sort().at(-1) || new Date().toISOString().slice(0, 10);
-      state.inventories.set(inventoryDate, inventoryRows);
     }
-    buildLatestInventory();
-    state._loadedFileSignatures = new Set(["supabase-shared-products-full-index"]);
-
-    // Kill any partial visible/index caches. They will rebuild from the full master.
-    state._inventoryCache = null;
-    state._inventoryCacheStamp = -1;
-    state._inventoryVisibleFilterKey = "";
-    state._inventoryVisibleLimit = Math.max(200, state._inventoryVisibleLimit || 200);
-    state._priceCheckExactIndex = null;
-    state._priceCheckExactIndexStamp = 0;
-    state._scanExactIndex = null;
-    state._scanExactIndexStamp = 0;
-    state._countSearchIndex = null;
-    state._countExactIndex = null;
-    state._countFilteredCodes = null;
-    state._countIndexStamp = 0;
-    state._countCandidateCache = null;
-    state._filteredCountCache = null;
-    state._countCandidateStamp = -1;
-
-    bumpDataStamp();
-    updateFilterOptions();
-    updateInventoryStateFilter();
-    queueScanExactIndexBuild({ prioritize: true, immediate: true });
-    await savePersistedState();
-
-    if (renderOpt !== false && !state.activeCountSession) {
-      if (activeTabName() === "inventory") renderInventory();
-      else if (activeTabName() === "ordering") renderOrders();
-      else if (scanModeIsActive()) queueScanExactIndexBuild({ prioritize: true, immediate: true });
-    }
-    if (!silent) showToast(`Full product index loaded (${number.format(mergedProductRows.length)} items)`, 2200, "success");
+    if (!silent) showToast(`Shared product updates loaded (${number.format(changedCodes.length)} items)`, 1800, "success");
     return true;
   } catch (error) {
-    console.warn("Full product index restore failed", error);
     if (!silent) showToast("Shared product refresh failed.", 2600, "warning");
     return false;
   }
