@@ -10661,32 +10661,47 @@ async function restoreSharedProductsOnlyFromSupabase(options = {}) {
   if (!ENABLE_SHARED_SYNC) return false;
   const { silent = false } = options;
   try {
-    const productMetaRows = await supabaseSelectRowsSafe("product_meta", {
-      select: "*",
-      order: "updated_at.desc",
-      limit: String(SHARED_PRODUCT_META_PULL_LIMIT),
-    });
-    const changedCodes = applySharedProductMetaRowsLight(productMetaRows);
-    if (!changedCodes.length) return false;
-    await persistPostCountInventoryState(changedCodes);
+    // IMPORTANT: secondary/tablet devices may have a partial local product cache.
+    // Pull the full shared product master here (products + product_meta) so Products,
+    // Scan Mode, and Physical Count all build lookup maps from the same complete
+    // inventory universe as the laptop.  We still avoid pulling daily_sales here,
+    // so the UI stays much leaner than a full dashboard restore.
+    if (!silent) setAppLoadStatus("Syncing product master");
+    const [productRows, productMetaRows] = await Promise.all([
+      supabaseSelectRows("products", { select: "*" }),
+      supabaseSelectRowsSafe("product_meta", { select: "*" }),
+    ]);
+    const mergedRows = mergeSharedProductRows(productRows, productMetaRows);
+    if (!mergedRows.length) return false;
+
+    const beforeCount = Math.max(state.latestInventory.size, state.excelItems.size);
+    const applied = applySharedProductRows(mergedRows);
+    if (!applied) return false;
+
+    // Persist the complete product master locally so a Kindle/tablet refresh does not
+    // fall back to an old partial IndexedDB/localStorage snapshot.
+    await savePersistedState();
+    queueScanExactIndexBuild({ prioritize: true, immediate: true });
+    try { buildCountSearchIndex(); } catch (_) {}
+
     if (!state.activeCountSession) {
       if (activeTabName() === "inventory") {
-        const visibleCodes = new Set([...(els.inventoryBody?.querySelectorAll("tr[data-item-code]") || [])]
-          .map((row) => row.dataset.itemCode)
-          .filter(Boolean)
-          .map(codeKey));
-        changedCodes.filter((code) => visibleCodes.has(codeKey(code))).forEach((code) => patchInventoryRowFromCache(code));
-        renderInventorySummary(state.inventoryRows || currentInventoryRows());
+        // Re-render the visible Products rows only; renderInventory already chunks DOM work
+        // and limits visible rows, so this does not dump the whole master onto Kindle.
+        queueActiveTabRender();
         refreshDetailDrawer();
       } else if (activeTabName() === "ordering") {
         renderOrders();
       }
     }
-    if (!silent) showToast(`Shared product updates loaded (${number.format(changedCodes.length)} items)`, 1800, "success");
-    return true;
+    const afterCount = Math.max(state.latestInventory.size, state.excelItems.size);
+    if (!silent) showToast(`Product master synced: ${number.format(afterCount)} items`, 2200, "success");
+    return afterCount !== beforeCount || applied > 0;
   } catch (error) {
     if (!silent) showToast("Shared product refresh failed.", 2600, "warning");
     return false;
+  } finally {
+    clearAppLoadStatus("Syncing product master");
   }
 }
 
