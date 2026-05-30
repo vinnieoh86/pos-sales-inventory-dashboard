@@ -81,6 +81,8 @@ const state = {
   selectedCountItemCode: "",
   countStage: "search",
   pendingDuplicateCount: null,
+  countAutoMode: false,
+  lastAutoCountEntry: null,
   pendingDuplicateMode: null,
   countReportMode: "input",
   metricsPinned: JSON.parse(localStorage.getItem("posDashboardMetricsPinned:v1") || "false"),
@@ -498,6 +500,9 @@ const els = {
   countCategoryInput: document.querySelector("#countCategoryInput"),
   countAllowOutOfScopeInput: document.querySelector("#countAllowOutOfScopeInput"),
   countStartButton: document.querySelector("#countStartButton"),
+  countNameFilterInput: document.querySelector("#countNameFilterInput"),
+  countAutoModeButton: document.querySelector("#countAutoModeButton"),
+  countUndoLastButton: document.querySelector("#countUndoLastButton"),
   countCancelButton: document.querySelector("#countCancelButton"),
   countDuplicateModal: document.querySelector("#countDuplicateModal"),
   countDuplicateMessage: document.querySelector("#countDuplicateMessage"),
@@ -840,6 +845,8 @@ els.countDeleteSessionButton?.addEventListener("click", deleteCountSession);
 els.countInputReportButton?.addEventListener("click", () => openCountReport(state.activeCountSession?.id, "input"));
 els.countComparisonReportButton?.addEventListener("click", () => openCountReport(state.activeCountSession?.id, "comparison"));
 els.countStartButton?.addEventListener("click", startCountSessionFromModal);
+els.countAutoModeButton?.addEventListener("click", toggleCountAutoMode);
+els.countUndoLastButton?.addEventListener("click", undoLastCountEntry);
 els.countCancelButton?.addEventListener("click", closeCountSetupModal);
 els.countSetupModal?.addEventListener("click", (event) => {
   if (event.target === els.countSetupModal) closeCountSetupModal();
@@ -4029,6 +4036,8 @@ function pruneDeletedCountSessions(options = {}) {
     state.countQtyBuffer = "0";
     state.countStage = "search";
     state.pendingDuplicateCount = null;
+  state.countAutoMode = false;
+  state.lastAutoCountEntry = null;
     state.pendingDuplicateMode = null;
   }
   if (persist) {
@@ -4106,14 +4115,9 @@ function allCountCandidateRows() {
   if (state._countCandidateCache && state._countCandidateStamp === state._dataCacheStamp) {
     return state._countCandidateCache;
   }
-  // PATCH D: ignoreStateFilter:true bypasses the inventory tab's UI dropdown (correct),
-  // but we still exclude Disabled and Discontinued items — they should never appear in a
-  // count search unless the session was explicitly set up targeting those states.
-  const all = buildInventoryRows({ ignoreQuery: true, ignoreFilters: true, ignoreStateFilter: true });
-  state._countCandidateCache = all.filter((item) => {
-    const st = (item.state || "").toLowerCase();
-    return st !== "disabled" && st !== "discontinued";
-  });
+  // Count candidate universe must remain complete on Kindle/tablet.
+  // Status filtering is applied per session; do not shrink the master scan index here.
+  state._countCandidateCache = buildInventoryRows({ ignoreQuery: true, ignoreFilters: true, ignoreStateFilter: true });
   state._countCandidateStamp = state._dataCacheStamp;
   return state._countCandidateCache;
 }
@@ -4122,26 +4126,24 @@ function filteredCountCandidateRows(session = state.activeCountSession) {
   if (!session) return allCountCandidateRows();
   // HOTFIX: cache key must be stable while scanning. Entries/updatedAt change after every scan
   // and were invalidating the filtered rows, causing the next lookup to rebuild the full list.
-  const cacheKey = [session.id, session.vendor, session.department, session.category, session.status, state._dataCacheStamp].join("|");
+  const cacheKey = [session.id, session.vendor, session.department, session.category, session.status, session.nameFilter || "", state._dataCacheStamp].join("|");
   if (state._filteredCountCache && state._filteredCountCacheKey === cacheKey) {
     return state._filteredCountCache;
   }
   const statusFilter = (session.status || "").trim().toLowerCase();
-  const scannedCodes = new Set(); // stable lookup scope; report rendering can read session.entries separately
-  // Default comparison/count scope is active/orderable items. Do not switch to a full rebuild just
-  // because entries exist — that was the main post-scan slowdown.
-  const sourceRows = (statusFilter === "disabled" || statusFilter === "discontinued")
-    ? buildInventoryRows({ ignoreQuery: true, ignoreFilters: true, ignoreStateFilter: true })
-    : allCountCandidateRows();
+  const nameFilter = cleanCell(session.nameFilter || "").toLowerCase();
+  const sourceRows = allCountCandidateRows();
   const rows = sourceRows.filter((item) => {
     const vendorFilter = (session.vendor || session.department || "").trim().toUpperCase();
     if (vendorFilter && (item.vendor || "").trim().toUpperCase() !== vendorFilter) return false;
     const catFilter = (session.category || "").trim().toUpperCase();
     if (catFilter && (item.category || "").trim().toUpperCase() !== catFilter) return false;
     const itemState = (item.state || "").trim().toLowerCase();
-    const wasScanned = scannedCodes.has(codeKey(item.code));
     if (statusFilter && itemState !== statusFilter) return false;
-    if (!statusFilter && ["disabled", "discontinued"].includes(itemState) && !wasScanned) return false;
+    if (nameFilter) {
+      const hay = [item.product, item.plu, item.itemNumber, item.code, item.vendor, item.category].map((v) => String(v || "").toLowerCase()).join(" ");
+      if (!hay.includes(nameFilter)) return false;
+    }
     return true;
   });
   state._filteredCountCache = rows;
@@ -4152,7 +4154,8 @@ function filteredCountCandidateRows(session = state.activeCountSession) {
 function countSessionLabel(session) {
   if (!session) return "Physical count";
   const vendorLabel = session.vendor || session.department || "All vendors";
-  const parts = [session.date || "No date", vendorLabel, session.category || "All categories"];
+  const nameLabel = session.nameFilter || "All items";
+  const parts = [session.date || "No date", vendorLabel, session.category || "All categories", nameLabel];
   return parts.join(" Â· ");
 }
 
@@ -4188,6 +4191,7 @@ function openCountSetupModal() {
   els.countCategoryInput.value = "";
   const statusEl = document.querySelector("#countStatusInput");
   if (statusEl) statusEl.value = "";
+  if (els.countNameFilterInput) els.countNameFilterInput.value = "";
   if (els.countAllowOutOfScopeInput) els.countAllowOutOfScopeInput.checked = false;
   els.countSetupModal.hidden = false;
   els.countDateInput.focus();
@@ -4230,6 +4234,8 @@ function startCountSessionFromModal() {
     vendor: els.countVendorInput.value || "",
     category: els.countCategoryInput.value || "",
     status: statusEl ? (statusEl.value || "") : "",
+    nameFilter: els.countNameFilterInput ? cleanCell(els.countNameFilterInput.value || "") : "",
+    autoMode: false,
     startedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     deviceId,
@@ -4251,6 +4257,8 @@ function startCountSessionFromModal() {
   state.countStage = "search";
   state.pendingDuplicateCount = null;
   state.pendingDuplicateMode = null;
+  state.countAutoMode = false;
+  state.lastAutoCountEntry = null;
   state.countSessions = [liveSession, ...state.countSessions.filter((s) => s.id !== session.id)];
 
   // KINDLE FAST-START: open the count UI before any blocking work.
@@ -4426,6 +4434,55 @@ function handleCountKey(key) {
 function renderCountQuantity() {
   if (els.countQuantityDisplay) els.countQuantityDisplay.textContent = state.countQtyBuffer || "0";
 }
+function renderCountModeButtons() {
+  const enabled = !!(state.activeCountSession?.autoMode || state.countAutoMode);
+  if (els.countAutoModeButton) {
+    els.countAutoModeButton.textContent = enabled ? "Auto +1 ON" : "Auto +1 OFF";
+    els.countAutoModeButton.classList.toggle("is-active", enabled);
+    els.countAutoModeButton.setAttribute("aria-pressed", enabled ? "true" : "false");
+  }
+  if (els.countUndoLastButton) {
+    els.countUndoLastButton.disabled = !(state.activeCountSession?.entries || []).length;
+  }
+}
+
+function toggleCountAutoMode() {
+  if (!state.activeCountSession) { showToast("Start a physical count first.", 2500, "warning"); return; }
+  const next = !(state.activeCountSession.autoMode || state.countAutoMode);
+  state.activeCountSession = { ...state.activeCountSession, autoMode: next, updatedAt: new Date().toISOString() };
+  state.countAutoMode = next;
+  state.countStage = "search";
+  state.countQtyBuffer = "0";
+  persistActiveCountSession();
+  renderCountModeButtons();
+  renderSelectedCountItem();
+  focusCountSearch();
+  showToast(next ? "Auto +1 mode ON" : "Auto +1 mode OFF", 1800, next ? "success" : "warning");
+}
+
+function undoLastCountEntry() {
+  const session = state.activeCountSession;
+  if (!session || !(session.entries || []).length) { showToast("No count entry to undo.", 2200, "warning"); return; }
+  const entries = [...session.entries];
+  const removed = entries.pop();
+  const previous = entries.filter((entry) => codeKey(entry.code) === codeKey(removed.code)).at(-1);
+  state.activeCountSession = { ...session, entries, updatedAt: new Date().toISOString(), localSyncPending: true };
+  const item = findAnyCountMatch(removed.code) || { code: removed.code, product: removed.product, stock: removed.originalQty, unitCost: removed.unitCost };
+  const restoreQty = previous ? Number(previous.countedQty || 0) : Number(removed.originalQty || 0);
+  try { applyLiveCountStockUpdate(item, restoreQty, previous || removed, state.activeCountSession); } catch (_) {}
+  state.selectedCountItemCode = removed.code;
+  state.countStage = "search";
+  state.countQtyBuffer = "0";
+  persistActiveCountSession();
+  renderCountEntryRows();
+  renderSelectedCountItem();
+  renderCountQuantity();
+  updateCountSummaryStrip?.();
+  renderCountModeButtons();
+  focusCountSearch();
+  showToast(`Undid last count: ${removed.code}`, 2000, "warning");
+}
+
 
 function countSessionAllowsOutOfScope(session = state.activeCountSession) {
   return !isUserRole() && session?.allowOutOfScope === true;
@@ -4436,7 +4493,7 @@ function countSearchIndexKey(session = state.activeCountSession) {
   // HOTFIX: scan lookup index must NOT be invalidated by updatedAt or entry count.
   // Those change after every scan and were forcing a full inventory rebuild before the next scan.
   // Scope only changes when the starting filters or source data change.
-  return [session.id, session.vendor, session.department, session.category, session.status, session.allowOutOfScope ? "1" : "0", state._dataCacheStamp].join("|");
+  return [session.id, session.vendor, session.department, session.category, session.status, session.nameFilter || "", session.allowOutOfScope ? "1" : "0", state._dataCacheStamp].join("|");
 }
 
 function countItemIsInScope(item, session = state.activeCountSession) {
@@ -4556,6 +4613,17 @@ function handleCountLookup() {
   if (!inScope && countSessionAllowsOutOfScope()) {
     showToast("Manager override: this item is outside the selected count scope.", 4200, "warning");
   }
+
+  if (state.activeCountSession?.autoMode || state.countAutoMode) {
+    commitCountEntry(match, 1, "add");
+    state.selectedCountItemCode = match.code;
+    state.countStage = "search";
+    state.countQtyBuffer = "0";
+    renderSelectedCountItem();
+    renderCountQuantity();
+    showToast(`Auto +1: ${match.code}`, 1200, "success");
+    return;
+  }
   state.selectedCountItemCode = match.code;
   state.countStage = "qty";
   state.countQtyBuffer = "0";
@@ -4625,6 +4693,7 @@ function commitCountEntry(item, qty, mode) {
     product: item.product,
     vendor: item.vendor || "",
     category: item.category || "",
+    state: item.state || "Active",
     originalQty,
     inputQty: qty,
     qty,
@@ -4867,7 +4936,7 @@ function comparisonReportRows(session) {
     const item = scopedByCode.get(key) || anyByCode.get(key) || { code: entry.code, product: entry.product, vendor: entry.vendor, category: entry.category, stock: entry.originalQty, unitCost: entry.unitCost, state: entry.state || "Active" };
     const status = countItemStatusLabel(item, entry);
     return { item, entry, status };
-  }).filter(({ status }) => countStatusIsActive(status));
+  });
 }
 
 function openCountReport(sessionId = state.activeCountSession?.id, mode = state.countReportMode || "input") {
@@ -4899,6 +4968,7 @@ function openCountReport(sessionId = state.activeCountSession?.id, mode = state.
       <span><b>Date</b> ${escapeHtml(session.date || "-")}</span>
       <span><b>Vendor</b> ${escapeHtml(vendorLabel)}</span>
       <span><b>Category</b> ${escapeHtml(session.category || "All")}</span>
+      <span><b>Filter</b> ${escapeHtml(session.nameFilter || "All")}</span>
       <span><b>Entries</b> ${number.format((session.entries || []).length)}</span>
       <span><b>Items in scope</b> ${number.format(totalCandidates)}</span>
       <span><b>Started</b> ${escapeHtml(new Date(session.startedAt).toLocaleString())}</span>
@@ -4977,6 +5047,7 @@ function exportCountReportPdf() {
     <span><b>Date</b> ${escapeHtml(session.date || "-")}</span>
     <span><b>Vendor</b> ${escapeHtml(vendorLabel)}</span>
     <span><b>Category</b> ${escapeHtml(session.category || "All")}</span>
+      <span><b>Filter</b> ${escapeHtml(session.nameFilter || "All")}</span>
     <span><b>Entries</b> ${number.format(entries.length)}</span>
     <span><b>Mode</b> ${mode === "comparison" ? "Comparison" : "Input Log"}</span>
     <span><b>Sync</b> ${escapeHtml(syncWarning)}</span>
@@ -5422,15 +5493,14 @@ function renderCountsWorkspace(options = {}) {
   if (active) {
     els.activeCountTitle.textContent = countSessionLabel(active);
     const vendorLabel = active.vendor || active.department || "All vendors";
-    // PATCH E: Show active count criteria clearly, including whether disabled items are excluded.
-    const statusLabel = active.status
-      ? escapeHtml(active.status)
-      : "<strong>Active items only</strong> (disabled &amp; discontinued excluded)";
+    const statusLabel = active.status ? escapeHtml(active.status) : "All statuses";
+    const nameFilterLabel = active.nameFilter ? escapeHtml(active.nameFilter) : "All names / PLU";
     els.activeCountMeta.innerHTML = `
       <span>${escapeHtml(active.date || "-")}</span>
       <span>${escapeHtml(vendorLabel)}</span>
       <span>${escapeHtml(active.category || "All categories")}</span>
       <span>Status: ${statusLabel}</span>
+      <span>Filter: ${nameFilterLabel}</span>
       <span>${number.format((active.entries || []).length)} entries</span>
       <span>${active.allowOutOfScope && !isUserRole() ? "Manager scope override enabled" : "Scope locked"}</span>`;
     renderActiveCountSyncStatus(active);
@@ -11734,6 +11804,7 @@ function openFinalCountReport(sessionId) {
       <span><b>Date</b> ${escapeHtml(session.date || "-")}</span>
       <span><b>Vendor</b> ${escapeHtml(session.vendor || "All")}</span>
       <span><b>Category</b> ${escapeHtml(session.category || "All")}</span>
+      <span><b>Filter</b> ${escapeHtml(session.nameFilter || "All")}</span>
       <span><b>Status filter</b> ${escapeHtml(session.status || "All")}</span>
       <span><b>Submitted</b> ${escapeHtml(new Date(session.submittedAt).toLocaleString())}</span>
       <span><b>Entries</b> ${number.format((session.entries || []).length)}</span>
@@ -11826,6 +11897,7 @@ function exportFinalCountReportPdf() {
     <span><b>Count date</b> ${escapeHtml(session.date || "-")}</span>
     <span><b>Vendor</b> ${escapeHtml(session.vendor || "All")}</span>
     <span><b>Category</b> ${escapeHtml(session.category || "All")}</span>
+      <span><b>Filter</b> ${escapeHtml(session.nameFilter || "All")}</span>
     <span><b>Submitted</b> ${escapeHtml(new Date(session.submittedAt).toLocaleString())}</span>
     <span><b>Sync</b> ${escapeHtml(syncWarning)}</span>
     <span><b>Generated</b> ${dateStr}</span>

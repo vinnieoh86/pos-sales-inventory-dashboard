@@ -683,6 +683,7 @@
           <label>Vendor <select id="countVendorInput"></select></label>
           <label>Category <select id="countCategoryInput"></select></label>
           <label>Item Status <select id="countStatusInput"></select></label>
+          <label>Name / PLU / Code <input id="countNameFilterInput" type="search" placeholder="Optional: Adore, PLU, code..." autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" /></label>
           <label data-admin-only><input id="countAllowOutOfScopeInput" type="checkbox" /> Allow manager out-of-scope entries</label>
         </div>
         <div class="count-modal__actions">
@@ -722,6 +723,10 @@
               <div class="count-search-actions">
                 <button id="countSearchButton" type="button">Find item</button>
                 <button id="countClearSearchButton" type="button" class="secondary-button">Delete</button>
+              </div>
+              <div class="count-mode-actions">
+                <button id="countAutoModeButton" type="button" class="secondary-button count-auto-toggle" aria-pressed="false">Auto +1 OFF</button>
+                <button id="countUndoLastButton" type="button" class="secondary-button">Undo Last</button>
               </div>
               <div id="countSelectedItem" class="count-selected-item">
                 <p class="muted">Scan or search an item to begin counting.</p>
