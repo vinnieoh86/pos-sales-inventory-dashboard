@@ -911,11 +911,7 @@ els.countSearchInput?.addEventListener("focus", () => {
 els.countSearchInput?.addEventListener("click", () => {
   activateCountSearchFromScreen();
 });
-els.countSessionModal?.addEventListener("pointerdown", (event) => {
-  if (els.countSessionModal.hidden || !state.activeCountSession) return;
-  if (event.target.closest("button, a, select, textarea, .count-keypad, .count-workspace__actions, .table-wrap, [data-count-key]")) return;
-  activateCountSearchFromScreen();
-});
+// Removed global blank-area focus: search is activated only by tapping the search field.
 // Bluetooth/manual scanner relay: when count screen is open, typed/scanned characters
 // should go to search even if the last item auto-advanced to qty mode. Keypad buttons still
 // handle quantity; tapping the search area or blank count area switches back to search.
@@ -1020,19 +1016,13 @@ els.countDuplicateModal?.addEventListener("click", (event) => {
   if (event.target === els.countDuplicateModal) closeDuplicateCountModal();
 });
 
-// When the scan/count modal is open, clicking anywhere that isn't an interactive element
-// forces focus back to the search/scan bar so scanning always works immediately
+// Count modal backdrop close only. Do not steal focus/clear selected scanned item on blank taps.
 els.countSessionModal?.addEventListener("click", (event) => {
   if (els.countDuplicateModal && !els.countDuplicateModal.hidden) return;
   if (els.countReportModal && !els.countReportModal.hidden) return;
   if (event.target === els.countSessionModal) {
     state._countSessionOpen = false;
     els.countSessionModal.hidden = true;
-    return;
-  }
-  const interactive = event.target.closest("button, input, select, textarea, a, label, [data-count-key], .count-keypad");
-  if (!interactive) {
-    setTimeout(() => focusCountSearch(), 0);
   }
 });
 els.countDuplicateAddButton?.addEventListener("click", () => resolveDuplicateCount("add"));
@@ -1493,6 +1483,7 @@ document.querySelector("#exportPoPdf")?.addEventListener("click", () => exportPo
 els.downloadSku.addEventListener("click", () => downloadCsv("sku-performance.csv", state.filteredSkus));
 els.downloadInventory.addEventListener("click", () => downloadCsv("all-inventory.csv", state.inventoryRows));
 els.inventorySyncNow?.addEventListener("click", () => forceSharedSyncNow());
+document.querySelectorAll(".sync-now-button").forEach((btn) => btn.addEventListener("click", () => forceSharedSyncNow()));
 els.downloadParents.addEventListener("click", () => downloadCsv("parent-styles.csv", state.parentRows));
 els.inventoryBody?.addEventListener("click", (event) => {
   // Checkbox toggle
@@ -4545,8 +4536,7 @@ function handleCountLookup() {
   if (!query) return;
   const match = findCountMatch(query);
   if (!match) {
-    state.selectedCountItemCode = "";
-    renderSelectedCountItem();
+    // Keep previous scanned item visible on a bad scan/search.
     // Immediately flash red â€” don't wait for qty entry
     if (els.countSearchInput) {
       els.countSearchInput.classList.add("count-search-error");
@@ -4728,10 +4718,9 @@ function focusCountSearch(options = {}) {
 
 function activateCountSearchFromScreen() {
   if (!state.activeCountSession || els.countSessionModal?.hidden) return;
+  // Let a bad/mis-scan be overwritten from Search without removing the last scanned item.
   state.countStage = "search";
-  state.selectedCountItemCode = "";
   state.pendingDuplicateMode = null;
-  renderSelectedCountItem();
   focusCountSearch({ forceSelect: true });
 }
 
@@ -4857,6 +4846,30 @@ function currentCountSessionCandidates(session) {
   return filteredCountCandidateRows(session);
 }
 
+function countItemStatusLabel(item = {}, entry = {}) {
+  return cleanCell(item.state || item.itemState || entry.state || entry.status || "Active") || "Active";
+}
+function countStatusIsActive(status) {
+  const st = cleanCell(status).toLowerCase();
+  return !st || st === "active" || st === "force order" || st === "force_order";
+}
+function comparisonReportRows(session) {
+  const entries = session?.entries || [];
+  if (!entries.length) return [];
+  const candidates = currentCountSessionCandidates(session);
+  const scopedByCode = new Map(candidates.map((item) => [codeKey(item.code), item]));
+  const anyByCode = new Map();
+  try { buildInventoryRows({ ignoreQuery: true, ignoreFilters: true, ignoreStateFilter: true }).forEach((item) => anyByCode.set(codeKey(item.code), item)); } catch (_) {}
+  const latestByCode = new Map();
+  entries.forEach((entry) => latestByCode.set(codeKey(entry.code), entry));
+  return [...latestByCode.values()].map((entry) => {
+    const key = codeKey(entry.code);
+    const item = scopedByCode.get(key) || anyByCode.get(key) || { code: entry.code, product: entry.product, vendor: entry.vendor, category: entry.category, stock: entry.originalQty, unitCost: entry.unitCost, state: entry.state || "Active" };
+    const status = countItemStatusLabel(item, entry);
+    return { item, entry, status };
+  }).filter(({ status }) => countStatusIsActive(status));
+}
+
 function openCountReport(sessionId = state.activeCountSession?.id, mode = state.countReportMode || "input") {
   const session = findCountSessionById(sessionId);
   if (!session) {
@@ -4879,7 +4892,7 @@ function openCountReport(sessionId = state.activeCountSession?.id, mode = state.
   if (els.countReportMeta) {
     const vendorLabel = session.vendor || session.department || "All vendors";
     const totalCandidates = mode === "comparison"
-      ? currentCountSessionCandidates(session).length
+      ? comparisonReportRows(session).length
       : (session.entries || []).length;
     const syncStats = countSessionSyncStats(session);
     els.countReportMeta.innerHTML = `
@@ -4914,24 +4927,21 @@ function exportCountReportPdf() {
 
   let tableHtml = "";
   if (mode === "comparison") {
-    const allItems = currentCountSessionCandidates(session);
-    const latestByCode = new Map();
-    entries.forEach((entry) => latestByCode.set(codeKey(entry.code), entry));
+    const rows = comparisonReportRows(session);
     tableHtml = `<table>
       <thead><tr><th>Code</th><th>Item</th><th>Vendor</th><th>Category</th><th class="num">Qty Before</th><th class="num">Qty After</th><th class="num">Qty Diff</th><th class="num">Cost Diff</th><th>Status</th></tr></thead>
-      <tbody>${allItems.map((item) => {
-        const entry = latestByCode.get(codeKey(item.code));
-        const orig = entry ? Number(entry.originalQty ?? item.stock ?? 0) : Number(item.stock || 0);
-        const final = entry ? Number(entry.countedQty || 0) : null;
-        const diff = entry ? final - orig : null;
-        const costDiff = entry ? diff * Number(item.unitCost || 0) : null;
-        const cls = diff == null ? "" : diff > 0 ? "var-up" : diff < 0 ? "var-down" : "";
-        return `<tr class="${cls}"><td>${escapeHtml(item.code)}</td><td>${escapeHtml(item.product)}</td><td>${escapeHtml(item.vendor || "-")}</td><td>${escapeHtml(item.category || "-")}</td>
+      <tbody>${rows.map(({ item, entry, status }) => {
+        const orig = Number(entry.originalQty ?? item.stock ?? 0);
+        const final = Number(entry.countedQty || 0);
+        const diff = final - orig;
+        const costDiff = diff * Number(entry.unitCost ?? item.unitCost ?? 0);
+        const cls = diff > 0 ? "var-up" : diff < 0 ? "var-down" : "";
+        return `<tr class="${cls}"><td>${escapeHtml(item.code || entry.code || "-")}</td><td>${escapeHtml(item.product || entry.product || "-")}</td><td>${escapeHtml(item.vendor || entry.vendor || "-")}</td><td>${escapeHtml(item.category || entry.category || "-")}</td>
           <td class="num">${number.format(orig)}</td>
-          <td class="num">${entry ? number.format(final) : "NULL"}</td>
-          <td class="num">${entry ? (diff > 0 ? `+${number.format(diff)}` : number.format(diff)) : "NULL"}</td>
-          <td class="num">${entry ? currency.format(costDiff) : "NULL"}</td>
-          <td>${entry ? "Scanned" : "Not scanned"}</td></tr>`;
+          <td class="num">${number.format(final)}</td>
+          <td class="num">${diff > 0 ? `+${number.format(diff)}` : number.format(diff)}</td>
+          <td class="num">${currency.format(costDiff)}</td>
+          <td>${escapeHtml(status)}</td></tr>`;
       }).join("")}</tbody></table>`;
   } else {
     tableHtml = `<table>
@@ -5012,21 +5022,18 @@ async function exportCountReportExcel() {
   wsInput["!cols"] = [12, 32, 14, 14, 10, 10, 10, 8, 20].map((w) => ({ wch: w }));
   xlsx.utils.book_append_sheet(wb, wsInput, "Input Log");
 
-  // Comparison sheet
-  const allItems = currentCountSessionCandidates(session);
-  const latestByCode = new Map();
-  entries.forEach((entry) => latestByCode.set(codeKey(entry.code), entry));
+  // Comparison sheet: active scanned rows only. Status is inventory status, not scan status.
+  const comparisonRows = comparisonReportRows(session);
   const compData = [
     ["Physical Count - Comparison", "", "", `Date: ${session.date || "-"}`, `Vendor: ${vendorLabel}`, `Category: ${session.category || "All"}`, syncNote],
     [],
     ["Code", "Item", "Vendor", "Category", "Qty Before", "Qty After", "Qty Diff", "Cost Diff", "Status"],
-    ...allItems.map((item) => {
-      const entry = latestByCode.get(codeKey(item.code));
-      const orig = entry ? Number(entry.originalQty ?? item.stock ?? 0) : Number(item.stock || 0);
-      const final = entry ? Number(entry.countedQty || 0) : null;
-      const diff = entry != null ? final - orig : null;
-      const costDiff = entry != null ? diff * Number(item.unitCost || 0) : null;
-      return [item.code, item.product, item.vendor || "", item.category || "", orig, final ?? "NULL", diff ?? "NULL", costDiff ?? "NULL", entry ? "Scanned" : "Not scanned"];
+    ...comparisonRows.map(({ item, entry, status }) => {
+      const orig = Number(entry.originalQty ?? item.stock ?? 0);
+      const final = Number(entry.countedQty || 0);
+      const diff = final - orig;
+      const costDiff = diff * Number(entry.unitCost ?? item.unitCost ?? 0);
+      return [item.code || entry.code, item.product || entry.product || "", item.vendor || entry.vendor || "", item.category || entry.category || "", orig, final, diff, costDiff, status];
     }),
   ];
   const wsComp = xlsx.utils.aoa_to_sheet(compData);
@@ -5034,71 +5041,63 @@ async function exportCountReportExcel() {
   xlsx.utils.book_append_sheet(wb, wsComp, "Comparison");
 
   xlsx.writeFile(wb, `PhysicalCount_${session.date || "report"}.xlsx`);
-  showToast(`Count report exported â€” ${entries.length} entries, ${allItems.length} items in scope`, 3200, "success");
+  showToast(`Count report exported — ${entries.length} entries, ${comparisonRows.length} active scanned comparison rows`, 3200, "success");
 }
 
 function renderCountReportRows(session, mode = state.countReportMode || "input") {
   if (!els.countReportBody) return;
   const entries = session?.entries || [];
   if (mode === "comparison") {
-    const allItems = currentCountSessionCandidates(session);
-    if (!allItems.length) {
-      els.countReportBody.innerHTML = `<tr><td colspan="9" class="empty-cell">No items matched this count criteria.</td></tr>`;
+    const rows = comparisonReportRows(session);
+    if (!rows.length) {
+      els.countReportBody.innerHTML = `<tr><td colspan="9" class="empty-cell">No active scanned items found for this count.</td></tr>`;
       return;
     }
-    const latestByCode = new Map();
-    entries.forEach((entry) => latestByCode.set(codeKey(entry.code), entry));
-    els.countReportBody.innerHTML = allItems
-      .map((item) => {
-        const entry = latestByCode.get(codeKey(item.code));
-        const originalQty = entry ? Number(entry.originalQty ?? item.stock ?? 0) : Number(item.stock || 0);
-        const finalQty = entry ? Number(entry.countedQty || 0) : null;
-        const qtyDiff = entry ? finalQty - originalQty : null;
-        const costDiff = entry ? qtyDiff * Number(item.unitCost || 0) : null;
-        const qtyClass = qtyDiff == null ? "" : qtyDiff > 0 ? "variance-up" : qtyDiff < 0 ? "variance-down" : "variance-flat";
-        const costClass = costDiff == null ? "" : costDiff > 0 ? "variance-up" : costDiff < 0 ? "variance-down" : "variance-flat";
-        return `
-          <tr>
-            <td>${escapeHtml(item.code || "-")}</td>
-            <td>${escapeHtml(item.product || "-")}</td>
-            <td>${escapeHtml(item.vendor || "-")}</td>
-            <td>${escapeHtml(item.category || "-")}</td>
-            <td class="num">${number.format(originalQty)}</td>
-            <td class="num">${entry ? number.format(finalQty) : `<span class="muted">NULL</span>`}</td>
-            <td class="num ${qtyClass}">${entry ? (qtyDiff > 0 ? `+${number.format(qtyDiff)}` : number.format(qtyDiff)) : `<span class="muted">NULL</span>`}</td>
-            <td class="${costClass}">${entry ? currency.format(costDiff) : `<span class="muted">NULL</span>`}</td>
-            <td>${entry ? escapeHtml(`Scanned ${new Date(entry.recordedAt).toLocaleString()}`) : `<span class="muted">Not scanned</span>`}</td>
-          </tr>`;
-      })
-      .join("");
+    els.countReportBody.innerHTML = rows.map(({ item, entry, status }) => {
+      const originalQty = Number(entry.originalQty ?? item.stock ?? 0);
+      const finalQty = Number(entry.countedQty || 0);
+      const qtyDiff = finalQty - originalQty;
+      const costDiff = qtyDiff * Number(entry.unitCost ?? item.unitCost ?? 0);
+      const qtyClass = qtyDiff > 0 ? "variance-up" : qtyDiff < 0 ? "variance-down" : "variance-flat";
+      const costClass = costDiff > 0 ? "variance-up" : costDiff < 0 ? "variance-down" : "variance-flat";
+      return `
+        <tr>
+          <td>${escapeHtml(item.code || entry.code || "-")}</td>
+          <td>${escapeHtml(item.product || entry.product || "-")}</td>
+          <td>${escapeHtml(item.vendor || entry.vendor || "-")}</td>
+          <td>${escapeHtml(item.category || entry.category || "-")}</td>
+          <td class="num">${number.format(originalQty)}</td>
+          <td class="num">${number.format(finalQty)}</td>
+          <td class="num ${qtyClass}">${qtyDiff > 0 ? `+${number.format(qtyDiff)}` : number.format(qtyDiff)}</td>
+          <td class="${costClass}">${currency.format(costDiff)}</td>
+          <td>${escapeHtml(status)}</td>
+        </tr>`;
+    }).join("");
     return;
   }
   if (!entries.length) {
     els.countReportBody.innerHTML = `<tr><td colspan="9" class="empty-cell">No items counted yet.</td></tr>`;
     return;
   }
-  els.countReportBody.innerHTML = entries
-    .slice()
-    .reverse()
-    .map((entry) => {
-      const variance = Number(entry.countedQty || 0) - Number(entry.originalQty || 0);
-      const varianceClass = variance > 0 ? "variance-up" : variance < 0 ? "variance-down" : "variance-flat";
-      const varianceLabel = variance > 0 ? `+${number.format(variance)}` : number.format(variance);
-      return `
-        <tr>
-          <td>${escapeHtml(entry.code || "-")}</td>
-          <td>${escapeHtml(entry.product || "-")}</td>
-          <td>${escapeHtml(entry.vendor || "-")}</td>
-          <td>${escapeHtml(entry.category || "-")}</td>
-          <td class="num">${number.format(entry.originalQty || 0)}</td>
-          <td class="num">${number.format(entry.countedQty || 0)}</td>
-          <td class="num ${varianceClass}">${varianceLabel}</td>
-          <td>${escapeHtml(entry.mode || "set")}</td>
-          <td>${escapeHtml(new Date(entry.recordedAt).toLocaleString())}</td>
-        </tr>`;
-    })
-    .join("");
+  els.countReportBody.innerHTML = entries.slice().reverse().map((entry) => {
+    const variance = Number(entry.countedQty || 0) - Number(entry.originalQty || 0);
+    const varianceClass = variance > 0 ? "variance-up" : variance < 0 ? "variance-down" : "variance-flat";
+    const varianceLabel = variance > 0 ? `+${number.format(variance)}` : number.format(variance);
+    return `
+      <tr>
+        <td>${escapeHtml(entry.code || "-")}</td>
+        <td>${escapeHtml(entry.product || "-")}</td>
+        <td>${escapeHtml(entry.vendor || "-")}</td>
+        <td>${escapeHtml(entry.category || "-")}</td>
+        <td class="num">${number.format(entry.originalQty || 0)}</td>
+        <td class="num">${number.format(entry.countedQty || 0)}</td>
+        <td class="num ${varianceClass}">${varianceLabel}</td>
+        <td>${escapeHtml(entry.mode || "set")}</td>
+        <td>${escapeHtml(new Date(entry.recordedAt).toLocaleString())}</td>
+      </tr>`;
+  }).join("");
 }
+
 
 async function openSessionHistoryModal() {
   if (els.sessionHistoryModal) els.sessionHistoryModal.hidden = false;
@@ -13829,9 +13828,9 @@ async function forceSharedSyncNow() {
     showToast("Shared sync is disabled for this build.", 2400, "warning");
     return false;
   }
-  const btn = els.inventorySyncNow || document.querySelector("#inventorySyncNow");
-  const oldText = btn?.textContent || "Sync Now";
-  if (btn) { btn.disabled = true; btn.textContent = "Syncing..."; }
+  const buttons = [...document.querySelectorAll(".sync-now-button, #inventorySyncNow")];
+  const oldLabels = buttons.map((btn) => btn.textContent || "SYNC NOW");
+  buttons.forEach((btn) => { btn.disabled = true; btn.textContent = "SYNCING..."; });
   try {
     // If this device has pending stock edits from Products/count submit, push them first.
     if (pendingSharedProductCodes?.size) {
@@ -13857,7 +13856,7 @@ async function forceSharedSyncNow() {
     showToast("Sync Now failed. Check connection/Supabase.", 3200, "warning");
     return false;
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = oldText; }
+    buttons.forEach((btn, i) => { btn.disabled = false; btn.textContent = oldLabels[i] || "SYNC NOW"; });
   }
 }
 window.forceSharedSyncNow = forceSharedSyncNow;
