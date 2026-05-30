@@ -80,6 +80,8 @@ const state = {
   countQtyBuffer: "0",
   selectedCountItemCode: "",
   countStage: "search",
+  countAutoMode: false,
+  lastCountEntryId: "",
   pendingDuplicateCount: null,
   pendingDuplicateMode: null,
   countReportMode: "input",
@@ -496,6 +498,9 @@ const els = {
   countDateInput: document.querySelector("#countDateInput"),
   countVendorInput: document.querySelector("#countVendorInput"),
   countCategoryInput: document.querySelector("#countCategoryInput"),
+  countItemFilterInput: document.querySelector("#countItemFilterInput"),
+  countAutoModeButton: document.querySelector("#countAutoModeButton"),
+  countUndoLastButton: document.querySelector("#countUndoLastButton"),
   countAllowOutOfScopeInput: document.querySelector("#countAllowOutOfScopeInput"),
   countStartButton: document.querySelector("#countStartButton"),
   countCancelButton: document.querySelector("#countCancelButton"),
@@ -846,6 +851,8 @@ els.countSetupModal?.addEventListener("click", (event) => {
 });
 els.countSearchButton?.addEventListener("click", handleCountLookup);
 els.countClearSearchButton?.addEventListener("click", clearCountLookup);
+els.countAutoModeButton?.addEventListener("click", toggleCountAutoMode);
+els.countUndoLastButton?.addEventListener("click", undoLastCountEntry);
 els.countSearchInput?.addEventListener("keydown", (event) => {
   if (
     event.key.length === 1
@@ -909,7 +916,7 @@ els.countSearchInput?.addEventListener("focus", () => {
   els.countSearchInput.select?.();
 });
 els.countSearchInput?.addEventListener("click", () => {
-  activateCountSearchFromScreen();
+  els.countSearchInput?.select?.();
 });
 // Removed global blank-area focus: search is activated only by tapping the search field.
 // Bluetooth/manual scanner relay: when count screen is open, typed/scanned characters
@@ -1275,6 +1282,8 @@ document.addEventListener("keydown", (event) => {
     } else if (focused === els.countVendorInput) {
       els.countCategoryInput.focus();
     } else if (focused === els.countCategoryInput) {
+      if (els.countItemFilterInput) els.countItemFilterInput.focus(); else { const statusEl = document.querySelector("#countStatusInput"); if (statusEl) statusEl.focus(); else startCountSessionFromModal(); }
+    } else if (focused === els.countItemFilterInput) {
       const statusEl = document.querySelector("#countStatusInput");
       if (statusEl) statusEl.focus(); else startCountSessionFromModal();
     } else {
@@ -1298,21 +1307,8 @@ document.addEventListener("keydown", (event) => {
     return;
   }
   if (!els.countDuplicateModal.hidden) return;
-  if (
-    !els.countSessionModal.hidden &&
-    state.activeCountSession &&
-    state.countStage === "search" &&
-    event.target !== els.countSearchInput &&
-    !event.target.closest?.("input, textarea, select, button") &&
-    (event.key === "Enter" || event.key.length === 1)
-  ) {
-    els.countSearchInput?.focus();
-    if (event.key === "Enter") {
-      event.preventDefault();
-      handleCountLookup();
-      return;
-    }
-  }
+  // Count screen no longer steals focus from blank taps/clicks.
+  // Bluetooth-scanner keyboard relay is handled only while the count stage is search.
   if (!els.countSessionModal.hidden && event.target === els.countSearchInput && event.key === "Enter") return;
   if (!els.countReportModal.hidden) return;
   if (!els.countSessionModal.hidden && state.activeCountSession && state.countStage === "qty") {
@@ -4122,7 +4118,7 @@ function filteredCountCandidateRows(session = state.activeCountSession) {
   if (!session) return allCountCandidateRows();
   // HOTFIX: cache key must be stable while scanning. Entries/updatedAt change after every scan
   // and were invalidating the filtered rows, causing the next lookup to rebuild the full list.
-  const cacheKey = [session.id, session.vendor, session.department, session.category, session.status, state._dataCacheStamp].join("|");
+  const cacheKey = [session.id, session.vendor, session.department, session.category, session.itemFilter || "", session.status, state._dataCacheStamp].join("|");
   if (state._filteredCountCache && state._filteredCountCacheKey === cacheKey) {
     return state._filteredCountCache;
   }
@@ -4139,6 +4135,12 @@ function filteredCountCandidateRows(session = state.activeCountSession) {
     const catFilter = (session.category || "").trim().toUpperCase();
     if (catFilter && (item.category || "").trim().toUpperCase() !== catFilter) return false;
     const itemState = (item.state || "").trim().toLowerCase();
+    const keyword = cleanCell(session.itemFilter || "").toLowerCase();
+    if (keyword) {
+      const hay = [item.product, item.plu, item.code, item.itemNumber, item.vendor, item.category].map((v) => String(v || "").toLowerCase()).join("|");
+      const normalizedKeyword = codeKey(keyword);
+      if (!hay.includes(keyword) && !(normalizedKeyword && hay.includes(normalizedKeyword))) return false;
+    }
     const wasScanned = scannedCodes.has(codeKey(item.code));
     if (statusFilter && itemState !== statusFilter) return false;
     if (!statusFilter && ["disabled", "discontinued"].includes(itemState) && !wasScanned) return false;
@@ -4153,6 +4155,7 @@ function countSessionLabel(session) {
   if (!session) return "Physical count";
   const vendorLabel = session.vendor || session.department || "All vendors";
   const parts = [session.date || "No date", vendorLabel, session.category || "All categories"];
+  if (session.itemFilter) parts.push(session.itemFilter);
   return parts.join(" Â· ");
 }
 
@@ -4186,6 +4189,7 @@ function openCountSetupModal() {
   // Always reset to "All" for a fresh count
   els.countVendorInput.value = "";
   els.countCategoryInput.value = "";
+  if (els.countItemFilterInput) els.countItemFilterInput.value = "";
   const statusEl = document.querySelector("#countStatusInput");
   if (statusEl) statusEl.value = "";
   if (els.countAllowOutOfScopeInput) els.countAllowOutOfScopeInput.checked = false;
@@ -4229,6 +4233,7 @@ function startCountSessionFromModal() {
     date: els.countDateInput.value || new Date().toISOString().slice(0, 10),
     vendor: els.countVendorInput.value || "",
     category: els.countCategoryInput.value || "",
+    itemFilter: els.countItemFilterInput ? cleanCell(els.countItemFilterInput.value) : "",
     status: statusEl ? (statusEl.value || "") : "",
     startedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -4249,6 +4254,8 @@ function startCountSessionFromModal() {
   state.countQtyBuffer = "0";
   state.selectedCountItemCode = "";
   state.countStage = "search";
+  state.countAutoMode = false;
+  state.lastCountEntryId = "";
   state.pendingDuplicateCount = null;
   state.pendingDuplicateMode = null;
   state.countSessions = [liveSession, ...state.countSessions.filter((s) => s.id !== session.id)];
@@ -4421,6 +4428,7 @@ function handleCountKey(key) {
     state.countQtyBuffer = next;
   }
   renderCountQuantity();
+  updateCountAutoModeButton?.();
 }
 
 function renderCountQuantity() {
@@ -4436,7 +4444,7 @@ function countSearchIndexKey(session = state.activeCountSession) {
   // HOTFIX: scan lookup index must NOT be invalidated by updatedAt or entry count.
   // Those change after every scan and were forcing a full inventory rebuild before the next scan.
   // Scope only changes when the starting filters or source data change.
-  return [session.id, session.vendor, session.department, session.category, session.status, session.allowOutOfScope ? "1" : "0", state._dataCacheStamp].join("|");
+  return [session.id, session.vendor, session.department, session.category, session.itemFilter || "", session.status, session.allowOutOfScope ? "1" : "0", state._dataCacheStamp].join("|");
 }
 
 function countItemIsInScope(item, session = state.activeCountSession) {
@@ -4513,6 +4521,57 @@ function renderSelectedCountItem() {
     </div>`;
 }
 
+function updateCountAutoModeButton() {
+  if (!els.countAutoModeButton) return;
+  const on = !!state.countAutoMode;
+  els.countAutoModeButton.textContent = on ? "Auto +1 ON" : "Auto +1 OFF";
+  els.countAutoModeButton.classList.toggle("is-active", on);
+  els.countAutoModeButton.setAttribute("aria-pressed", on ? "true" : "false");
+}
+
+function toggleCountAutoMode() {
+  if (!state.activeCountSession) {
+    showToast("Start a physical count first.", 2400, "warning");
+    return;
+  }
+  state.countAutoMode = !state.countAutoMode;
+  state.countStage = "search";
+  state.countQtyBuffer = "0";
+  state.pendingDuplicateMode = null;
+  updateCountAutoModeButton();
+  renderCountQuantity();
+  focusCountSearch();
+  showToast(state.countAutoMode ? "Auto +1 mode ON: each scan adds 1." : "Manual qty mode ON.", 2200, state.countAutoMode ? "success" : "warning");
+}
+
+function undoLastCountEntry() {
+  const session = state.activeCountSession;
+  if (!session || !(session.entries || []).length) {
+    showToast("No count entry to undo.", 2200, "warning");
+    return;
+  }
+  const entries = [...session.entries];
+  const removed = entries.pop();
+  state.activeCountSession = markCountSessionDirty({
+    ...session,
+    entries,
+    updatedAt: new Date().toISOString(),
+  });
+  state.countSessions = [state.activeCountSession, ...state.countSessions.filter((s) => s.id !== session.id)];
+  state.selectedCountItemCode = removed?.code || state.selectedCountItemCode;
+  state.countQtyBuffer = "0";
+  state.countStage = "search";
+  state.lastCountEntryId = entries.at(-1)?.entryId || "";
+  persistActiveCountSession({ scheduleSync: false });
+  persistCountSessions({ scheduleSync: false });
+  renderCountEntryRows();
+  renderSelectedCountItem();
+  renderCountQuantity();
+  updateCountSummaryStrip();
+  focusCountSearch();
+  showToast(`Undid last count: ${removed?.product || removed?.code || "item"}`, 2200, "warning");
+}
+
 function handleCountLookup() {
   if (!state.activeCountSession) {
     // If there's a saved session, open it rather than just showing an error
@@ -4556,6 +4615,13 @@ function handleCountLookup() {
   if (!inScope && countSessionAllowsOutOfScope()) {
     showToast("Manager override: this item is outside the selected count scope.", 4200, "warning");
   }
+  if (state.countAutoMode) {
+    hideCountDropdown();
+    if (els.countSearchInput) els.countSearchInput.value = "";
+    state._replaceCountInputOnNextKey = false;
+    commitCountEntry(match, 1, "add", { keepSelected: true, auto: true });
+    return;
+  }
   state.selectedCountItemCode = match.code;
   state.countStage = "qty";
   state.countQtyBuffer = "0";
@@ -4577,6 +4643,7 @@ function clearCountLookup() {
   state.countStage = "search";
   state.pendingDuplicateMode = null;
   renderCountQuantity();
+  updateCountAutoModeButton?.();
   renderSelectedCountItem();
   focusCountSearch();
 }
@@ -4602,7 +4669,7 @@ function closeDuplicateCountModal() {
   focusCountSearch();
 }
 
-function commitCountEntry(item, qty, mode) {
+function commitCountEntry(item, qty, mode, options = {}) {
   const session = {
     ...state.activeCountSession,
     updatedAt: new Date().toISOString(),
@@ -4640,7 +4707,8 @@ function commitCountEntry(item, qty, mode) {
   state._countSessionOpen = true;
   state.countQtyBuffer = "0";
   state.countStage = "search";
-  state.selectedCountItemCode = "";
+  state.selectedCountItemCode = options.keepSelected ? item.code : "";
+  state.lastCountEntryId = entry.entryId;
   state.pendingDuplicateMode = null;
   applyLiveCountStockUpdate(item, countedQty, entry, session);
   persistActiveCountSession({ scheduleSync: false });
@@ -4826,6 +4894,10 @@ function selectCountDropdownItem(code) {
   if (!item) { showToast("Item not found in the item master.", 2800, "warning"); return; }
   if (!filteredItem) showToast("Manager override: counting an item outside the selected scope.", 3600, "warning");
   if (els.countSearchInput) els.countSearchInput.value = "";
+  if (state.countAutoMode) {
+    commitCountEntry(item, 1, "add", { keepSelected: true, auto: true });
+    return;
+  }
   state.selectedCountItemCode = item.code;
   state.countStage = "qty";
   state.countQtyBuffer = "0";
@@ -5430,6 +5502,7 @@ function renderCountsWorkspace(options = {}) {
       <span>${escapeHtml(active.date || "-")}</span>
       <span>${escapeHtml(vendorLabel)}</span>
       <span>${escapeHtml(active.category || "All categories")}</span>
+      ${active.itemFilter ? `<span>Filter: ${escapeHtml(active.itemFilter)}</span>` : ""}
       <span>Status: ${statusLabel}</span>
       <span>${number.format((active.entries || []).length)} entries</span>
       <span>${active.allowOutOfScope && !isUserRole() ? "Manager scope override enabled" : "Scope locked"}</span>`;
@@ -5522,14 +5595,13 @@ function applyRoleRestrictions(force = false) {
     "#exportPoExcel", "#exportPoPdf", "#downloadOrder",
     "#exportAdjustPdfButton", "#exportAdjustExcelButton",
     "#clearAdjustLogButton", ".arrange-columns-btn", "#arrangeColumnsButton",
-    ".column-picker", "#downloadInventory", "#createPoShortcut",
-    "#countContinueButton", "#countSubmitButton", "#countPdfReportButton", "#countExcelReportButton", "#countComparisonViewButton"
+    ".column-picker", "#downloadInventory", "#createPoShortcut"
   ];
   adminOnly.forEach((sel) => {
     document.querySelectorAll(sel).forEach((el) => { el.style.display = userMode ? "none" : ""; });
   });
   const metricsZone = document.querySelector("#metricsHoverZone");
-  if (metricsZone) metricsZone.style.display = userMode ? "none" : "";
+  if (metricsZone) metricsZone.style.display = "none";
   // Hide cost columns for user role
   if (userMode) {
     document.querySelectorAll("#inventory th[data-col='unitCost'], #inventoryBody td[data-col='unitCost'], #inventory th[data-col='inventoryCost'], #inventoryBody td[data-col='inventoryCost']").forEach((el) => { el.style.display = "none"; });
