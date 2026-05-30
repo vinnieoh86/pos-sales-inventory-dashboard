@@ -904,23 +904,20 @@ els.countSearchInput?.addEventListener("input", () => {
 // That fights the soft keyboard and causes jumps mid-entry.
 // On desktop keep select-on-focus so a barcode scanner's output replaces the prior value.
 els.countSearchInput?.addEventListener("focus", () => {
-  if (!scanPerformanceProfile.isMobile && !scanPerformanceProfile.isSilk) {
-    els.countSearchInput.select?.();
-  }
+  els.countSearchInput.select?.();
 });
 els.countSearchInput?.addEventListener("click", () => {
-  if (!scanPerformanceProfile.isMobile && !scanPerformanceProfile.isSilk) {
-    els.countSearchInput.select?.();
-  }
+  activateCountSearchFromScreen();
 });
-// KBD-B: Global keystroke-to-search relay — desktop only.
-// On touch/Kindle devices (isMobile, isSilk) the soft keyboard fires 'input' events, not
-// 'keydown' events routed via document. Intercepting here causes double-entry, focus battles,
-// and keyboard flicker. The countSearchInput's own 'input' listener (above) handles all
-// soft-keyboard typing correctly without this relay.
+els.countSessionModal?.addEventListener("pointerdown", (event) => {
+  if (els.countSessionModal.hidden || !state.activeCountSession) return;
+  if (event.target.closest("button, a, select, textarea, .count-keypad, .count-workspace__actions, .table-wrap, [data-count-key]")) return;
+  activateCountSearchFromScreen();
+});
+// Bluetooth/manual scanner relay: when count screen is open, typed/scanned characters
+// should go to search even if the last item auto-advanced to qty mode. Keypad buttons still
+// handle quantity; tapping the search area or blank count area switches back to search.
 document.addEventListener("keydown", (event) => {
-  // Skip entirely on touch/mobile — let the browser and soft keyboard work normally.
-  if (scanPerformanceProfile.isMobile || scanPerformanceProfile.isSilk) return;
   if (els.countSessionModal?.hidden || !state.activeCountSession || state.countStage !== "search") return;
   if (els.countDuplicateModal && !els.countDuplicateModal.hidden) return;
   if (!els.countSearchInput || event.target === els.countSearchInput) return;
@@ -4716,17 +4713,23 @@ function applyCountEntry() {
   commitCountEntry(item, qty, "reset");
 }
 
-function focusCountSearch() {
+function focusCountSearch(options = {}) {
   if (!els.countSearchInput) return;
-  // KBD-C: On touch/Kindle do NOT call select() -- it fights the soft keyboard.
-  // On desktop keep select-all so barcode scanner bursts replace prior text cleanly.
+  const forceSelect = options.forceSelect !== false;
   setTimeout(() => {
     if (!els.countSearchInput) return;
-    els.countSearchInput.focus();
-    if (!scanPerformanceProfile.isMobile && !scanPerformanceProfile.isSilk) {
-      els.countSearchInput.select?.();
-    }
+    els.countSearchInput.focus({ preventScroll: true });
+    if (forceSelect) els.countSearchInput.select?.();
   }, 0);
+}
+
+function activateCountSearchFromScreen() {
+  if (!state.activeCountSession || els.countSessionModal?.hidden) return;
+  state.countStage = "search";
+  state.selectedCountItemCode = "";
+  state.pendingDuplicateMode = null;
+  renderSelectedCountItem();
+  focusCountSearch({ forceSelect: true });
 }
 
 function hideCountDropdown() {
@@ -5191,25 +5194,30 @@ function renderCountSessionRows() {
     });
 
   if (!filtered.length) {
-    els.countSessionBody.innerHTML = `<tr><td colspan="12" class="empty-cell">${state.countSessions.length ? "No sessions match filters." : "No physical count sessions saved yet."}</td></tr>`;
+    els.countSessionBody.innerHTML = `<tr><td colspan="7" class="empty-cell">${state.countSessions.length ? "No sessions match filters." : "No physical count sessions saved yet."}</td></tr>`;
     return;
   }
   els.countSessionBody.innerHTML = filtered
-    .map((session) => `
+    .map((session) => {
+      const actionButtons = [
+        `<button type="button" class="secondary-button count-inline-report-button" data-count-report="${escapeHtml(session.id)}">View</button>`,
+        session.submittedAt ? `<button type="button" class="secondary-button final-report-btn" data-final-report="${escapeHtml(session.id)}">Final</button>` : "",
+        !employeeMode && session.preCountSnapshot
+          ? (session.restoredAt ? `<span class="muted">Restored</span>` : `<button type="button" class="restore-count-btn" data-restore-session="${escapeHtml(session.id)}">Restore</button>`)
+          : "",
+        countSessionCanDelete(session) ? `<button type="button" class="delete-session-btn" data-delete-session="${escapeHtml(session.id)}">Delete</button>` : "",
+      ].filter(Boolean).join(" ");
+      return `
       <tr>
         <td>${escapeHtml(session.date || "-")}</td>
         <td>${escapeHtml(session.vendor || session.department || "All")}</td>
         <td>${escapeHtml(session.category || "All")}</td>
-        <td>${escapeHtml(session.status || "All")}</td>
+        <td>${escapeHtml(countSessionStatusLabel(session))}</td>
         <td>${escapeHtml(new Date(session.startedAt).toLocaleString())}</td>
         <td class="num">${number.format((session.entries || []).length)}</td>
-        <td>${escapeHtml(new Date(session.updatedAt || session.startedAt).toLocaleString())}${session.remoteActive ? ` <span class="muted">(Live)</span>` : ""}</td>
-        <td>${countSessionStatusLabel(session)}</td>
-        <td><button type="button" class="secondary-button count-inline-report-button" data-count-report="${escapeHtml(session.id)}">View</button></td>
-        <td>${session.submittedAt ? `<button type="button" class="secondary-button final-report-btn" data-final-report="${escapeHtml(session.id)}">Final Report</button>` : `<span class="muted">Not submitted</span>`}</td>
-        <td>${!employeeMode && session.preCountSnapshot ? (session.restoredAt ? `<span class="muted">Restored</span>` : `<button type="button" class="restore-count-btn" data-restore-session="${escapeHtml(session.id)}">Restore</button>`) : ""}</td>
-        <td>${countSessionCanDelete(session) ? `<button type="button" class="delete-session-btn" data-delete-session="${escapeHtml(session.id)}">Delete</button>` : ""}</td>
-      </tr>`)
+        <td class="count-history-actions">${actionButtons}</td>
+      </tr>`;
+    })
     .join("");
 
   els.countSessionBody.querySelectorAll("[data-count-report]").forEach((btn) => {
@@ -5458,6 +5466,12 @@ function renderActiveTab() {
       scheduleDashboardDetails();
     }
   } else if (activeTab === "inventory") {
+    if (scanPerformanceProfile.tier === "low" && !state._inventoryQuickPainted) {
+      state._inventoryQuickPainted = true;
+      showInventoryQuickPaint();
+      setTimeout(renderInventory, 40);
+      return;
+    }
     renderInventory();
   } else if (activeTab === "newitems") {
     renderNewItems();
@@ -6519,6 +6533,15 @@ function renderTable() {
       else state.selectedSkuCodes.delete(cb.dataset.code);
     });
   });
+}
+
+function showInventoryQuickPaint() {
+  renderSharedQuickTools("inventory");
+  renderInventorySummary(state.inventoryRows || []);
+  renderInventoryHeader();
+  if (els.inventoryBody) {
+    els.inventoryBody.innerHTML = `<tr><td colspan="20" class="empty-cell">Opening Products... items will appear in a moment.</td></tr>`;
+  }
 }
 
 function renderInventory() {
@@ -7768,6 +7791,7 @@ function switchTab(tab) {
     }
   } else if (tab === "inventory") {
     state._productsOpened = true;
+    state._inventoryQuickPainted = false;
   }
   applyRoleRestrictions(true);
   if (tab === "scanmode") return;
