@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "20260530-clean-ui-pass1";
+  const VERSION = "20260530-master-hydrate-pass1";
 
   function makeSearchEditable() {
     const search = document.querySelector("#searchInput");

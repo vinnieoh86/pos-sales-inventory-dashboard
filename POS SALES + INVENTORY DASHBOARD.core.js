@@ -7250,9 +7250,15 @@ function buildInventoryRows(options = {}) {
     const inventoryIndex = state.latestInventory;
     const salesByCode = new Map(buildSkuRows({ ignoreQuery: true, ignoreFilters: true }).map((sku) => [codeKey(sku.code), sku]));
     const hasCurrentInventory = inventoryIndex.size > 0;
-    const codes = hasCurrentInventory
-      ? new Set([...inventoryIndex.keys()])
-      : new Set([...state.excelItems.values()].map((item) => item.code).filter(Boolean).concat([...salesByCode.values()].map((sku) => sku.code)));
+    // Product page must remain a full item master. The clean UI pass made Products
+    // paint quickly, but using only latestInventory keys when any current snapshot
+    // existed could hide master/excel-only items from search on Kindle/tablet.
+    // Keep the fast paint/render limit, but hydrate the cache from every source.
+    const codes = new Set([
+      ...inventoryIndex.keys(),
+      ...[...state.excelItems.values()].map((item) => item.code).filter(Boolean),
+      ...[...salesByCode.values()].map((sku) => sku.code).filter(Boolean),
+    ].map((code) => codeKey(code)).filter(Boolean));
 
     state._inventoryCache = [...codes].map((code) => {
       const inventory = inventoryIndex.get(codeKey(code)) || {};
