@@ -1,4 +1,4 @@
-﻿const state = {
+const state = {
   rawSales: [],
   inventories: new Map(),
   latestInventory: new Map(),
@@ -2486,9 +2486,8 @@ function seedItemMetaFromExcelRows(rows = []) {
 function registerInventorySnapshotMeta(snapshotDate, rows = [], previousCodes = new Set()) {
   let changed = false;
   rows.forEach((row) => {
-    const key = codeKey(row.code || row.plu || row.itemNumber || row.vendorCode);
+    const key = codeKey(row.code);
     if (!key) return;
-    if (!row.code) row.code = row.plu || row.itemNumber || row.vendorCode || "";
     const existing = state.itemMeta[key] || {};
     const isNew = !previousCodes.has(key) && !existing.addDate;
     const rowCaseSize = Math.max(1, Math.round(toNumber(row.caseSize) || 1));
@@ -2534,8 +2533,13 @@ function findExcelFor(item = {}) {
 }
 
 function normalizeExcelRow(row) {
-  const field = (...names) => rowField(row, ...names);
-  const code = normalizeCode(field("CODE", "Code", "code", "UPC", "Upc", "upc", "BARCODE", "Barcode", "barcode", "SKU", "Sku", "sku", "PID", "Pid", "pid", "Item Code", "ITEM CODE", "item_code"));
+  const field = (...names) => {
+    for (const name of names) {
+      if (Object.prototype.hasOwnProperty.call(row, name) && cleanCell(row[name]) !== "") return row[name];
+    }
+    return "";
+  };
+  const code = normalizeCode(row.code ?? row.CODE);
   return {
     code,
     product: cleanCell(field("item_name", "ITEM NAME", "Item Name", "NAME", "Product", "PRODUCT")),
@@ -2563,6 +2567,7 @@ function normalizeExcelRow(row) {
     orderPendingId: cleanCell(field("order_pending_id", "ORDER PENDING ID", "Order Pending Id")),
     orderPendingStale: cleanCell(field("order_pending_stale", "ORDER PENDING STALE", "Order Pending Stale")),
     poPendingClearedTimes: toNumber(field("PO_pending_cleared_times", "PO PENDING CLEARED TIMES", "PO Pending Cleared Times")),
+    upc: cleanCell(field("UPC", "upc", "UPC CODE", "UPC Code", "BARCODE", "Barcode", "barcode", "SCAN CODE", "Scan Code", "scan_code", "SKU", "sku")),
     overrideValues: cleanCell(field("override_values", "OVERRIDE VALUES", "Override Values")),
   };
 }
@@ -2643,19 +2648,25 @@ function normalizeSalesRow(row, date) {
 }
 
 function normalizeInventoryRow(row, date) {
-  const field = (...names) => rowField(row, ...names);
+  const field = (...names) => {
+    for (const name of names) {
+      if (Object.prototype.hasOwnProperty.call(row, name) && cleanCell(row[name]) !== "") return row[name];
+    }
+    return "";
+  };
   return {
     date: date.iso,
-    code: normalizeCode(field("CODE", "Code", "code", "UPC", "Upc", "upc", "BARCODE", "Barcode", "barcode", "SKU", "Sku", "sku", "PID", "Pid", "pid", "Item Code", "ITEM CODE", "item_code", "Product Code", "PRODUCT CODE")),
+    code: normalizeCode(field("CODE", "code", "UPC", "upc", "BARCODE", "Barcode", "barcode", "SCAN CODE", "Scan Code", "scan_code", "SKU", "sku", "PID", "pid")),
     category: cleanCell(field("CATEGORY", "category")),
     product: cleanCell(field("NAME", "name", "ITEM NAME", "Item Name", "item_name", "product", "Product", "PRODUCT")),
-    plu: cleanCell(field("PLU", "plu", "ITEM", "Item", "item", "STYLE", "Style", "style")),
-    itemNumber: cleanCell(field("ITEM NUMBER", "item number", "ITEMNUM", "itemnum", "itemNumber", "Item Number", "VENDOR CODE", "vendor code", "Vendor Code", "SUPPLIER CODE", "Supplier Code", "supplier code")),
-    price: toNumber(field("PRICE", "price")),
+    plu: cleanCell(field("PLU", "plu")),
+    itemNumber: cleanCell(field("ITEM NUMBER", "item number", "ITEMNUM", "itemnum", "itemNumber", "Item Number")),
+    price: toNumber(field("PRICE", "price", "SALE PRICE", "Sale Price", "sale_price", "RETAIL", "Retail", "retail")),
     cost: toNumber(field("COST", "cost", "unitCost", "Unit Cost", "unit_cost")),
-    stock: toNumber(field("STOCK", "stock")),
+    stock: toNumber(field("STOCK", "stock", "QOH", "qoh", "ON HAND", "On Hand", "on_hand", "IN STOCK", "In Stock", "in_stock")),
     vendor: cleanCell(field("VENDOR", "vendor")),
     vendorCode: cleanCell(field("VENDOR CODE", "vendor code")),
+    upc: cleanCell(field("UPC", "upc", "UPC CODE", "UPC Code", "BARCODE", "Barcode", "barcode", "SCAN CODE", "Scan Code", "scan_code", "SKU", "sku")),
     color: cleanCell(field("COLOR", "color")),
     size: cleanCell(field("SIZE", "size")),
     length: cleanCell(field("LENGTH", "length")),
@@ -2670,9 +2681,8 @@ function normalizeInventoryRow(row, date) {
 function mergeInventoryRowsByCode(rows = []) {
   const merged = new Map();
   rows.forEach((row) => {
-    const key = codeKey(row.code || row.plu || row.itemNumber || row.vendorCode);
+    const key = codeKey(row.code);
     if (!key) return;
-    if (!row.code) row.code = row.plu || row.itemNumber || row.vendorCode || "";
     const existing = merged.get(key);
     if (!existing) {
       merged.set(key, { ...row, stock: toNumber(row.stock) || 0 });
@@ -2696,11 +2706,7 @@ function buildLatestInventory() {
   state.latestInventory = new Map();
   [...state.inventories.entries()].sort(([a], [b]) => a.localeCompare(b)).forEach(([, rows]) => {
     mergeInventoryRowsByCode(rows).forEach((row) => {
-      const primary = row.code || row.plu || row.itemNumber || row.vendorCode;
-      const key = codeKey(primary);
-      if (!key) return;
-      if (!row.code) row.code = primary;
-      state.latestInventory.set(key, row);
+      if (row.code) state.latestInventory.set(codeKey(row.code), row);
     });
   });
 }
@@ -2914,8 +2920,13 @@ function buildPriceCheckEntry(inventory = {}, excel = {}) {
     category: inventory.category || excel.category || "",
     vendor: inventory.vendor || excel.vendor || "",
     plu: inventory.plu || excel.plu || "",
-    itemNumber: inventory.itemNumber || excel.itemNumber || inventory.vendorCode || excel.vendorCode || "",
+    itemNumber: inventory.itemNumber || excel.itemNumber || "",
     color: inventory.color || excel.color || "",
+    vendorCode: inventory.vendorCode || excel.vendorCode || "",
+    upc: inventory.upc || excel.upc || inventory.barcode || excel.barcode || inventory.sku || excel.sku || "",
+    barcode: inventory.barcode || excel.barcode || "",
+    sku: inventory.sku || excel.sku || "",
+    scanAliases: [inventory.upc, excel.upc, inventory.barcode, excel.barcode, inventory.sku, excel.sku, inventory.vendorCode, excel.vendorCode].filter(Boolean),
     state: stateLabel,
     itemState: stateLabel.toLowerCase(),
     addDate: cleanCell(meta.addDate || excel.addDate || inventory.addDate || meta.firstSeenDate || ""),
@@ -2940,110 +2951,122 @@ function buildPriceCheckEntry(inventory = {}, excel = {}) {
   };
 }
 
+function priceCheckEntryQuality(entry = {}) {
+  let score = 0;
+  if (cleanCell(entry.product)) score += 4;
+  if (toNumber(entry.price) > 0) score += 6;
+  if (toNumber(entry.unitCost) > 0 || toNumber(entry.cost) > 0) score += 3;
+  if (cleanCell(entry.vendor) && cleanCell(entry.vendor).toLowerCase() !== "unassigned") score += 3;
+  if (cleanCell(entry.category) && cleanCell(entry.category).toLowerCase() !== "unassigned") score += 2;
+  if (cleanCell(entry.department) && cleanCell(entry.department).toLowerCase() !== "unassigned") score += 1;
+  if (cleanCell(entry.plu)) score += 2;
+  if (cleanCell(entry.itemNumber)) score += 2;
+  if (Number.isFinite(Number(entry.stock))) score += 1;
+  if (cleanCell(entry.snapshotDate)) score += 1;
+  return score;
+}
+
+function mergePriceCheckEntries(primary = {}, secondary = {}) {
+  const merged = { ...secondary, ...primary };
+  ["product", "department", "category", "vendor", "plu", "itemNumber", "color", "vendorCode", "upc", "barcode", "sku", "snapshotDate"].forEach((field) => {
+    if (!cleanCell(merged[field]) && cleanCell(secondary[field])) merged[field] = secondary[field];
+  });
+  ["stock", "unitCost", "price", "caseSize", "inventoryCost"].forEach((field) => {
+    if ((merged[field] == null || Number(merged[field]) === 0) && secondary[field] != null && Number(secondary[field]) !== 0) merged[field] = secondary[field];
+  });
+  merged.scanAliases = [...new Set([...(primary.scanAliases || []), ...(secondary.scanAliases || [])].map(normalizeCode).filter(Boolean))];
+  return merged;
+}
+
+function setBestExactIndexEntry(exact, key, entry) {
+  if (!key || !entry) return;
+  const existing = exact.get(key);
+  if (!existing || priceCheckEntryQuality(entry) > priceCheckEntryQuality(existing)) exact.set(key, entry);
+}
+
+function buildMasterPriceCheckRows() {
+  const byCode = new Map();
+  const absorb = (entry) => {
+    if (!entry) return;
+    const key = codeKey(entry.code || entry.plu || entry.itemNumber || entry.upc || entry.barcode || entry.sku);
+    if (!key) return;
+    const existing = byCode.get(key);
+    byCode.set(key, existing ? mergePriceCheckEntries(priceCheckEntryQuality(entry) >= priceCheckEntryQuality(existing) ? entry : existing, priceCheckEntryQuality(entry) >= priceCheckEntryQuality(existing) ? existing : entry) : entry);
+  };
+  [...state.latestInventory.values()].forEach((inventory) => absorb(buildPriceCheckEntry(inventory, findExcelFor(inventory))));
+  [...state.excelItems.values()].forEach((excel) => absorb(buildPriceCheckEntry(state.latestInventory.get(codeKey(excel.code)) || {}, excel)));
+  return [...byCode.values()];
+}
+
 function ensurePriceCheckExactIndex() {
-  const stamp = `${state._dataCacheStamp}:${state._multiBarcodeIndexStamp || 0}:${(state.multiBarcodeMasters || []).length}`;
+  const stamp = `${state._dataCacheStamp}:${state._multiBarcodeIndexStamp || 0}:${state.latestInventory.size}:${state.excelItems.size}`;
   if (state._priceCheckExactIndex && state._priceCheckExactIndexStamp === stamp) return;
   const startedAt = performanceNow();
   const exact = new Map();
-  const indexValue = (value, entry) => {
-    codeLookupVariants(value).forEach((key) => {
-      if (key && !exact.has(key)) exact.set(key, entry);
+  const aliasSources = new Set(["code", "CODE", "plu", "PLU", "itemNumber", "item_number", "ITEM NUMBER", "vendorCode", "vendor_code", "VENDOR CODE", "upc", "UPC", "barcode", "BARCODE", "scanCode", "scan_code", "SCAN CODE", "sku", "SKU", "pid", "PID"]);
+  const indexValueDirect = (value, entry) => {
+    scanKeyVariants(value).forEach((key) => setBestExactIndexEntry(exact, key, entry));
+  };
+  const indexEntry = (entry, ...sources) => {
+    if (!entry) return;
+    [entry.code, entry.plu, entry.itemNumber, entry.vendorCode, entry.upc, entry.barcode, entry.sku].forEach((value) => indexValueDirect(value, entry));
+    (entry.scanAliases || []).forEach((value) => indexValueDirect(value, entry));
+    sources.filter(Boolean).forEach((source) => {
+      Object.entries(source).forEach(([fieldName, value]) => {
+        if (!aliasSources.has(fieldName)) return;
+        indexValueDirect(value, entry);
+      });
     });
-    const canonical = codeKey(value);
-    if (canonical && !exact.has(canonical)) exact.set(canonical, entry);
   };
-  const indexEntry = (entry) => {
-    [entry.code, entry.plu, entry.itemNumber, entry.vendorCode, entry.product].forEach((value) => indexValue(value, entry));
-    multiAliasesForCode(entry.code).forEach((alias) => indexValue(alias, entry));
-  };
-  [...state.latestInventory.values()].forEach((inventory) => {
-    const entry = buildPriceCheckEntry(inventory, findExcelFor(inventory));
-    entry.vendorCode = inventory.vendorCode || "";
-    if (entry.code || entry.plu || entry.itemNumber || entry.vendorCode) indexEntry(entry);
-  });
-  [...state.excelItems.values()].forEach((excel) => {
-    const probeKey = codeKey(excel.code || excel.plu || excel.itemNumber || excel.vendorCode || "");
-    if (probeKey && exact.has(probeKey)) return;
-    const entry = buildPriceCheckEntry({}, excel);
-    entry.vendorCode = excel.vendorCode || "";
-    if (entry.code || entry.plu || entry.itemNumber || entry.vendorCode) indexEntry(entry);
-  });
-  (state.multiBarcodeMasters || []).forEach((row) => {
-    const masterKey = codeKey(row.masterCode);
-    let entry = masterKey ? exact.get(masterKey) : null;
-    if (!entry) {
-      entry = buildPriceCheckEntry({
-        code: row.masterCode,
-        product: row.product || row.masterCode,
-        vendor: row.vendor || "",
-        plu: row.plu || "",
-        itemNumber: row.itemNumber || "",
-        stock: 0,
-        price: 0,
-      }, {});
-    }
-    indexValue(row.masterCode, entry);
-    (row.aliases || []).forEach((alias) => indexValue(alias, entry));
-  });
+  const masterRows = buildMasterPriceCheckRows();
+  masterRows.forEach((entry) => indexEntry(entry, entry));
+  // Multi-barcode aliases are only allowed to point to a real master inventory/product row.
+  // This prevents the built-in alternate-barcode workbook from returning name-only, $0.00 records.
   Object.entries(state.multiBarcodeMap || {}).forEach(([alias, masterCode]) => {
-    const masterKey = codeKey(masterCode);
-    const item = masterKey ? exact.get(masterKey) : null;
-    if (item) indexValue(alias, item);
+    const masterCandidates = scanKeyVariants(masterCode);
+    const item = masterCandidates.map((key) => exact.get(key)).find(Boolean);
+    if (item) scanKeyVariants(alias).forEach((aliasKey) => setBestExactIndexEntry(exact, aliasKey, item));
   });
   state._priceCheckExactIndex = exact;
   state._priceCheckExactIndexStamp = stamp;
+  window.barcodeIndex = Object.fromEntries(exact.entries());
+  window.masterInventorySnapshot = masterRows;
   console.info("[AppPerf] barcode index ready", {
     ms: Number((performanceNow() - startedAt).toFixed(2)),
     entries: exact.size,
+    masterRows: masterRows.length,
     inventory: state.latestInventory.size,
     excel: state.excelItems.size,
-    multiBarcodeMasters: (state.multiBarcodeMasters || []).length,
+    source: "masterInventorySnapshot",
   });
 }
-
 function priceCheckExactMatch(query) {
-  const keyed = codeKey(query);
-  if (!keyed) return null;
+  const variants = scanKeyVariants(query).filter(Boolean);
+  if (!variants.length) return null;
   ensurePriceCheckExactIndex();
-  for (const variant of codeLookupVariants(query)) {
-    const match = state._priceCheckExactIndex?.get(variant);
-    if (match) return match;
+  for (const key of variants) {
+    const item = state._priceCheckExactIndex?.get(key);
+    if (item) return item;
   }
-  return state._priceCheckExactIndex?.get(keyed) || null;
+  for (const key of variants) {
+    const master = state.multiBarcodeMap?.[key];
+    if (!master) continue;
+    for (const masterKey of scanKeyVariants(master)) {
+      const item = state._priceCheckExactIndex?.get(masterKey);
+      if (item) return item;
+    }
+  }
+  return null;
 }
 
 function priceCheckRows() {
-  if (state._priceCheckRowsCache && state._priceCheckRowsStamp === state._dataCacheStamp) {
+  const stamp = `${state._dataCacheStamp}:${state._multiBarcodeIndexStamp || 0}:${state.latestInventory.size}:${state.excelItems.size}`;
+  if (state._priceCheckRowsCache && state._priceCheckRowsStamp === stamp) {
     return state._priceCheckRowsCache;
   }
-  const rowMap = new Map();
-  [...state.latestInventory.values()].forEach((inventory) => {
-    const itemCode = inventory.code || "";
-    const key = codeKey(itemCode || inventory.plu || inventory.itemNumber || inventory.product);
-    if (!key) return;
-    rowMap.set(key, buildPriceCheckEntry(inventory, findExcelFor(inventory)));
-  });
-  [...state.excelItems.values()].forEach((excel) => {
-    const key = codeKey(excel.code || excel.plu || excel.itemNumber || excel.product);
-    if (!key || rowMap.has(key)) return;
-    rowMap.set(key, buildPriceCheckEntry({}, excel));
-  });
-  (state.multiBarcodeMasters || []).forEach((row) => {
-    const key = codeKey(row.masterCode);
-    if (!key || rowMap.has(key)) return;
-    rowMap.set(key, buildPriceCheckEntry({
-      code: row.masterCode,
-      product: row.product || row.masterCode,
-      vendor: row.vendor || "",
-      plu: row.plu || "",
-      itemNumber: row.itemNumber || "",
-      stock: 0,
-      price: 0,
-    }, {}));
-  });
-  const rows = [...rowMap.values()];
+  const rows = buildMasterPriceCheckRows();
   state._priceCheckRowsCache = rows;
-  state._priceCheckRowsStamp = state._dataCacheStamp;
+  state._priceCheckRowsStamp = stamp;
   ensurePriceCheckExactIndex();
   return rows;
 }
@@ -3148,7 +3171,7 @@ function priceCheckMatches(query, limit = 12) {
     const vendor = cleanCell(item.vendor);
     const category = cleanCell(item.category);
     const department = cleanCell(item.department);
-    const keys = [code, plu, itemNumber].map(codeKey).filter(Boolean);
+    const keys = [code, plu, itemNumber, item.upc, item.barcode, item.sku, item.vendorCode].flatMap(scanKeyVariants).filter(Boolean);
     let score = -1;
     if (keyed && keys.includes(keyed)) score = 0;
     else if ([code, plu, itemNumber].some((value) => value && value.toLowerCase().startsWith(search))) score = 1;
@@ -4419,10 +4442,6 @@ function findAnyCountMatch(query) {
   const needle = raw.toLowerCase();
   const normalizedNeedle = codeKey(raw);
   if (!state._countSearchIndex || state._countIndexStamp !== state._dataCacheStamp) buildCountSearchIndex();
-  for (const variant of codeLookupVariants(raw)) {
-    const exact = state._countExactIndex?.get(variant);
-    if (exact) return exact;
-  }
   return state._countExactIndex?.get(normalizedNeedle)
     || state._countExactIndex?.get(needle)
     || allCountCandidateRows().find((item) =>
@@ -4440,13 +4459,9 @@ function findCountMatch(query) {
 
   if (!state._countSearchIndex || state._countIndexStamp !== state._dataCacheStamp) buildCountSearchIndex();
   // Scanner submissions use the exact map before any text search.
-  let exactMatch = state._countExactIndex?.get(normalizedNeedle) || state._countExactIndex?.get(needle) || null;
-  if (!exactMatch) {
-    for (const variant of codeLookupVariants(raw)) {
-      exactMatch = state._countExactIndex?.get(variant);
-      if (exactMatch) break;
-    }
-  }
+  const exactMatch = state._countExactIndex?.get(normalizedNeedle)
+    || state._countExactIndex?.get(needle)
+    || null;
   if (exactMatch && (countItemIsInScope(exactMatch) || countSessionAllowsOutOfScope())) return exactMatch;
 
   // Second: try filtered pool with partial text match
@@ -4785,10 +4800,9 @@ function buildCountSearchIndex() {
   state._countExactIndex = new Map();
   allRows.forEach((item) => {
     [item.code, item.plu, item.itemNumber].forEach((value) => {
-      codeLookupVariants(value).forEach((key) => {
-        if (key && !state._countExactIndex.has(key)) state._countExactIndex.set(key, item);
-      });
+      const rawKey = cleanCell(value).toLowerCase();
       const normalizedKey = codeKey(value);
+      if (rawKey && !state._countExactIndex.has(rawKey)) state._countExactIndex.set(rawKey, item);
       if (normalizedKey && !state._countExactIndex.has(normalizedKey)) state._countExactIndex.set(normalizedKey, item);
     });
   });
@@ -9205,19 +9219,12 @@ function cleanHeader(value) {
 }
 
 function cleanCell(value) {
-  return String(value ?? "").replace(/^="/, "").replace(/"$/, "").trim();
-}
-
-function rowField(row, ...names) {
-  const directNames = names.flat().filter(Boolean);
-  for (const name of directNames) {
-    if (Object.prototype.hasOwnProperty.call(row, name) && cleanCell(row[name]) !== "") return row[name];
-  }
-  const wanted = new Set(directNames.map((name) => cleanHeader(name)));
-  for (const [key, value] of Object.entries(row || {})) {
-    if (wanted.has(cleanHeader(key)) && cleanCell(value) !== "") return value;
-  }
-  return "";
+  return String(value ?? "")
+    .replace(/^﻿/, "")
+    .replace(/^'/, "")
+    .replace(/^="/, "")
+    .replace(/"$/, "")
+    .trim();
 }
 
 function stableVendorRuleId(vendor = "") {
@@ -9237,40 +9244,40 @@ function buildSearchHaystack(values) {
 }
 
 function normalizeCode(value) {
-  // Scanner-safe cleanup: supports POS exports like ="012345", leading apostrophes,
-  // spaces/hyphens from copied barcode values, and plain UPC/EAN strings.
-  let code = cleanCell(value)
-    .replace(/^=/, "")
-    .replace(/^['\s]+/, "")
-    .replace(/^"|"$/g, "")
-    .trim();
-  if (/^\d[\d\s-]*\d$/.test(code)) code = code.replace(/[\s-]+/g, "");
-  return code;
+  return cleanCell(value).replace(/^=/, "").replace(/^"|"$/g, "");
+}
+
+function compactScanKey(value) {
+  const code = normalizeCode(value).replace(/[^A-Za-z0-9]+/g, "").toUpperCase();
+  if (!code) return "";
+  return /^\d+$/.test(code) ? (code.replace(/^0+/, "") || "0") : code;
+}
+
+function scanKeyVariants(value) {
+  const raw = normalizeCode(value);
+  const compact = compactScanKey(raw);
+  const variants = new Set();
+  const add = (v) => {
+    const k = compactScanKey(v);
+    if (k) variants.add(k);
+  };
+  add(raw);
+  add(compact);
+  // UPC/EAN scanners and POS exports sometimes disagree on leading zero/check-digit padding.
+  if (/^\d+$/.test(compact)) {
+    add(compact.replace(/^0+/, ""));
+    if (compact.length === 11) add(`0${compact}`);
+    if (compact.length === 12 && compact.startsWith("0")) add(compact.slice(1));
+    if (compact.length === 13 && compact.startsWith("0")) add(compact.slice(1));
+    if (compact.length === 14 && compact.startsWith("00")) add(compact.slice(2));
+  }
+  return [...variants];
 }
 
 function rawCodeKey(value) {
-  const code = normalizeCode(value);
+  const code = compactScanKey(value);
   if (!code) return "";
-  return /^\d+$/.test(code) ? (code.replace(/^0+/, "") || "0") : code.toUpperCase();
-}
-
-function codeLookupVariants(value) {
-  const normalized = normalizeCode(value);
-  const raw = cleanCell(value);
-  const variants = new Set();
-  [normalized, raw, rawCodeKey(value)].forEach((entry) => {
-    const text = cleanCell(entry);
-    if (!text) return;
-    variants.add(text);
-    variants.add(text.toLowerCase());
-    variants.add(text.toUpperCase());
-    if (/^\d+$/.test(text)) {
-      variants.add(text.replace(/^0+/, "") || "0");
-      if (text.length === 11) variants.add(`0${text}`);
-      if (text.length === 12 && text.startsWith("0")) variants.add(text.slice(1));
-    }
-  });
-  return [...variants].filter(Boolean);
+  return code;
 }
 
 function codeKey(value) {
@@ -10304,7 +10311,10 @@ function hydrateInventoryFromSupabase(row) {
     cost: toNumber(row.unit_cost),
     stock: toNumber(row.stock),
     vendor: cleanCell(row.vendor),
-    vendorCode: "",
+    vendorCode: cleanCell(row.vendor_code || row.vendorCode || row.vendor_sku || ""),
+    upc: cleanCell(row.upc || row.barcode || row.scan_code || row.sku || ""),
+    barcode: cleanCell(row.barcode || ""),
+    sku: cleanCell(row.sku || ""),
     color: cleanCell(row.color),
     size: "",
     length: "",
@@ -10321,6 +10331,7 @@ function hydrateExcelFromSupabase(row) {
     vendor_name: row.vendor,
     PLU: row.plu,
     item_number: row.item_number,
+    UPC: row.upc || row.barcode || row.scan_code || row.sku || "",
     category: row.category,
     add_date: row.add_date,
     cost: row.unit_cost,

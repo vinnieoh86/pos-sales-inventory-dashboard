@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "20260602-scan-lookup-ui-guard2";
+  const VERSION = "20260602-master-snapshot-v4";
 
   function makeSearchEditable() {
     const search = document.querySelector("#searchInput");
