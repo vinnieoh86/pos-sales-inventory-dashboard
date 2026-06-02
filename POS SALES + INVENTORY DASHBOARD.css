@@ -7355,28 +7355,30 @@ body.scan-mode-active.scan-performance-medium .scan-mode-panel * {
     padding: 0.7rem 0.75rem !important;
   }
 
-  /* Hero row: item name + price side-by-side but wrap if name is long */
+  /* Hero: price gets its own prominent row so it's NEVER hidden or wrapped off-screen.
+     Stack: price big on top, item name below it. */
   .price-check-result__hero {
-    flex-wrap: wrap !important;
-    gap: 0.45rem 0.65rem !important;
-    margin-bottom: 0.6rem !important;
-    align-items: baseline !important;
+    flex-direction: column !important;
+    align-items: flex-start !important;
+    gap: 0.15rem !important;
+    margin-bottom: 0.55rem !important;
+  }
+
+  /* Price first, huge, unmissable */
+  .price-check-result__price {
+    order: -1 !important;
+    font-size: 2.2rem !important;
+    font-weight: 900 !important;
+    white-space: nowrap !important;
+    line-height: 1 !important;
+    color: #0f766e !important;
   }
 
   .price-check-result__hero h3 {
-    font-size: 1.05rem !important;
+    font-size: 1rem !important;
     line-height: 1.2 !important;
-    flex: 1 1 55% !important;
-    min-width: 0 !important;
+    margin: 0 !important;
     word-break: break-word !important;
-  }
-
-  /* Price: big and green, right-aligned */
-  .price-check-result__price {
-    font-size: 2rem !important;
-    font-weight: 900 !important;
-    flex: 0 0 auto !important;
-    white-space: nowrap !important;
   }
 
   /* ── 8. Result grid: 2-col on phone — enough room at ≥320 px ── */
@@ -7451,11 +7453,11 @@ body.scan-mode-active.scan-performance-medium .scan-mode-panel * {
   }
 
   .price-check-result__price {
-    font-size: 1.75rem !important;
+    font-size: 1.9rem !important;
   }
 
   .price-check-result__hero h3 {
-    font-size: 0.95rem !important;
+    font-size: 0.92rem !important;
   }
 
   .tab-button {
