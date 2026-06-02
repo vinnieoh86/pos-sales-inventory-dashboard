@@ -4453,6 +4453,7 @@ function toggleCountAutoMode() {
   state.countAutoMode = next;
   state.countStage = "search";
   state.countQtyBuffer = "0";
+  if (next) hideCountDropdown(); // hide any open dropdown when switching into auto mode
   persistActiveCountSession();
   renderCountModeButtons();
   renderSelectedCountItem();
@@ -4762,6 +4763,11 @@ function applyCountEntry() {
   }
   const existing = state.activeCountSession.entries?.filter((entry) => codeKey(entry.code) === codeKey(item.code)).at(-1);
   if (existing) {
+    // AUTO +1 MODE: never show the duplicate modal — always add 1 silently.
+    if (state.activeCountSession?.autoMode || state.countAutoMode) {
+      commitCountEntry(item, qty, "add");
+      return;
+    }
     const chosenMode = state.pendingDuplicateMode && codeKey(state.pendingDuplicateMode.code) === codeKey(item.code)
       ? state.pendingDuplicateMode.mode
       : "";
@@ -4829,6 +4835,8 @@ function buildCountSearchIndex() {
 function renderCountDropdown(query) {
   const dd = document.querySelector("#countSearchDropdown");
   if (!dd) return;
+  // AUTO +1 MODE: never show the dropdown — items resolve and commit automatically.
+  if (state.activeCountSession?.autoMode || state.countAutoMode) { dd.hidden = true; return; }
   // Only show dropdown in search stage
   if (state.countStage && state.countStage !== "search") { dd.hidden = true; return; }
   const raw = cleanCell(query).trim();
