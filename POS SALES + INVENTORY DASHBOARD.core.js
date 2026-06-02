@@ -4555,6 +4555,12 @@ function clearCountLookup() {
 }
 
 function openDuplicateCountModal(item, qty, existing, options = {}) {
+  // +1 Auto mode must be truly hands-free: duplicate scans add +1 immediately
+  // and must not open the duplicate add/reset confirmation modal.
+  if (state.countAutoPlusMode || options.autoPlus) {
+    commitCountEntry(item, Number(qty || 1), "add", { autoPlus: true });
+    return;
+  }
   state.pendingDuplicateCount = { item, qty, existing, chooseBeforeQty: !!options.chooseBeforeQty };
   if (els.countDuplicateMessage) {
     els.countDuplicateMessage.textContent = `${item.product} was already counted as ${number.format(existing?.countedQty || 0)}. Add this new quantity or reset it?`;
@@ -4661,6 +4667,12 @@ function applyCountEntry() {
   const qty = Math.max(0, Number(state.countQtyBuffer || "0"));
   const existing = state.activeCountSession.entries?.filter((entry) => codeKey(entry.code) === codeKey(item.code)).at(-1);
   if (existing) {
+    // In +1 Auto mode, repeated scans are continuous additions.
+    // Normal/manual mode still uses the duplicate add/reset modal.
+    if (state.countAutoPlusMode) {
+      commitCountEntry(item, 1, "add", { autoPlus: true });
+      return;
+    }
     const chosenMode = state.pendingDuplicateMode && codeKey(state.pendingDuplicateMode.code) === codeKey(item.code)
       ? state.pendingDuplicateMode.mode
       : "";
