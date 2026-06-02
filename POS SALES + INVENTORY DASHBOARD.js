@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "20260602-targeted-count-ui1";
+  const VERSION = "20260602-auto-plus-undo-fix4";
 
   function makeSearchEditable() {
     const search = document.querySelector("#searchInput");

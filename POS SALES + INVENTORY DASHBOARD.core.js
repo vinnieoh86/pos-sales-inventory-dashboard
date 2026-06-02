@@ -858,6 +858,14 @@ els.countSearchInput?.addEventListener("keydown", (event) => {
     els.countSearchInput.value = "";
     state._replaceCountInputOnNextKey = false;
   }
+  if (state.countAutoPlusMode && event.key === "Enter") {
+    event.preventDefault();
+    event.stopPropagation();
+    hideCountDropdown();
+    state._replaceCountInputOnNextKey = true;
+    handleCountLookup();
+    return;
+  }
   const dropdown = document.querySelector("#countSearchDropdown");
   if (dropdown && !dropdown.hidden) {
     const items = [...dropdown.querySelectorAll(".count-dd-item[data-code]")];
@@ -901,6 +909,13 @@ els.countSearchInput?.addEventListener("keydown", (event) => {
 // Debounced count search â€” avoids scanning 25k items on every keystroke
 const renderCountDropdownDebounced = debounce((val) => renderCountDropdown(val), 120);
 els.countSearchInput?.addEventListener("input", () => {
+  // In +1 Auto mode the scan box must act like a scanner-only lane.
+  // Do not open the typeahead dropdown because scanner Enter can select a
+  // suggestion instead of committing the +1, causing every-other-scan misses.
+  if (state.countAutoPlusMode) {
+    hideCountDropdown();
+    return;
+  }
   renderCountDropdownDebounced(els.countSearchInput.value);
 });
 // KBD-A: On touch/mobile (Kindle, Android) do NOT auto-select on focus/click.
@@ -4055,8 +4070,20 @@ function archiveCountSessionEntriesToAdjustmentLog(session) {
 
 function persistActiveCountSession() {
   markCountSessionDirty(state.activeCountSession);
+  if (state.activeCountSession?.id) {
+    const activeId = cleanCell(state.activeCountSession.id);
+    const liveCopy = { ...state.activeCountSession, isActiveLive: true };
+    // Keep the visible/session-history copy in lockstep with the active live session.
+    // Without this, shared/local sync can re-merge an older countSessions[] copy and
+    // make undone +1 rows appear to come back.
+    state.countSessions = [
+      liveCopy,
+      ...(state.countSessions || []).filter((session) => cleanCell(session?.id) !== activeId),
+    ];
+  }
   // The local journal is immediate; only the remote transfer is debounced.
   localStorage.setItem("posDashboardActiveCountSession:v1", JSON.stringify(state.activeCountSession));
+  localStorage.setItem("posDashboardCountSessions:v1", JSON.stringify(state.countSessions));
   renderActiveCountSyncStatus();
   scheduleSharedCountSessionsSync();
 }
@@ -4394,22 +4421,33 @@ function toggleCountAutoPlusMode() {
 
 function undoLastCountAutoPlus() {
   const session = state.activeCountSession;
-  const stack = state.countAutoUndoStack || [];
+  const stack = [...(state.countAutoUndoStack || [])];
   const last = stack.pop();
   if (!session || !last) {
+    state.countAutoUndoStack = stack;
     renderCountAutoControls();
     return;
   }
-  const idx = (session.entries || []).findIndex((entry) => entry.entryId === last.entryId);
+  const entries = [...(session.entries || [])];
+  const idx = entries.findIndex((entry) => entry.entryId === last.entryId);
   if (idx >= 0) {
-    session.entries.splice(idx, 1);
-    session.updatedAt = new Date().toISOString();
+    entries.splice(idx, 1);
+    state.activeCountSession = {
+      ...session,
+      entries,
+      updatedAt: new Date().toISOString(),
+      localSyncPending: true,
+    };
+    state.countAutoUndoStack = stack;
     persistActiveCountSession();
-    renderCountEntryRows();
+    renderCountEntryRows(false);
     updateCountSummaryStrip();
+    renderSelectedCountItem();
+    renderCountQuantity();
     showToast(`Undid +1 for ${last.code}`, 1800, "warning");
+  } else {
+    state.countAutoUndoStack = stack;
   }
-  state.countAutoUndoStack = stack;
   renderCountAutoControls();
   focusCountSearch();
 }
@@ -4734,6 +4772,7 @@ function buildCountSearchIndex() {
 function renderCountDropdown(query) {
   const dd = document.querySelector("#countSearchDropdown");
   if (!dd) return;
+  if (state.countAutoPlusMode) { dd.hidden = true; return; }
   // Only show dropdown in search stage
   if (state.countStage && state.countStage !== "search") { dd.hidden = true; return; }
   const raw = cleanCell(query).trim();
@@ -4799,6 +4838,11 @@ function selectCountDropdownItem(code) {
   if (!item) { showToast("Item not found in the item master.", 2800, "warning"); return; }
   if (!filteredItem) showToast("Manager override: counting an item outside the selected scope.", 3600, "warning");
   if (els.countSearchInput) els.countSearchInput.value = "";
+  if (state.countAutoPlusMode) {
+    commitCountEntry(item, 1, "add", { autoPlus: true });
+    focusCountSearch();
+    return;
+  }
   state.selectedCountItemCode = item.code;
   state.countStage = "qty";
   state.countQtyBuffer = "0";
