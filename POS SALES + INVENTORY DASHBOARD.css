@@ -6985,3 +6985,95 @@ body.scan-mode-active.scan-performance-medium .scan-mode-panel * {
     padding-inline: 0.5rem;
   }
 }
+
+/* 2026-06 targeted count/UI patch: keep report/history modals inside viewport */
+#countReportModal,
+#sessionHistoryModal,
+#reportCountModal,
+#reportLogsModal,
+#reportPoModal,
+#reportAdjustModal {
+  align-items: flex-start !important;
+  justify-content: center !important;
+  padding: 0.75rem !important;
+  overflow: auto !important;
+}
+#countReportModal .count-modal__dialog,
+#sessionHistoryModal .count-modal__dialog,
+#reportCountModal .count-modal__dialog,
+#reportLogsModal .count-modal__dialog,
+#reportPoModal .count-modal__dialog,
+#reportAdjustModal .count-modal__dialog {
+  width: min(100%, calc(100vw - 1.5rem)) !important;
+  max-width: calc(100vw - 1.5rem) !important;
+  box-sizing: border-box !important;
+  margin: 0 auto !important;
+  overflow: hidden !important;
+}
+#countReportModal .table-wrap,
+#sessionHistoryModal .table-wrap,
+#reportCountModal .table-wrap,
+#reportLogsModal .table-wrap,
+#reportPoModal .table-wrap,
+#reportAdjustModal .table-wrap {
+  width: 100% !important;
+  max-width: 100% !important;
+  overflow-x: auto !important;
+  box-sizing: border-box !important;
+}
+#countReportModal table,
+#sessionHistoryModal table,
+#reportCountModal table,
+#reportLogsModal table,
+#reportPoModal table,
+#reportAdjustModal table {
+  width: 100% !important;
+  min-width: 0 !important;
+  table-layout: auto !important;
+}
+
+.count-refine-label {
+  grid-column: 1 / -1;
+}
+.count-refine-label input {
+  width: 100%;
+  margin-top: 0.35rem;
+}
+.count-auto-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
+  margin-top: 0.55rem;
+}
+.count-auto-toggle.is-on {
+  background: #087a62 !important;
+  color: #fff !important;
+  border-color: #087a62 !important;
+}
+.count-auto-actions button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+@media (max-width: 720px) {
+  #countSessionModal .count-modal__dialog--workspace {
+    width: calc(100vw - 0.75rem) !important;
+    min-width: 0 !important;
+    max-width: calc(100vw - 0.75rem) !important;
+    padding: 0.65rem !important;
+  }
+  #countSessionModal .count-workspace__grid {
+    grid-template-columns: 1fr !important;
+  }
+  #countSessionModal .count-workspace__actions,
+  #countSessionModal .count-search-actions,
+  #countSessionModal .count-auto-actions {
+    grid-template-columns: 1fr 1fr !important;
+  }
+  #countSessionModal .count-item-card__meta {
+    grid-template-columns: 1fr !important;
+  }
+  #countSessionModal .count-stable-scroll {
+    overflow-x: auto !important;
+  }
+}

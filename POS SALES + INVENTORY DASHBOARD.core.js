@@ -487,6 +487,9 @@ const els = {
   countSearchInput: document.querySelector("#countSearchInput"),
   countSearchButton: document.querySelector("#countSearchButton"),
   countClearSearchButton: document.querySelector("#countClearSearchButton"),
+  countAutoPlusButton: document.querySelector("#countAutoPlusButton"),
+  countUndoAutoButton: document.querySelector("#countUndoAutoButton"),
+  countScopeSearchInput: document.querySelector("#countScopeSearchInput"),
   countSelectedItem: document.querySelector("#countSelectedItem"),
   countQuantityDisplay: document.querySelector("#countQuantityDisplay"),
   countKeyButtons: document.querySelectorAll("[data-count-key]"),
@@ -1017,6 +1020,8 @@ els.priceCheckSearchInput?.addEventListener("input", () => {
 els.priceCheckSearchInput?.addEventListener("focus", () => renderPriceCheckDropdown(els.priceCheckSearchInput?.value || ""));
 els.priceCheckSearchInput?.addEventListener("blur", () => setTimeout(hidePriceCheckDropdown, 120));
 els.countKeyButtons?.forEach((button) => button.addEventListener("click", () => handleCountKey(button.dataset.countKey)));
+els.countAutoPlusButton?.addEventListener("click", toggleCountAutoPlusMode);
+els.countUndoAutoButton?.addEventListener("click", undoLastCountAutoPlus);
 els.countDuplicateModal?.addEventListener("click", (event) => {
   if (event.target === els.countDuplicateModal) closeDuplicateCountModal();
 });
@@ -4074,7 +4079,7 @@ function allCountCandidateRows() {
 
 function filteredCountCandidateRows(session = state.activeCountSession) {
   if (!session) return allCountCandidateRows();
-  const cacheKey = [session.id, session.vendor, session.department, session.category, session.status, state._dataCacheStamp].join("|");
+  const cacheKey = [session.id, session.vendor, session.department, session.category, session.status, session.searchFilter, state._dataCacheStamp].join("|");
   if (state._filteredCountCache && state._filteredCountCacheKey === cacheKey) {
     return state._filteredCountCache;
   }
@@ -4090,6 +4095,14 @@ function filteredCountCandidateRows(session = state.activeCountSession) {
     const catFilter = (session.category || "").trim().toUpperCase();
     if (catFilter && (item.category || "").trim().toUpperCase() !== catFilter) return false;
     if (statusFilter && (item.state || "").trim().toLowerCase() !== statusFilter) return false;
+    const scopeNeedle = cleanCell(session.searchFilter || "").toLowerCase();
+    if (scopeNeedle) {
+      const scopeCodeNeedle = codeKey(scopeNeedle);
+      const scopeHaystack = [item.product, item.plu, item.itemNumber, item.code]
+        .map((value) => String(value || "").toLowerCase()).join("|");
+      const scopeCodeHaystack = [item.plu, item.itemNumber, item.code].map((value) => codeKey(value)).join("|");
+      if (!scopeHaystack.includes(scopeNeedle) && !(scopeCodeNeedle && scopeCodeHaystack.includes(scopeCodeNeedle))) return false;
+    }
     return true;
   });
   state._filteredCountCache = rows;
@@ -4101,6 +4114,7 @@ function countSessionLabel(session) {
   if (!session) return "Physical count";
   const vendorLabel = session.vendor || session.department || "All vendors";
   const parts = [session.date || "No date", vendorLabel, session.category || "All categories"];
+  if (session.searchFilter) parts.push(`Filter: ${session.searchFilter}`);
   return parts.join(" Â· ");
 }
 
@@ -4136,6 +4150,7 @@ function openCountSetupModal() {
   els.countCategoryInput.value = "";
   const statusEl = document.querySelector("#countStatusInput");
   if (statusEl) statusEl.value = "";
+  if (els.countScopeSearchInput) els.countScopeSearchInput.value = "";
   if (els.countAllowOutOfScopeInput) els.countAllowOutOfScopeInput.checked = false;
   els.countSetupModal.hidden = false;
   els.countDateInput.focus();
@@ -4178,6 +4193,7 @@ function startCountSessionFromModal() {
     vendor: els.countVendorInput.value || "",
     category: els.countCategoryInput.value || "",
     status: statusEl ? (statusEl.value || "") : "",
+    searchFilter: cleanCell(els.countScopeSearchInput?.value || ""),
     startedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     deviceId,
@@ -4199,6 +4215,8 @@ function startCountSessionFromModal() {
   state.countStage = "search";
   state.pendingDuplicateCount = null;
   state.pendingDuplicateMode = null;
+  state.countAutoPlusMode = false;
+  state.countAutoUndoStack = [];
   state.countSessions = [liveSession, ...state.countSessions.filter((s) => s.id !== session.id)];
   persistActiveCountSession();
   persistCountSessions({ scheduleSync: false });
@@ -4351,6 +4369,49 @@ function handleCountKey(key) {
 
 function renderCountQuantity() {
   if (els.countQuantityDisplay) els.countQuantityDisplay.textContent = state.countQtyBuffer || "0";
+  renderCountAutoControls();
+}
+
+function renderCountAutoControls() {
+  const on = !!state.countAutoPlusMode;
+  if (els.countAutoPlusButton) {
+    els.countAutoPlusButton.textContent = on ? "+1 Auto On" : "+1 Auto Off";
+    els.countAutoPlusButton.classList.toggle("is-on", on);
+    els.countAutoPlusButton.setAttribute("aria-pressed", on ? "true" : "false");
+  }
+  if (els.countUndoAutoButton) {
+    const stack = state.countAutoUndoStack || [];
+    els.countUndoAutoButton.disabled = !stack.length;
+    els.countUndoAutoButton.textContent = stack.length ? `Undo +1 (${stack.length})` : "Undo +1";
+  }
+}
+
+function toggleCountAutoPlusMode() {
+  state.countAutoPlusMode = !state.countAutoPlusMode;
+  renderCountAutoControls();
+  focusCountSearch();
+}
+
+function undoLastCountAutoPlus() {
+  const session = state.activeCountSession;
+  const stack = state.countAutoUndoStack || [];
+  const last = stack.pop();
+  if (!session || !last) {
+    renderCountAutoControls();
+    return;
+  }
+  const idx = (session.entries || []).findIndex((entry) => entry.entryId === last.entryId);
+  if (idx >= 0) {
+    session.entries.splice(idx, 1);
+    session.updatedAt = new Date().toISOString();
+    persistActiveCountSession();
+    renderCountEntryRows();
+    updateCountSummaryStrip();
+    showToast(`Undid +1 for ${last.code}`, 1800, "warning");
+  }
+  state.countAutoUndoStack = stack;
+  renderCountAutoControls();
+  focusCountSearch();
 }
 
 function countSessionAllowsOutOfScope(session = state.activeCountSession) {
@@ -4460,6 +4521,14 @@ function handleCountLookup() {
   if (!inScope && countSessionAllowsOutOfScope()) {
     showToast("Manager override: this item is outside the selected count scope.", 4200, "warning");
   }
+  if (state.countAutoPlusMode) {
+    commitCountEntry(match, 1, "add", { autoPlus: true });
+    hideCountDropdown();
+    if (els.countSearchInput) els.countSearchInput.value = "";
+    state._replaceCountInputOnNextKey = false;
+    focusCountSearch();
+    return;
+  }
   state.selectedCountItemCode = match.code;
   state.countStage = "qty";
   state.countQtyBuffer = "0";
@@ -4506,7 +4575,7 @@ function closeDuplicateCountModal() {
   focusCountSearch();
 }
 
-function commitCountEntry(item, qty, mode) {
+function commitCountEntry(item, qty, mode, options = {}) {
   const session = {
     ...state.activeCountSession,
     updatedAt: new Date().toISOString(),
@@ -4516,8 +4585,9 @@ function commitCountEntry(item, qty, mode) {
   const countedQty = mode === "add"
     ? Math.max(0, Number(existing?.countedQty || 0) + qty)
     : qty;
+  const entryId = makeCountIdentifier("entry");
   session.entries.push({
-    entryId: makeCountIdentifier("entry"),
+    entryId,
     sessionId: session.id,
     deviceId: countDeviceId(),
     deviceLabel: countDeviceLabel(),
@@ -4538,6 +4608,9 @@ function commitCountEntry(item, qty, mode) {
     timestamp: new Date().toISOString(),
     syncStatus: "pending",
   });
+  if (options.autoPlus) {
+    state.countAutoUndoStack = [...(state.countAutoUndoStack || []), { entryId, code: item.code }].slice(-50);
+  }
   state.activeCountSession = session;
   state._countSessionOpen = true;
   state.countQtyBuffer = "0";
@@ -4556,11 +4629,12 @@ function commitCountEntry(item, qty, mode) {
   focusCountSearch();
   if (mode === "add") {
     requestAnimationFrame(() => showToast(
-      `Added ${number.format(qty)} to ${item.code}`,
+      `${options.autoPlus ? "+1 Auto" : "Added " + number.format(qty)} to ${item.code}`,
       1600,
       "success",
     ));
   }
+  renderCountAutoControls();
 }
 
 function resolveDuplicateCount(mode) {
@@ -5161,10 +5235,12 @@ function updateCountSummaryStrip() {
   const date = state.activeCountSession.date || "-";
   const vendor = state.activeCountSession.vendor || "All vendors";
   const category = state.activeCountSession.category || "All categories";
+  const refine = state.activeCountSession.searchFilter || "No extra filter";
   els.countSummaryStrip.innerHTML = `
     <span><b>${escapeHtml(date)}</b></span>
     <span><b>${escapeHtml(vendor)}</b></span>
     <span><b>${escapeHtml(category)}</b></span>
+    <span><b>Filter</b> ${escapeHtml(refine)}</span>
     <span><b>${number.format(entries.length)}</b> items counted</span>`;
 }
 

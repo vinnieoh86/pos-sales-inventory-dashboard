@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>POS Sales + Inventory Dashboard</title>
     <link rel="stylesheet" href="POS SALES + INVENTORY DASHBOARD.css?v=20260526-scanready1" />
-    <link rel="stylesheet" href="rescue-usable.css?v=20260602-phone-scan-ui1" />
+    <link rel="stylesheet" href="rescue-usable.css?v=20260526-layoutclarity1" />
   </head>
   <body>
     <div class="metrics-hover-zone" id="metricsHoverZone">
@@ -681,6 +681,9 @@
           <label>Vendor <select id="countVendorInput"></select></label>
           <label>Category <select id="countCategoryInput"></select></label>
           <label>Item Status <select id="countStatusInput"></select></label>
+          <label class="count-refine-label">Refine by Name / PLU / Item #
+            <input id="countScopeSearchInput" type="search" placeholder="Optional: Adore, SH006, 113866..." autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" />
+          </label>
           <label data-admin-only><input id="countAllowOutOfScopeInput" type="checkbox" /> Allow manager out-of-scope entries</label>
         </div>
         <div class="count-modal__actions">
@@ -720,6 +723,10 @@
               <div class="count-search-actions">
                 <button id="countSearchButton" type="button">Find item</button>
                 <button id="countClearSearchButton" type="button" class="secondary-button">Delete</button>
+              </div>
+              <div class="count-auto-actions">
+                <button id="countAutoPlusButton" type="button" class="secondary-button count-auto-toggle" aria-pressed="false">+1 Auto Off</button>
+                <button id="countUndoAutoButton" type="button" class="secondary-button" disabled>Undo +1</button>
               </div>
               <div id="countSelectedItem" class="count-selected-item">
                 <p class="muted">Scan or search an item to begin counting.</p>
