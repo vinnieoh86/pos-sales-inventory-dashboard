@@ -2534,13 +2534,8 @@ function findExcelFor(item = {}) {
 }
 
 function normalizeExcelRow(row) {
-  const field = (...names) => {
-    for (const name of names) {
-      if (Object.prototype.hasOwnProperty.call(row, name) && cleanCell(row[name]) !== "") return row[name];
-    }
-    return "";
-  };
-  const code = normalizeCode(row.code ?? row.CODE);
+  const field = (...names) => rowField(row, ...names);
+  const code = normalizeCode(field("CODE", "Code", "code", "UPC", "Upc", "upc", "BARCODE", "Barcode", "barcode", "SKU", "Sku", "sku", "PID", "Pid", "pid", "Item Code", "ITEM CODE", "item_code"));
   return {
     code,
     product: cleanCell(field("item_name", "ITEM NAME", "Item Name", "NAME", "Product", "PRODUCT")),
@@ -2648,15 +2643,10 @@ function normalizeSalesRow(row, date) {
 }
 
 function normalizeInventoryRow(row, date) {
-  const field = (...names) => {
-    for (const name of names) {
-      if (Object.prototype.hasOwnProperty.call(row, name) && cleanCell(row[name]) !== "") return row[name];
-    }
-    return "";
-  };
+  const field = (...names) => rowField(row, ...names);
   return {
     date: date.iso,
-    code: normalizeCode(field("CODE", "Code", "code", "UPC", "Upc", "upc", "BARCODE", "Barcode", "barcode", "SKU", "Sku", "sku", "PID", "Pid", "pid")),
+    code: normalizeCode(field("CODE", "Code", "code", "UPC", "Upc", "upc", "BARCODE", "Barcode", "barcode", "SKU", "Sku", "sku", "PID", "Pid", "pid", "Item Code", "ITEM CODE", "item_code", "Product Code", "PRODUCT CODE")),
     category: cleanCell(field("CATEGORY", "category")),
     product: cleanCell(field("NAME", "name", "ITEM NAME", "Item Name", "item_name", "product", "Product", "PRODUCT")),
     plu: cleanCell(field("PLU", "plu", "ITEM", "Item", "item", "STYLE", "Style", "style")),
@@ -2924,7 +2914,7 @@ function buildPriceCheckEntry(inventory = {}, excel = {}) {
     category: inventory.category || excel.category || "",
     vendor: inventory.vendor || excel.vendor || "",
     plu: inventory.plu || excel.plu || "",
-    itemNumber: inventory.itemNumber || excel.itemNumber || "",
+    itemNumber: inventory.itemNumber || excel.itemNumber || inventory.vendorCode || excel.vendorCode || "",
     color: inventory.color || excel.color || "",
     state: stateLabel,
     itemState: stateLabel.toLowerCase(),
@@ -2951,40 +2941,63 @@ function buildPriceCheckEntry(inventory = {}, excel = {}) {
 }
 
 function ensurePriceCheckExactIndex() {
-  const stamp = `${state._dataCacheStamp}:${state._multiBarcodeIndexStamp || 0}`;
+  const stamp = `${state._dataCacheStamp}:${state._multiBarcodeIndexStamp || 0}:${(state.multiBarcodeMasters || []).length}`;
   if (state._priceCheckExactIndex && state._priceCheckExactIndexStamp === stamp) return;
   const startedAt = performanceNow();
   const exact = new Map();
-  const indexEntry = (entry) => {
-    [entry.code, entry.plu, entry.itemNumber].forEach((value) => {
-      codeLookupVariants(value).forEach((key) => {
-        if (key && !exact.has(key)) exact.set(key, entry);
-      });
-      const canonical = codeKey(value);
-      if (canonical && !exact.has(canonical)) exact.set(canonical, entry);
+  const indexValue = (value, entry) => {
+    codeLookupVariants(value).forEach((key) => {
+      if (key && !exact.has(key)) exact.set(key, entry);
     });
+    const canonical = codeKey(value);
+    if (canonical && !exact.has(canonical)) exact.set(canonical, entry);
+  };
+  const indexEntry = (entry) => {
+    [entry.code, entry.plu, entry.itemNumber, entry.vendorCode, entry.product].forEach((value) => indexValue(value, entry));
+    multiAliasesForCode(entry.code).forEach((alias) => indexValue(alias, entry));
   };
   [...state.latestInventory.values()].forEach((inventory) => {
     const entry = buildPriceCheckEntry(inventory, findExcelFor(inventory));
-    if (entry.code || entry.plu || entry.itemNumber) indexEntry(entry);
+    entry.vendorCode = inventory.vendorCode || "";
+    if (entry.code || entry.plu || entry.itemNumber || entry.vendorCode) indexEntry(entry);
   });
   [...state.excelItems.values()].forEach((excel) => {
-    const probeKey = codeKey(excel.code || excel.plu || excel.itemNumber || "");
+    const probeKey = codeKey(excel.code || excel.plu || excel.itemNumber || excel.vendorCode || "");
     if (probeKey && exact.has(probeKey)) return;
     const entry = buildPriceCheckEntry({}, excel);
-    if (entry.code || entry.plu || entry.itemNumber) indexEntry(entry);
+    entry.vendorCode = excel.vendorCode || "";
+    if (entry.code || entry.plu || entry.itemNumber || entry.vendorCode) indexEntry(entry);
+  });
+  (state.multiBarcodeMasters || []).forEach((row) => {
+    const masterKey = codeKey(row.masterCode);
+    let entry = masterKey ? exact.get(masterKey) : null;
+    if (!entry) {
+      entry = buildPriceCheckEntry({
+        code: row.masterCode,
+        product: row.product || row.masterCode,
+        vendor: row.vendor || "",
+        plu: row.plu || "",
+        itemNumber: row.itemNumber || "",
+        stock: 0,
+        price: 0,
+      }, {});
+    }
+    indexValue(row.masterCode, entry);
+    (row.aliases || []).forEach((alias) => indexValue(alias, entry));
   });
   Object.entries(state.multiBarcodeMap || {}).forEach(([alias, masterCode]) => {
-    const aliasKey = codeKey(alias);
     const masterKey = codeKey(masterCode);
     const item = masterKey ? exact.get(masterKey) : null;
-    if (aliasKey && item && !exact.has(aliasKey)) exact.set(aliasKey, item);
+    if (item) indexValue(alias, item);
   });
   state._priceCheckExactIndex = exact;
   state._priceCheckExactIndexStamp = stamp;
   console.info("[AppPerf] barcode index ready", {
     ms: Number((performanceNow() - startedAt).toFixed(2)),
     entries: exact.size,
+    inventory: state.latestInventory.size,
+    excel: state.excelItems.size,
+    multiBarcodeMasters: (state.multiBarcodeMasters || []).length,
   });
 }
 
@@ -3014,6 +3027,19 @@ function priceCheckRows() {
     const key = codeKey(excel.code || excel.plu || excel.itemNumber || excel.product);
     if (!key || rowMap.has(key)) return;
     rowMap.set(key, buildPriceCheckEntry({}, excel));
+  });
+  (state.multiBarcodeMasters || []).forEach((row) => {
+    const key = codeKey(row.masterCode);
+    if (!key || rowMap.has(key)) return;
+    rowMap.set(key, buildPriceCheckEntry({
+      code: row.masterCode,
+      product: row.product || row.masterCode,
+      vendor: row.vendor || "",
+      plu: row.plu || "",
+      itemNumber: row.itemNumber || "",
+      stock: 0,
+      price: 0,
+    }, {}));
   });
   const rows = [...rowMap.values()];
   state._priceCheckRowsCache = rows;
@@ -9180,6 +9206,18 @@ function cleanHeader(value) {
 
 function cleanCell(value) {
   return String(value ?? "").replace(/^="/, "").replace(/"$/, "").trim();
+}
+
+function rowField(row, ...names) {
+  const directNames = names.flat().filter(Boolean);
+  for (const name of directNames) {
+    if (Object.prototype.hasOwnProperty.call(row, name) && cleanCell(row[name]) !== "") return row[name];
+  }
+  const wanted = new Set(directNames.map((name) => cleanHeader(name)));
+  for (const [key, value] of Object.entries(row || {})) {
+    if (wanted.has(cleanHeader(key)) && cleanCell(value) !== "") return value;
+  }
+  return "";
 }
 
 function stableVendorRuleId(vendor = "") {
