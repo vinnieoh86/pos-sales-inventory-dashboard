@@ -52,8 +52,6 @@ const state = {
   selectedCountItemCode: "",
   countStage: "search",
   pendingDuplicateCount: null,
-  countAutoMode: false,
-  lastAutoCountEntry: null,
   countReportMode: "input",
   // Stock adjust modal state
   stockAdjustItem: null,
@@ -235,9 +233,6 @@ const els = {
   countVendorInput: document.querySelector("#countVendorInput"),
   countCategoryInput: document.querySelector("#countCategoryInput"),
   countStartButton: document.querySelector("#countStartButton"),
-  countNameFilterInput: document.querySelector("#countNameFilterInput"),
-  countAutoModeButton: document.querySelector("#countAutoModeButton"),
-  countUndoLastButton: document.querySelector("#countUndoLastButton"),
   countCancelButton: document.querySelector("#countCancelButton"),
   countDuplicateModal: document.querySelector("#countDuplicateModal"),
   countDuplicateMessage: document.querySelector("#countDuplicateMessage"),
@@ -515,8 +510,6 @@ els.countDeleteSessionButton?.addEventListener("click", deleteCountSession);
 els.countInputReportButton?.addEventListener("click", () => openCountReport(state.activeCountSession?.id, "input"));
 els.countComparisonReportButton?.addEventListener("click", () => openCountReport(state.activeCountSession?.id, "comparison"));
 els.countStartButton?.addEventListener("click", startCountSessionFromModal);
-els.countAutoModeButton?.addEventListener("click", toggleCountAutoMode);
-els.countUndoLastButton?.addEventListener("click", undoLastCountEntry);
 els.countCancelButton?.addEventListener("click", closeCountSetupModal);
 els.countSetupModal?.addEventListener("click", (event) => {
   if (event.target === els.countSetupModal) closeCountSetupModal();
@@ -1952,11 +1945,6 @@ function filteredCountCandidateRows(session = state.activeCountSession) {
     if (catFilter && (item.category || "").trim().toUpperCase() !== catFilter) return false;
     const statusFilter = (session.status || "").trim().toLowerCase();
     if (statusFilter && (item.state || "").trim().toLowerCase() !== statusFilter) return false;
-    const nameFilter = cleanCell(session.nameFilter || "").toLowerCase();
-    if (nameFilter) {
-      const hay = [item.product, item.plu, item.itemNumber, item.code, item.vendor, item.category].map((v) => String(v || "").toLowerCase()).join(" ");
-      if (!hay.includes(nameFilter)) return false;
-    }
     return true;
   });
   state._filteredCountCache = rows;
@@ -1967,8 +1955,7 @@ function filteredCountCandidateRows(session = state.activeCountSession) {
 function countSessionLabel(session) {
   if (!session) return "Physical count";
   const vendorLabel = session.vendor || session.department || "All vendors";
-  const nameLabel = session.nameFilter || "All items";
-  const parts = [session.date || "No date", vendorLabel, session.category || "All categories", nameLabel];
+  const parts = [session.date || "No date", vendorLabel, session.category || "All categories"];
   return parts.join(" · ");
 }
 
@@ -1980,7 +1967,6 @@ function openCountSetupModal() {
   els.countCategoryInput.value = "";
   const statusEl = document.querySelector("#countStatusInput");
   if (statusEl) statusEl.value = "";
-  if (els.countNameFilterInput) els.countNameFilterInput.value = "";
   els.countSetupModal.hidden = false;
   els.countDateInput.focus();
 }
@@ -2014,8 +2000,6 @@ function startCountSessionFromModal() {
     vendor: els.countVendorInput.value || "",
     category: els.countCategoryInput.value || "",
     status: statusEl ? (statusEl.value || "") : "",
-    nameFilter: els.countNameFilterInput ? cleanCell(els.countNameFilterInput.value || "") : "",
-    autoMode: false,
     startedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     entries: [],
@@ -2025,8 +2009,6 @@ function startCountSessionFromModal() {
   state.selectedCountItemCode = "";
   state.countStage = "search";
   state.pendingDuplicateCount = null;
-  state.countAutoMode = false;
-  state.lastAutoCountEntry = null;
   persistActiveCountSession();
   closeCountSetupModal();
   buildCountSearchIndex();
@@ -2121,55 +2103,6 @@ function handleCountKey(key) {
 function renderCountQuantity() {
   if (els.countQuantityDisplay) els.countQuantityDisplay.textContent = state.countQtyBuffer || "0";
 }
-function renderCountModeButtons() {
-  const enabled = !!(state.activeCountSession?.autoMode || state.countAutoMode);
-  if (els.countAutoModeButton) {
-    els.countAutoModeButton.textContent = enabled ? "Auto +1 ON" : "Auto +1 OFF";
-    els.countAutoModeButton.classList.toggle("is-active", enabled);
-    els.countAutoModeButton.setAttribute("aria-pressed", enabled ? "true" : "false");
-  }
-  if (els.countUndoLastButton) {
-    els.countUndoLastButton.disabled = !(state.activeCountSession?.entries || []).length;
-  }
-}
-
-function toggleCountAutoMode() {
-  if (!state.activeCountSession) { showToast("Start a physical count first.", 2500, "warning"); return; }
-  const next = !(state.activeCountSession.autoMode || state.countAutoMode);
-  state.activeCountSession = { ...state.activeCountSession, autoMode: next, updatedAt: new Date().toISOString() };
-  state.countAutoMode = next;
-  state.countStage = "search";
-  state.countQtyBuffer = "0";
-  persistActiveCountSession();
-  renderCountModeButtons();
-  renderSelectedCountItem();
-  focusCountSearch();
-  showToast(next ? "Auto +1 mode ON" : "Auto +1 mode OFF", 1800, next ? "success" : "warning");
-}
-
-function undoLastCountEntry() {
-  const session = state.activeCountSession;
-  if (!session || !(session.entries || []).length) { showToast("No count entry to undo.", 2200, "warning"); return; }
-  const entries = [...session.entries];
-  const removed = entries.pop();
-  const previous = entries.filter((entry) => codeKey(entry.code) === codeKey(removed.code)).at(-1);
-  state.activeCountSession = { ...session, entries, updatedAt: new Date().toISOString(), localSyncPending: true };
-  const item = findAnyCountMatch(removed.code) || { code: removed.code, product: removed.product, stock: removed.originalQty, unitCost: removed.unitCost };
-  const restoreQty = previous ? Number(previous.countedQty || 0) : Number(removed.originalQty || 0);
-  try { applyLiveCountStockUpdate(item, restoreQty, previous || removed, state.activeCountSession); } catch (_) {}
-  state.selectedCountItemCode = removed.code;
-  state.countStage = "search";
-  state.countQtyBuffer = "0";
-  persistActiveCountSession();
-  renderCountEntryRows();
-  renderSelectedCountItem();
-  renderCountQuantity();
-  updateCountSummaryStrip?.();
-  renderCountModeButtons();
-  focusCountSearch();
-  showToast(`Undid last count: ${removed.code}`, 2000, "warning");
-}
-
 
 function findCountMatch(query) {
   const raw = cleanCell(query).trim();
@@ -2261,17 +2194,6 @@ function handleCountLookup() {
     showToast("Item is outside the selected vendor/category scope.", 3400, "warning");
     return;
   }
-
-  if (state.activeCountSession?.autoMode || state.countAutoMode) {
-    commitCountEntry(match, 1, "add");
-    state.selectedCountItemCode = match.code;
-    state.countStage = "search";
-    state.countQtyBuffer = "0";
-    renderSelectedCountItem();
-    renderCountQuantity();
-    showToast(`Auto +1: ${match.code}`, 1200, "success");
-    return;
-  }
   state.selectedCountItemCode = match.code;
   state.countStage = "qty";
   state.countQtyBuffer = "0";
@@ -2321,7 +2243,6 @@ function commitCountEntry(item, qty, mode) {
     product: item.product,
     vendor: item.vendor || "",
     category: item.category || "",
-    state: item.state || "Active",
     originalQty: item.stock || 0,
     inputQty: qty,
     countedQty,
@@ -2521,7 +2442,6 @@ function openCountReport(sessionId = state.activeCountSession?.id, mode = state.
       <span><b>Date</b> ${escapeHtml(session.date || "-")}</span>
       <span><b>Vendor</b> ${escapeHtml(vendorLabel)}</span>
       <span><b>Category</b> ${escapeHtml(session.category || "All")}</span>
-      <span><b>Filter</b> ${escapeHtml(session.nameFilter || "All")}</span>
       <span><b>Entries</b> ${number.format((session.entries || []).length)}</span>
       <span><b>Items in scope</b> ${number.format(totalCandidates)}</span>
       <span><b>Started</b> ${escapeHtml(new Date(session.startedAt).toLocaleString())}</span>`;
@@ -2598,7 +2518,6 @@ function exportCountReportPdf() {
     <span><b>Date</b> ${escapeHtml(session.date || "-")}</span>
     <span><b>Vendor</b> ${escapeHtml(vendorLabel)}</span>
     <span><b>Category</b> ${escapeHtml(session.category || "All")}</span>
-      <span><b>Filter</b> ${escapeHtml(session.nameFilter || "All")}</span>
     <span><b>Entries</b> ${number.format(entries.length)}</span>
     <span><b>Mode</b> ${mode === "comparison" ? "Comparison" : "Input Log"}</span>
     <span><b>Generated</b> ${dateStr}</span>
@@ -6183,7 +6102,6 @@ function openFinalCountReport(sessionId) {
       <span><b>Date</b> ${escapeHtml(session.date || "-")}</span>
       <span><b>Vendor</b> ${escapeHtml(session.vendor || "All")}</span>
       <span><b>Category</b> ${escapeHtml(session.category || "All")}</span>
-      <span><b>Filter</b> ${escapeHtml(session.nameFilter || "All")}</span>
       <span><b>Status filter</b> ${escapeHtml(session.status || "All")}</span>
       <span><b>Submitted</b> ${escapeHtml(new Date(session.submittedAt).toLocaleString())}</span>
       <span><b>Entries</b> ${number.format((session.entries || []).length)}</span>`;
@@ -6271,7 +6189,6 @@ function exportFinalCountReportPdf() {
     <span><b>Count date</b> ${escapeHtml(session.date || "-")}</span>
     <span><b>Vendor</b> ${escapeHtml(session.vendor || "All")}</span>
     <span><b>Category</b> ${escapeHtml(session.category || "All")}</span>
-      <span><b>Filter</b> ${escapeHtml(session.nameFilter || "All")}</span>
     <span><b>Submitted</b> ${escapeHtml(new Date(session.submittedAt).toLocaleString())}</span>
     <span><b>Generated</b> ${dateStr}</span>
   </div>

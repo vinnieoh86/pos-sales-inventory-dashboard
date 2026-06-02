@@ -4,8 +4,8 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>POS Sales + Inventory Dashboard</title>
-    <link rel="stylesheet" href="POS SALES + INVENTORY DASHBOARD.css?v=20260526-scanready1" />
-    <link rel="stylesheet" href="rescue-usable.css?v=20260526-layoutclarity1" />
+    <link rel="stylesheet" href="POS SALES + INVENTORY DASHBOARD.css?v=20260602-revert-safe-scan-v5" />
+    <link rel="stylesheet" href="rescue-usable.css?v=20260602-revert-safe-scan-v5" />
   </head>
   <body>
     <div class="metrics-hover-zone" id="metricsHoverZone">
@@ -38,7 +38,6 @@
       <button class="tab-button" type="button" data-tab="logs" hidden aria-hidden="true">Logs</button>
       <button class="tab-button tab-button--vendors" type="button" data-tab="vendors">Vendors</button>
       <button class="tab-button tab-button--settings" type="button" data-tab="settings">Settings</button>
-        <button class="sync-now-button global-sync-now" id="globalSyncNow" type="button">SYNC NOW</button>
         <button class="tab-button tab-button--logout" id="logoutButton" type="button">Log Out</button>
       </nav>
       <section class="drop-inbox compact-uploader" id="dropInbox">
@@ -285,7 +284,6 @@
                 <div id="columnPickerPanel"></div>
               </details>
               <button id="downloadInventory" type="button">Download inventory CSV</button>
-              <button id="inventorySyncNow" type="button" class="secondary-button sync-now-button">SYNC NOW</button>
               <button id="createPoShortcut" type="button">Create PO / Order</button>
             </div>
           </div>
@@ -683,7 +681,6 @@
           <label>Vendor <select id="countVendorInput"></select></label>
           <label>Category <select id="countCategoryInput"></select></label>
           <label>Item Status <select id="countStatusInput"></select></label>
-          <label>Name / PLU / Code <input id="countNameFilterInput" type="search" placeholder="Optional: Adore, PLU, code..." autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" /></label>
           <label data-admin-only><input id="countAllowOutOfScopeInput" type="checkbox" /> Allow manager out-of-scope entries</label>
         </div>
         <div class="count-modal__actions">
@@ -723,10 +720,6 @@
               <div class="count-search-actions">
                 <button id="countSearchButton" type="button">Find item</button>
                 <button id="countClearSearchButton" type="button" class="secondary-button">Delete</button>
-              </div>
-              <div class="count-mode-actions">
-                <button id="countAutoModeButton" type="button" class="secondary-button count-auto-toggle" aria-pressed="false">Auto +1 OFF</button>
-                <button id="countUndoLastButton" type="button" class="secondary-button">Undo Last</button>
               </div>
               <div id="countSelectedItem" class="count-selected-item">
                 <p class="muted">Scan or search an item to begin counting.</p>
@@ -945,12 +938,12 @@
         </div>
         <div class="table-wrap count-stable-scroll">
           <table id="countSessionTable" class="count-report-table count-stable-table count-session-summary-table">
-            <colgroup><col class="history-col-date" /><col class="history-col-vendor" /><col class="history-col-category" /><col class="history-col-status" /><col class="history-col-started" /><col class="history-col-entries" /><col class="history-col-action" /></colgroup>
+            <colgroup><col class="history-col-date" /><col class="history-col-vendor" /><col class="history-col-category" /><col class="history-col-status" /><col class="history-col-started" /><col class="history-col-entries" /><col class="history-col-update" /><col class="history-col-sync" /><col class="history-col-action" /><col class="history-col-action" /><col class="history-col-action" /><col class="history-col-action" /></colgroup>
             <thead>
-              <tr><th>Date</th><th>Vendor</th><th>Category</th><th>Sync / Status</th><th>Started</th><th>Entries</th><th>Actions</th></tr>
+              <tr><th>Date</th><th>Vendor</th><th>Category</th><th>Status filter</th><th>Started</th><th>Entries</th><th>Last update</th><th>Sync</th><th>Report</th><th>Final Report</th><th>Restore</th><th>Delete</th></tr>
             </thead>
             <tbody id="countSessionBody">
-              <tr><td colspan="7" class="empty-cell">No sessions saved yet.</td></tr>
+              <tr><td colspan="12" class="empty-cell">No sessions saved yet.</td></tr>
             </tbody>
           </table>
         </div>
@@ -1195,6 +1188,6 @@
       </div>
 
         <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-    <script src="POS SALES + INVENTORY DASHBOARD.js?v=20260602-master-snapshot-v4"></script>
+    <script src="POS SALES + INVENTORY DASHBOARD.js?v=20260602-revert-safe-scan-v5"></script>
   </body>
 </html>

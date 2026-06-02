@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "20260602-master-snapshot-v4";
+  const VERSION = "20260602-revert-safe-scan-v5";
 
   function makeSearchEditable() {
     const search = document.querySelector("#searchInput");

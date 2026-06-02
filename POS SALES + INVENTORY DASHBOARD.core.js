@@ -1,4 +1,4 @@
-const state = {
+﻿const state = {
   rawSales: [],
   inventories: new Map(),
   latestInventory: new Map(),
@@ -80,7 +80,6 @@ const state = {
   countQtyBuffer: "0",
   selectedCountItemCode: "",
   countStage: "search",
-  countAutoMode: false,
   pendingDuplicateCount: null,
   pendingDuplicateMode: null,
   countReportMode: "input",
@@ -499,8 +498,6 @@ const els = {
   countStartButton: document.querySelector("#countStartButton"),
   countCancelButton: document.querySelector("#countCancelButton"),
   countDuplicateModal: document.querySelector("#countDuplicateModal"),
-  countAutoModeButton: document.querySelector("#countAutoModeButton"),
-  countUndoLastButton: document.querySelector("#countUndoLastButton"),
   countDuplicateMessage: document.querySelector("#countDuplicateMessage"),
   countDuplicateAddButton: document.querySelector("#countDuplicateAddButton"),
   countDuplicateResetButton: document.querySelector("#countDuplicateResetButton"),
@@ -1020,8 +1017,6 @@ els.priceCheckSearchInput?.addEventListener("input", () => {
 els.priceCheckSearchInput?.addEventListener("focus", () => renderPriceCheckDropdown(els.priceCheckSearchInput?.value || ""));
 els.priceCheckSearchInput?.addEventListener("blur", () => setTimeout(hidePriceCheckDropdown, 120));
 els.countKeyButtons?.forEach((button) => button.addEventListener("click", () => handleCountKey(button.dataset.countKey)));
-els.countAutoModeButton?.addEventListener("click", toggleCountAutoMode);
-els.countUndoLastButton?.addEventListener("click", undoLastCountEntry);
 els.countDuplicateModal?.addEventListener("click", (event) => {
   if (event.target === els.countDuplicateModal) closeDuplicateCountModal();
 });
@@ -2539,7 +2534,7 @@ function normalizeExcelRow(row) {
     }
     return "";
   };
-  const code = normalizeCode(row.code ?? row.CODE);
+  const code = masterBarcodeFromRow(row, row.code ?? row.CODE);
   return {
     code,
     product: cleanCell(field("item_name", "ITEM NAME", "Item Name", "NAME", "Product", "PRODUCT")),
@@ -2567,7 +2562,6 @@ function normalizeExcelRow(row) {
     orderPendingId: cleanCell(field("order_pending_id", "ORDER PENDING ID", "Order Pending Id")),
     orderPendingStale: cleanCell(field("order_pending_stale", "ORDER PENDING STALE", "Order Pending Stale")),
     poPendingClearedTimes: toNumber(field("PO_pending_cleared_times", "PO PENDING CLEARED TIMES", "PO Pending Cleared Times")),
-    upc: cleanCell(field("UPC", "upc", "UPC CODE", "UPC Code", "BARCODE", "Barcode", "barcode", "SCAN CODE", "Scan Code", "scan_code", "SKU", "sku")),
     overrideValues: cleanCell(field("override_values", "OVERRIDE VALUES", "Override Values")),
   };
 }
@@ -2648,25 +2642,21 @@ function normalizeSalesRow(row, date) {
 }
 
 function normalizeInventoryRow(row, date) {
-  const field = (...names) => {
-    for (const name of names) {
-      if (Object.prototype.hasOwnProperty.call(row, name) && cleanCell(row[name]) !== "") return row[name];
-    }
-    return "";
-  };
+  const field = (...names) => valueFromAnyHeader(row, names);
+  const primaryCode = masterBarcodeFromRow(row, field("CODE", "code"));
   return {
     date: date.iso,
-    code: normalizeCode(field("CODE", "code", "UPC", "upc", "BARCODE", "Barcode", "barcode", "SCAN CODE", "Scan Code", "scan_code", "SKU", "sku", "PID", "pid")),
+    code: primaryCode,
     category: cleanCell(field("CATEGORY", "category")),
     product: cleanCell(field("NAME", "name", "ITEM NAME", "Item Name", "item_name", "product", "Product", "PRODUCT")),
     plu: cleanCell(field("PLU", "plu")),
     itemNumber: cleanCell(field("ITEM NUMBER", "item number", "ITEMNUM", "itemnum", "itemNumber", "Item Number")),
-    price: toNumber(field("PRICE", "price", "SALE PRICE", "Sale Price", "sale_price", "RETAIL", "Retail", "retail")),
+    price: toNumber(field("PRICE", "price")),
     cost: toNumber(field("COST", "cost", "unitCost", "Unit Cost", "unit_cost")),
-    stock: toNumber(field("STOCK", "stock", "QOH", "qoh", "ON HAND", "On Hand", "on_hand", "IN STOCK", "In Stock", "in_stock")),
+    stock: toNumber(field("STOCK", "stock")),
     vendor: cleanCell(field("VENDOR", "vendor")),
     vendorCode: cleanCell(field("VENDOR CODE", "vendor code")),
-    upc: cleanCell(field("UPC", "upc", "UPC CODE", "UPC Code", "BARCODE", "Barcode", "barcode", "SCAN CODE", "Scan Code", "scan_code", "SKU", "sku")),
+    upc: normalizeCode(field("UPC", "UPC CODE", "UPC/EAN", "EAN", "BARCODE", "BAR CODE", "SCAN CODE", "SKU", "PID", "ITEM CODE", "PRODUCT CODE")),
     color: cleanCell(field("COLOR", "color")),
     size: cleanCell(field("SIZE", "size")),
     length: cleanCell(field("LENGTH", "length")),
@@ -2921,12 +2911,9 @@ function buildPriceCheckEntry(inventory = {}, excel = {}) {
     vendor: inventory.vendor || excel.vendor || "",
     plu: inventory.plu || excel.plu || "",
     itemNumber: inventory.itemNumber || excel.itemNumber || "",
-    color: inventory.color || excel.color || "",
     vendorCode: inventory.vendorCode || excel.vendorCode || "",
-    upc: inventory.upc || excel.upc || inventory.barcode || excel.barcode || inventory.sku || excel.sku || "",
-    barcode: inventory.barcode || excel.barcode || "",
-    sku: inventory.sku || excel.sku || "",
-    scanAliases: [inventory.upc, excel.upc, inventory.barcode, excel.barcode, inventory.sku, excel.sku, inventory.vendorCode, excel.vendorCode].filter(Boolean),
+    upc: inventory.upc || excel.upc || "",
+    color: inventory.color || excel.color || "",
     state: stateLabel,
     itemState: stateLabel.toLowerCase(),
     addDate: cleanCell(meta.addDate || excel.addDate || inventory.addDate || meta.firstSeenDate || ""),
@@ -2951,122 +2938,67 @@ function buildPriceCheckEntry(inventory = {}, excel = {}) {
   };
 }
 
-function priceCheckEntryQuality(entry = {}) {
-  let score = 0;
-  if (cleanCell(entry.product)) score += 4;
-  if (toNumber(entry.price) > 0) score += 6;
-  if (toNumber(entry.unitCost) > 0 || toNumber(entry.cost) > 0) score += 3;
-  if (cleanCell(entry.vendor) && cleanCell(entry.vendor).toLowerCase() !== "unassigned") score += 3;
-  if (cleanCell(entry.category) && cleanCell(entry.category).toLowerCase() !== "unassigned") score += 2;
-  if (cleanCell(entry.department) && cleanCell(entry.department).toLowerCase() !== "unassigned") score += 1;
-  if (cleanCell(entry.plu)) score += 2;
-  if (cleanCell(entry.itemNumber)) score += 2;
-  if (Number.isFinite(Number(entry.stock))) score += 1;
-  if (cleanCell(entry.snapshotDate)) score += 1;
-  return score;
-}
-
-function mergePriceCheckEntries(primary = {}, secondary = {}) {
-  const merged = { ...secondary, ...primary };
-  ["product", "department", "category", "vendor", "plu", "itemNumber", "color", "vendorCode", "upc", "barcode", "sku", "snapshotDate"].forEach((field) => {
-    if (!cleanCell(merged[field]) && cleanCell(secondary[field])) merged[field] = secondary[field];
-  });
-  ["stock", "unitCost", "price", "caseSize", "inventoryCost"].forEach((field) => {
-    if ((merged[field] == null || Number(merged[field]) === 0) && secondary[field] != null && Number(secondary[field]) !== 0) merged[field] = secondary[field];
-  });
-  merged.scanAliases = [...new Set([...(primary.scanAliases || []), ...(secondary.scanAliases || [])].map(normalizeCode).filter(Boolean))];
-  return merged;
-}
-
-function setBestExactIndexEntry(exact, key, entry) {
-  if (!key || !entry) return;
-  const existing = exact.get(key);
-  if (!existing || priceCheckEntryQuality(entry) > priceCheckEntryQuality(existing)) exact.set(key, entry);
-}
-
-function buildMasterPriceCheckRows() {
-  const byCode = new Map();
-  const absorb = (entry) => {
-    if (!entry) return;
-    const key = codeKey(entry.code || entry.plu || entry.itemNumber || entry.upc || entry.barcode || entry.sku);
-    if (!key) return;
-    const existing = byCode.get(key);
-    byCode.set(key, existing ? mergePriceCheckEntries(priceCheckEntryQuality(entry) >= priceCheckEntryQuality(existing) ? entry : existing, priceCheckEntryQuality(entry) >= priceCheckEntryQuality(existing) ? existing : entry) : entry);
-  };
-  [...state.latestInventory.values()].forEach((inventory) => absorb(buildPriceCheckEntry(inventory, findExcelFor(inventory))));
-  [...state.excelItems.values()].forEach((excel) => absorb(buildPriceCheckEntry(state.latestInventory.get(codeKey(excel.code)) || {}, excel)));
-  return [...byCode.values()];
-}
-
 function ensurePriceCheckExactIndex() {
-  const stamp = `${state._dataCacheStamp}:${state._multiBarcodeIndexStamp || 0}:${state.latestInventory.size}:${state.excelItems.size}`;
+  const stamp = `${state._dataCacheStamp}:${state._multiBarcodeIndexStamp || 0}`;
   if (state._priceCheckExactIndex && state._priceCheckExactIndexStamp === stamp) return;
   const startedAt = performanceNow();
   const exact = new Map();
-  const aliasSources = new Set(["code", "CODE", "plu", "PLU", "itemNumber", "item_number", "ITEM NUMBER", "vendorCode", "vendor_code", "VENDOR CODE", "upc", "UPC", "barcode", "BARCODE", "scanCode", "scan_code", "SCAN CODE", "sku", "SKU", "pid", "PID"]);
-  const indexValueDirect = (value, entry) => {
-    scanKeyVariants(value).forEach((key) => setBestExactIndexEntry(exact, key, entry));
-  };
-  const indexEntry = (entry, ...sources) => {
-    if (!entry) return;
-    [entry.code, entry.plu, entry.itemNumber, entry.vendorCode, entry.upc, entry.barcode, entry.sku].forEach((value) => indexValueDirect(value, entry));
-    (entry.scanAliases || []).forEach((value) => indexValueDirect(value, entry));
-    sources.filter(Boolean).forEach((source) => {
-      Object.entries(source).forEach(([fieldName, value]) => {
-        if (!aliasSources.has(fieldName)) return;
-        indexValueDirect(value, entry);
-      });
+  const indexEntry = (entry) => {
+    [entry.code, entry.upc, entry.plu, entry.itemNumber, entry.vendorCode].forEach((value) => {
+      const key = codeKey(value);
+      if (key && !exact.has(key)) exact.set(key, entry);
     });
   };
-  const masterRows = buildMasterPriceCheckRows();
-  masterRows.forEach((entry) => indexEntry(entry, entry));
-  // Multi-barcode aliases are only allowed to point to a real master inventory/product row.
-  // This prevents the built-in alternate-barcode workbook from returning name-only, $0.00 records.
+  [...state.latestInventory.values()].forEach((inventory) => {
+    const entry = buildPriceCheckEntry(inventory, findExcelFor(inventory));
+    if (entry.code || entry.plu || entry.itemNumber) indexEntry(entry);
+  });
+  [...state.excelItems.values()].forEach((excel) => {
+    const probeKey = codeKey(excel.code || excel.plu || excel.itemNumber || "");
+    if (probeKey && exact.has(probeKey)) return;
+    const entry = buildPriceCheckEntry({}, excel);
+    if (entry.code || entry.plu || entry.itemNumber) indexEntry(entry);
+  });
   Object.entries(state.multiBarcodeMap || {}).forEach(([alias, masterCode]) => {
-    const masterCandidates = scanKeyVariants(masterCode);
-    const item = masterCandidates.map((key) => exact.get(key)).find(Boolean);
-    if (item) scanKeyVariants(alias).forEach((aliasKey) => setBestExactIndexEntry(exact, aliasKey, item));
+    const aliasKey = codeKey(alias);
+    const masterKey = codeKey(masterCode);
+    const item = masterKey ? exact.get(masterKey) : null;
+    if (aliasKey && item && !exact.has(aliasKey)) exact.set(aliasKey, item);
   });
   state._priceCheckExactIndex = exact;
   state._priceCheckExactIndexStamp = stamp;
-  window.barcodeIndex = Object.fromEntries(exact.entries());
-  window.masterInventorySnapshot = masterRows;
   console.info("[AppPerf] barcode index ready", {
     ms: Number((performanceNow() - startedAt).toFixed(2)),
     entries: exact.size,
-    masterRows: masterRows.length,
-    inventory: state.latestInventory.size,
-    excel: state.excelItems.size,
-    source: "masterInventorySnapshot",
   });
 }
+
 function priceCheckExactMatch(query) {
-  const variants = scanKeyVariants(query).filter(Boolean);
-  if (!variants.length) return null;
+  const keyed = codeKey(query);
+  if (!keyed) return null;
   ensurePriceCheckExactIndex();
-  for (const key of variants) {
-    const item = state._priceCheckExactIndex?.get(key);
-    if (item) return item;
-  }
-  for (const key of variants) {
-    const master = state.multiBarcodeMap?.[key];
-    if (!master) continue;
-    for (const masterKey of scanKeyVariants(master)) {
-      const item = state._priceCheckExactIndex?.get(masterKey);
-      if (item) return item;
-    }
-  }
-  return null;
+  return state._priceCheckExactIndex?.get(keyed) || null;
 }
 
 function priceCheckRows() {
-  const stamp = `${state._dataCacheStamp}:${state._multiBarcodeIndexStamp || 0}:${state.latestInventory.size}:${state.excelItems.size}`;
-  if (state._priceCheckRowsCache && state._priceCheckRowsStamp === stamp) {
+  if (state._priceCheckRowsCache && state._priceCheckRowsStamp === state._dataCacheStamp) {
     return state._priceCheckRowsCache;
   }
-  const rows = buildMasterPriceCheckRows();
+  const rowMap = new Map();
+  [...state.latestInventory.values()].forEach((inventory) => {
+    const itemCode = inventory.code || "";
+    const key = codeKey(itemCode || inventory.upc || inventory.plu || inventory.itemNumber || inventory.vendorCode || inventory.product);
+    if (!key) return;
+    rowMap.set(key, buildPriceCheckEntry(inventory, findExcelFor(inventory)));
+  });
+  [...state.excelItems.values()].forEach((excel) => {
+    const key = codeKey(excel.code || excel.upc || excel.plu || excel.itemNumber || excel.vendorCode || excel.product);
+    if (!key || rowMap.has(key)) return;
+    rowMap.set(key, buildPriceCheckEntry({}, excel));
+  });
+  const rows = [...rowMap.values()];
   state._priceCheckRowsCache = rows;
-  state._priceCheckRowsStamp = stamp;
+  state._priceCheckRowsStamp = state._dataCacheStamp;
   ensurePriceCheckExactIndex();
   return rows;
 }
@@ -3167,16 +3099,18 @@ function priceCheckMatches(query, limit = 12) {
     const code = cleanCell(item.code);
     const plu = cleanCell(item.plu);
     const itemNumber = cleanCell(item.itemNumber);
+    const upc = cleanCell(item.upc);
+    const vendorCode = cleanCell(item.vendorCode);
     const product = cleanCell(item.product);
     const vendor = cleanCell(item.vendor);
     const category = cleanCell(item.category);
     const department = cleanCell(item.department);
-    const keys = [code, plu, itemNumber, item.upc, item.barcode, item.sku, item.vendorCode].flatMap(scanKeyVariants).filter(Boolean);
+    const keys = [code, upc, plu, itemNumber, vendorCode].map(codeKey).filter(Boolean);
     let score = -1;
     if (keyed && keys.includes(keyed)) score = 0;
-    else if ([code, plu, itemNumber].some((value) => value && value.toLowerCase().startsWith(search))) score = 1;
+    else if ([code, upc, plu, itemNumber, vendorCode].some((value) => value && value.toLowerCase().startsWith(search))) score = 1;
     else if (product && product.toLowerCase().startsWith(search)) score = 2;
-    else if ([code, product, plu, itemNumber, vendor, category, department].some((value) => value && value.toLowerCase().includes(search))) score = 3;
+    else if ([code, upc, product, plu, itemNumber, vendorCode, vendor, category, department].some((value) => value && value.toLowerCase().includes(search))) score = 3;
     if (score >= 0) scored.push({ item, score, product });
   }
   return scored
@@ -3256,16 +3190,17 @@ function renderPriceCheckResult(item) {
     }
     return;
   }
-  const inventory = state.latestInventory.get(codeKey(item.code)) || item;
-  const excel = findExcelFor(item);
-  const price = Number(item.price || excel.price || 0);
-  const stock = Number(inventory.stock || excel.stock || 0);
-  const cost = Number(item.unitCost || excel.cost || 0);
-  const vendor = cleanCell(item.vendor || excel.vendor) || "Unassigned";
-  const plu = cleanCell(item.plu || excel.plu) || "-";
-  const itemNumber = cleanCell(item.itemNumber || excel.itemNumber) || "-";
-  const category = cleanCell(item.category || excel.category) || "Unassigned";
-  const department = cleanCell(item.department || excel.department) || "Unassigned";
+  const lookupKey = codeKey(item.code || item.upc || item.plu || item.itemNumber || item.vendorCode);
+  const inventory = state.latestInventory.get(lookupKey) || item;
+  const excel = findExcelFor(inventory.code ? inventory : item);
+  const price = pickNumber(inventory.price, item.price, excel.price);
+  const stock = Number(inventory.stock ?? item.stock ?? excel.stock ?? 0);
+  const cost = pickNumber(inventory.cost, item.unitCost, item.cost, excel.cost);
+  const vendor = cleanCell(inventory.vendor || item.vendor || excel.vendor) || "Unassigned";
+  const plu = cleanCell(inventory.plu || item.plu || excel.plu) || "-";
+  const itemNumber = cleanCell(inventory.itemNumber || item.itemNumber || excel.itemNumber) || "-";
+  const category = cleanCell(inventory.category || item.category || excel.category) || "Unassigned";
+  const department = cleanCell(inventory.department || item.department || excel.department) || "Unassigned";
   const showCost = isAdmin();
   const html = `
     <div class="price-check-result__hero">
@@ -4027,7 +3962,14 @@ function handleScanModeLookup(value, options = {}) {
   const exact = priceCheckExactMatch(query);
   const item = exact || priceCheckMatches(query, 1)[0] || null;
   const elapsed = Number((performance.now() - start).toFixed(2));
-  console.debug("[ScanPerf] lookup", { ms: elapsed, exact: !!exact, found: !!item });
+  console.debug("[ScanPerf] lookup", {
+    ms: elapsed,
+    exact: !!exact,
+    found: !!item,
+    masterInventoryRows: state.latestInventory.size,
+    excelRows: state.excelItems.size,
+    barcodeIndexRows: state._priceCheckExactIndex?.size || 0,
+  });
   renderPriceCheckResult(item);
   if (els.scanModeStatus) {
     els.scanModeStatus.textContent = item
@@ -4146,9 +4088,9 @@ function filteredCountCandidateRows(session = state.activeCountSession) {
     return state._filteredCountCache;
   }
   const statusFilter = (session.status || "").trim().toLowerCase();
-  // If this count was explicitly set up to target disabled/discontinued items, OR if status
-  // is empty ("All"), use the full unfiltered pool so all items are reachable.
-  const sourceRows = (!statusFilter || statusFilter === "disabled" || statusFilter === "discontinued")
+  // If this count was explicitly set up to target disabled/discontinued items, use the full
+  // unfiltered pool so those items are reachable. Otherwise use the active-items-only pool.
+  const sourceRows = (statusFilter === "disabled" || statusFilter === "discontinued")
     ? buildInventoryRows({ ignoreQuery: true, ignoreFilters: true, ignoreStateFilter: true })
     : allCountCandidateRows();
   const rows = sourceRows.filter((item) => {
@@ -4290,7 +4232,6 @@ function closeActiveCountSession() {
   state.selectedCountItemCode = "";
   state.countQtyBuffer = "0";
   state.countStage = "search";
-  state.countAutoMode = false;
   state.pendingDuplicateCount = null;
   state.pendingDuplicateMode = null;
   persistCountSessions();
@@ -4412,13 +4353,7 @@ function handleCountKey(key) {
   } else if (key === ".") {
     if (!state.countQtyBuffer.includes(".")) state.countQtyBuffer += ".";
   } else {
-    const next = state.countQtyBuffer === "0" ? key : `${state.countQtyBuffer}${key}`;
-    // Ceiling guard: if this would put qty above 9999, reject the digit and warn
-    if (Number(next) > 9999) {
-      showToast("Qty limit is 9,999 — use Back to correct if a barcode was scanned as a qty.", 3500, "warning");
-      return;
-    }
-    state.countQtyBuffer = next;
+    state.countQtyBuffer = state.countQtyBuffer === "0" ? key : `${state.countQtyBuffer}${key}`;
   }
   renderCountQuantity();
 }
@@ -4506,20 +4441,6 @@ function renderSelectedCountItem() {
 
 function handleCountLookup() {
   if (!state.activeCountSession) {
-    // If there's a saved session, open it rather than just showing an error
-    if (state.countSessions && state.countSessions.length > 0) {
-      const latestSession = state.countSessions.find((s) => !s.submittedAt) || state.countSessions[0];
-      if (latestSession) {
-        state.activeCountSession = { ...latestSession, isActiveLive: true };
-        state._countSessionOpen = true;
-        state.countQtyBuffer = "0";
-        state.countStage = "search";
-        persistActiveCountSession();
-        renderCountsWorkspace();
-        showToast("Count session resumed.", 2000, "success");
-        return;
-      }
-    }
     showToast("Start a physical count first.", 3000, "warning");
     return;
   }
@@ -4548,17 +4469,6 @@ function handleCountLookup() {
   if (!inScope && countSessionAllowsOutOfScope()) {
     showToast("Manager override: this item is outside the selected count scope.", 4200, "warning");
   }
-  // AUTO +1 MODE: scan commits immediately, no qty stage needed
-  if (state.activeCountSession?.autoMode || state.countAutoMode) {
-    commitCountEntry(match, 1, "add");
-    state.selectedCountItemCode = match.code;
-    state.countStage = "search";
-    state.countQtyBuffer = "0";
-    renderSelectedCountItem();
-    renderCountQuantity();
-    showToast(`Auto +1: ${match.code}`, 1200, "success");
-    return;
-  }
   state.selectedCountItemCode = match.code;
   state.countStage = "qty";
   state.countQtyBuffer = "0";
@@ -4569,56 +4479,6 @@ function handleCountLookup() {
   els.countSearchInput?.blur();
   renderSelectedCountItem();
   renderCountQuantity();
-}
-
-function renderCountModeButtons() {
-  const enabled = !!(state.activeCountSession?.autoMode || state.countAutoMode);
-  if (els.countAutoModeButton) {
-    els.countAutoModeButton.textContent = enabled ? "Auto +1 ON" : "Auto +1 OFF";
-    els.countAutoModeButton.classList.toggle("is-active", enabled);
-    els.countAutoModeButton.setAttribute("aria-pressed", enabled ? "true" : "false");
-  }
-  if (els.countUndoLastButton) {
-    els.countUndoLastButton.disabled = !(state.activeCountSession?.entries || []).length;
-  }
-}
-
-function toggleCountAutoMode() {
-  if (!state.activeCountSession) { showToast("Start a physical count first.", 2500, "warning"); return; }
-  const next = !(state.activeCountSession.autoMode || state.countAutoMode);
-  state.activeCountSession = { ...state.activeCountSession, autoMode: next, updatedAt: new Date().toISOString() };
-  state.countAutoMode = next;
-  state.countStage = "search";
-  state.countQtyBuffer = "0";
-  if (next) hideCountDropdown();
-  persistActiveCountSession();
-  renderCountModeButtons();
-  renderSelectedCountItem();
-  focusCountSearch();
-  showToast(next ? "Auto +1 mode ON" : "Auto +1 mode OFF", 1800, next ? "success" : "warning");
-}
-
-function undoLastCountEntry() {
-  const session = state.activeCountSession;
-  if (!session || !(session.entries || []).length) { showToast("No count entry to undo.", 2200, "warning"); return; }
-  const entries = [...session.entries];
-  const removed = entries.pop();
-  const previous = entries.filter((entry) => codeKey(entry.code) === codeKey(removed.code)).at(-1);
-  state.activeCountSession = { ...session, entries, updatedAt: new Date().toISOString(), localSyncPending: true };
-  const item = findAnyCountMatch(removed.code) || { code: removed.code, product: removed.product, stock: removed.originalQty, unitCost: removed.unitCost };
-  const restoreQty = previous ? Number(previous.countedQty || 0) : Number(removed.originalQty || 0);
-  try { applyLiveCountStockUpdate(item, restoreQty, previous || removed, state.activeCountSession); } catch (_) {}
-  state.selectedCountItemCode = removed.code;
-  state.countStage = "search";
-  state.countQtyBuffer = "0";
-  persistActiveCountSession();
-  renderCountEntryRows(true);
-  renderSelectedCountItem();
-  renderCountQuantity();
-  updateCountSummaryStrip();
-  renderCountModeButtons();
-  focusCountSearch();
-  showToast(`Undo: removed last entry for ${removed.code}`, 2200, "warning");
 }
 
 function clearCountLookup() {
@@ -4734,20 +4594,8 @@ function applyCountEntry() {
     return;
   }
   const qty = Math.max(0, Number(state.countQtyBuffer || "0"));
-  // Safety ceiling: if qty > 9999, likely a double-scan entered a barcode as qty
-  if (qty > 9999) {
-    showToast(`Quantity ${number.format(qty)} looks too high — please verify. Max single entry is 9,999.`, 4500, "warning");
-    state.countQtyBuffer = "0";
-    renderCountQuantity();
-    return;
-  }
   const existing = state.activeCountSession.entries?.filter((entry) => codeKey(entry.code) === codeKey(item.code)).at(-1);
   if (existing) {
-    // AUTO +1 MODE: never show duplicate modal — always add silently
-    if (state.activeCountSession?.autoMode || state.countAutoMode) {
-      commitCountEntry(item, qty, "add");
-      return;
-    }
     const chosenMode = state.pendingDuplicateMode && codeKey(state.pendingDuplicateMode.code) === codeKey(item.code)
       ? state.pendingDuplicateMode.mode
       : "";
@@ -4783,14 +4631,7 @@ function buildCountSearchIndex() {
   // Force-refresh the candidate cache on session start
   state._countCandidateCache = null;
   state._filteredCountCache = null;
-  // Use filtered rows for the session scope — if status is empty (All), this includes
-  // disabled/discontinued. allCountCandidateRows() excludes them, so we must use the
-  // filtered set to ensure the search finds everything the session can actually count.
-  const session = state.activeCountSession;
-  const statusFilter = (session?.status || "").trim().toLowerCase();
-  const allRows = (!statusFilter)
-    ? buildInventoryRows({ ignoreQuery: true, ignoreFilters: true, ignoreStateFilter: true })
-    : allCountCandidateRows();
+  const allRows = allCountCandidateRows();
   state._countSearchIndex = allRows.map((item) => ({
     item,
     haystack: [item.code, item.product, item.plu, item.itemNumber, item.vendor, item.category]
@@ -4816,8 +4657,6 @@ function buildCountSearchIndex() {
 function renderCountDropdown(query) {
   const dd = document.querySelector("#countSearchDropdown");
   if (!dd) return;
-  // AUTO +1 MODE: never show dropdown — items resolve and commit automatically
-  if (state.activeCountSession?.autoMode || state.countAutoMode) { dd.hidden = true; return; }
   // Only show dropdown in search stage
   if (state.countStage && state.countStage !== "search") { dd.hidden = true; return; }
   const raw = cleanCell(query).trim();
@@ -4911,7 +4750,6 @@ function openCountReport(sessionId = state.activeCountSession?.id, mode = state.
   }
   state.countReportMode = mode;
   state.countReportOpenId = sessionId;
-  state._countComparisonShowAll = false;
   els.countContinueButton?.blur();
   if (els.countReportTitle) {
     els.countReportTitle.textContent = mode === "comparison"
@@ -5093,14 +4931,7 @@ function renderCountReportRows(session, mode = state.countReportMode || "input")
     }
     const latestByCode = new Map();
     entries.forEach((entry) => latestByCode.set(codeKey(entry.code), entry));
-    // PERF: On low-tier (Kindle), default to scanned-items-only view when there are many
-    // candidates — rendering 10k+ rows synchronously freezes the device for 10+ seconds.
-    // Show a "Show all items" button to expand. Full renders still work on desktop.
-    const isLowTier = scanPerformanceProfile.tier === "low";
-    const COMPARISON_EXPAND_THRESHOLD = 500;
-    const showOnlyScanned = isLowTier && allItems.length > COMPARISON_EXPAND_THRESHOLD && !state._countComparisonShowAll;
-    const displayItems = showOnlyScanned ? allItems.filter((item) => latestByCode.has(codeKey(item.code))) : allItems;
-    const rows = displayItems
+    els.countReportBody.innerHTML = allItems
       .map((item) => {
         const entry = latestByCode.get(codeKey(item.code));
         const originalQty = Number(item.stock || 0);
@@ -5123,17 +4954,6 @@ function renderCountReportRows(session, mode = state.countReportMode || "input")
           </tr>`;
       })
       .join("");
-    if (showOnlyScanned) {
-      const notScannedCount = allItems.length - displayItems.length;
-      els.countReportBody.innerHTML = rows +
-        `<tr><td colspan="9" class="empty-cell" style="font-style:italic">
-          Showing ${number.format(displayItems.length)} scanned items. 
-          ${number.format(notScannedCount)} unscanned items hidden to keep this device responsive. 
-          <button type="button" class="secondary-button" onclick="window._countComparisonShowAll=true;state._countComparisonShowAll=true;renderCountReportRows(findCountSessionById(state.countReportOpenId),'comparison')" style="margin-left:8px">Show all ${number.format(allItems.length)} items</button>
-        </td></tr>`;
-    } else {
-      els.countReportBody.innerHTML = rows;
-    }
     return;
   }
   if (!entries.length) {
@@ -5165,7 +4985,11 @@ function renderCountReportRows(session, mode = state.countReportMode || "input")
 
 async function openSessionHistoryModal() {
   if (els.sessionHistoryModal) els.sessionHistoryModal.hidden = false;
-  // Show local data immediately — don't block on remote fetch
+  if (els.countSessionBody) els.countSessionBody.innerHTML = `<tr><td colspan="12" class="empty-cell">Loading report history...</td></tr>`;
+  if (ENABLE_SHARED_SYNC && sharedCountSessionsAvailable) {
+    await restoreSharedCountSessionsOnlyFromSupabase({ silent: true, history: true });
+  }
+  // Populate vendor filter
   const vendors = [...new Set(state.countSessions.map((s) => s.vendor || s.department || "").filter(Boolean))];
   if (els.sessionHistoryVendorFilter) {
     const cur = els.sessionHistoryVendorFilter.value;
@@ -5173,22 +4997,6 @@ async function openSessionHistoryModal() {
       vendors.map((v) => `<option value="${escapeHtml(v)}" ${v === cur ? "selected" : ""}>${escapeHtml(v)}</option>`).join("");
   }
   renderCountSessionRows();
-  // Sync in background to pick up sessions from other devices, then re-render
-  if (ENABLE_SHARED_SYNC && sharedCountSessionsAvailable) {
-    const timeout = scanPerformanceProfile.tier === "low" ? 5000 : 3000;
-    await Promise.race([
-      restoreSharedCountSessionsOnlyFromSupabase({ silent: true, history: true }),
-      new Promise((resolve) => setTimeout(resolve, timeout)),
-    ]);
-    // Re-populate vendor filter in case new vendors appeared
-    const updatedVendors = [...new Set(state.countSessions.map((s) => s.vendor || s.department || "").filter(Boolean))];
-    if (els.sessionHistoryVendorFilter) {
-      const cur = els.sessionHistoryVendorFilter.value;
-      els.sessionHistoryVendorFilter.innerHTML = `<option value="">All vendors</option>` +
-        updatedVendors.map((v) => `<option value="${escapeHtml(v)}" ${v === cur ? "selected" : ""}>${escapeHtml(v)}</option>`).join("");
-    }
-    renderCountSessionRows();
-  }
 }
 
 function sessionMatchesPeriodFilter(session, period) {
@@ -5504,7 +5312,6 @@ function renderCountsWorkspace(options = {}) {
   }
   renderCountQuantity();
   renderSelectedCountItem();
-  renderCountModeButtons();
   // Only rebuild entry rows when the count session is actually open.
   // These are no-ops when the modal is hidden but add measurable parse cost on Kindle.
   if (active && state._countSessionOpen) {
@@ -8063,9 +7870,9 @@ function showDetail(item, options = {}) {
       </div>
       <div class="table-wrap">
         <table class="count-report-table inner-auto-table">
-          <thead><tr><th>Date/Time</th><th>Action</th><th>Before</th><th>Change</th><th>After</th><th>User</th><th>Reason</th></tr></thead>
+          <thead><tr><th>Date/Time</th><th>Action</th><th>Change</th><th>Before</th><th>After</th><th>User</th><th>Reason</th></tr></thead>
           <tbody>${historyRows.length
-            ? historyRows.map((entry) => `<tr><td>${escapeHtml(new Date(entry.recordedAt).toLocaleString())}</td><td>${escapeHtml(entry.action || "-")}</td><td class="num">${number.format(entry.qtyBefore || 0)}</td><td class="num">${number.format(entry.qtyChange || 0)}</td><td class="num">${number.format(entry.qtyAfter || 0)}</td><td>${escapeHtml(entry.user || "System")}</td><td>${escapeHtml(entry.reason || "-")}</td></tr>`).join("")
+            ? historyRows.map((entry) => `<tr><td>${escapeHtml(new Date(entry.recordedAt).toLocaleString())}</td><td>${escapeHtml(entry.action || "-")}</td><td class="num">${number.format(entry.qtyChange || 0)}</td><td class="num">${number.format(entry.qtyBefore || 0)}</td><td class="num">${number.format(entry.qtyAfter || 0)}</td><td>${escapeHtml(entry.user || "System")}</td><td>${escapeHtml(entry.reason || "-")}</td></tr>`).join("")
             : `<tr><td colspan="7" class="empty-cell">No stock history recorded for this item yet.</td></tr>`}
           </tbody>
         </table>
@@ -9219,12 +9026,25 @@ function cleanHeader(value) {
 }
 
 function cleanCell(value) {
-  return String(value ?? "")
-    .replace(/^﻿/, "")
-    .replace(/^'/, "")
-    .replace(/^="/, "")
-    .replace(/"$/, "")
-    .trim();
+  return String(value ?? "").replace(/^="/, "").replace(/"$/, "").trim();
+}
+
+function valueFromAnyHeader(row = {}, names = []) {
+  const wanted = new Set(names.map((name) => cleanHeader(name).toUpperCase().replace(/[^A-Z0-9]+/g, "")));
+  for (const [key, value] of Object.entries(row || {})) {
+    const normalizedKey = cleanHeader(key).toUpperCase().replace(/[^A-Z0-9]+/g, "");
+    if (wanted.has(normalizedKey) && cleanCell(value) !== "") return value;
+  }
+  return "";
+}
+
+const MASTER_BARCODE_HEADERS = [
+  "CODE", "UPC", "UPC CODE", "UPC/EAN", "EAN", "BARCODE", "BAR CODE", "SCAN CODE",
+  "SKU", "PID", "ITEM CODE", "ITEMCODE", "PRODUCT CODE", "PRODUCTCODE", "ALT CODE", "ALTERNATE CODE"
+];
+
+function masterBarcodeFromRow(row = {}, fallback = "") {
+  return normalizeCode(valueFromAnyHeader(row, MASTER_BARCODE_HEADERS) || fallback);
 }
 
 function stableVendorRuleId(vendor = "") {
@@ -9247,37 +9067,10 @@ function normalizeCode(value) {
   return cleanCell(value).replace(/^=/, "").replace(/^"|"$/g, "");
 }
 
-function compactScanKey(value) {
-  const code = normalizeCode(value).replace(/[^A-Za-z0-9]+/g, "").toUpperCase();
-  if (!code) return "";
-  return /^\d+$/.test(code) ? (code.replace(/^0+/, "") || "0") : code;
-}
-
-function scanKeyVariants(value) {
-  const raw = normalizeCode(value);
-  const compact = compactScanKey(raw);
-  const variants = new Set();
-  const add = (v) => {
-    const k = compactScanKey(v);
-    if (k) variants.add(k);
-  };
-  add(raw);
-  add(compact);
-  // UPC/EAN scanners and POS exports sometimes disagree on leading zero/check-digit padding.
-  if (/^\d+$/.test(compact)) {
-    add(compact.replace(/^0+/, ""));
-    if (compact.length === 11) add(`0${compact}`);
-    if (compact.length === 12 && compact.startsWith("0")) add(compact.slice(1));
-    if (compact.length === 13 && compact.startsWith("0")) add(compact.slice(1));
-    if (compact.length === 14 && compact.startsWith("00")) add(compact.slice(2));
-  }
-  return [...variants];
-}
-
 function rawCodeKey(value) {
-  const code = compactScanKey(value);
+  const code = normalizeCode(value);
   if (!code) return "";
-  return code;
+  return /^\d+$/.test(code) ? (code.replace(/^0+/, "") || "0") : code.toUpperCase();
 }
 
 function codeKey(value) {
@@ -10311,10 +10104,7 @@ function hydrateInventoryFromSupabase(row) {
     cost: toNumber(row.unit_cost),
     stock: toNumber(row.stock),
     vendor: cleanCell(row.vendor),
-    vendorCode: cleanCell(row.vendor_code || row.vendorCode || row.vendor_sku || ""),
-    upc: cleanCell(row.upc || row.barcode || row.scan_code || row.sku || ""),
-    barcode: cleanCell(row.barcode || ""),
-    sku: cleanCell(row.sku || ""),
+    vendorCode: "",
     color: cleanCell(row.color),
     size: "",
     length: "",
@@ -10331,7 +10121,6 @@ function hydrateExcelFromSupabase(row) {
     vendor_name: row.vendor,
     PLU: row.plu,
     item_number: row.item_number,
-    UPC: row.upc || row.barcode || row.scan_code || row.sku || "",
     category: row.category,
     add_date: row.add_date,
     cost: row.unit_cost,
@@ -11637,8 +11426,8 @@ function renderAdjustLog() {
       <td>${escapeHtml(entry.vendor || "-")}</td>
       <td>${escapeHtml(entry.category || "-")}</td>
       <td>${escapeHtml((entry.action || "-").toUpperCase())}</td>
-      <td class="num">${number.format(entry.qtyBefore ?? 0)}</td>
       <td class="num ${cls}">${changeLabel}</td>
+      <td class="num">${number.format(entry.qtyBefore ?? 0)}</td>
       <td class="num">${number.format(entry.qtyAfter ?? 0)}</td>
       <td><span class="reason-chip" style="background:${bg}">${escapeHtml((entry.reason || "-").toUpperCase())}</span></td>
     </tr>`;
@@ -11653,7 +11442,7 @@ function renderAdjustLog() {
         <details class="auto-entries-details">
           <summary>${autoEntries.length} auto-generated entr${autoEntries.length === 1 ? "y" : "ies"} (NULLâ†’0 / RESTORE / ZERO NEGATIVES)</summary>
           <table class="count-report-table inner-auto-table">
-            <thead><tr><th>Date/Time</th><th>Code</th><th>Item</th><th>Vendor</th><th>Category</th><th>Action</th><th>Before</th><th>Change</th><th>After</th><th>Reason</th></tr></thead>
+            <thead><tr><th>Date/Time</th><th>Code</th><th>Item</th><th>Vendor</th><th>Category</th><th>Action</th><th>Change</th><th>Before</th><th>After</th><th>Reason</th></tr></thead>
             <tbody>${autoEntries.map(rowHtml).join("")}</tbody>
           </table>
         </details>
@@ -11695,8 +11484,8 @@ async function exportAdjustLogPdf() {
       <td>${escapeHtml(entry.vendor || "-")}</td>
       <td>${escapeHtml(entry.category || "-")}</td>
       <td>${escapeHtml(entry.action || "-")}</td>
-      <td class="num">${number.format(entry.qtyBefore ?? 0)}</td>
       <td class="num">${changeLabel}</td>
+      <td class="num">${number.format(entry.qtyBefore ?? 0)}</td>
       <td class="num">${number.format(entry.qtyAfter ?? 0)}</td>
       <td><span style="display:inline-block;padding:2px 7px;border-radius:4px;background:${bg};color:#fff;font-weight:700;font-size:9px">${escapeHtml((entry.reason || "-").toUpperCase())}</span></td>
     </tr>`;
@@ -11715,7 +11504,7 @@ async function exportAdjustLogPdf() {
   </style></head><body>
   <h1>Stock Adjustment Log</h1>
   <div class="meta">Generated ${dateStr} &nbsp;Â·&nbsp; ${exportRows.length} records</div>
-  <table><thead><tr><th>Date/Time</th><th>Code</th><th>Item</th><th>Vendor</th><th>Category</th><th>Action</th><th>Qty Before</th><th>Qty Change</th><th>Qty After</th><th>Reason</th></tr></thead>
+  <table><thead><tr><th>Date/Time</th><th>Code</th><th>Item</th><th>Vendor</th><th>Category</th><th>Action</th><th>Change</th><th>Qty Before</th><th>Qty After</th><th>Reason</th></tr></thead>
   <tbody>${rows}</tbody></table></body></html>`;
   const win = window.open("", "_blank", "width=1100,height=750");
   if (!win) { showToast("Pop-up blocked â€” please allow pop-ups.", 3500, "warning"); return; }
@@ -11733,11 +11522,11 @@ async function exportAdjustLogExcel() {
   const data = [
     ["Stock Adjustment Log", "", "", "", "", "", "", "", "", `Generated: ${new Date().toLocaleDateString()}`],
     [],
-    ["Date/Time", "Code", "Item", "Vendor", "Category", "Action", "Qty Before", "Qty Change", "Qty After", "Reason"],
+    ["Date/Time", "Code", "Item", "Vendor", "Category", "Action", "Qty Change", "Qty Before", "Qty After", "Reason"],
     ...exportRows.map((entry) => [
       new Date(entry.recordedAt).toLocaleString(),
       entry.code || "", entry.product || "", entry.vendor || "", entry.category || "",
-      entry.action || "", entry.qtyBefore ?? 0, entry.qtyChange || 0, entry.qtyAfter ?? 0, (entry.reason || "").toUpperCase(),
+      entry.action || "", entry.qtyChange || 0, entry.qtyBefore ?? 0, entry.qtyAfter ?? 0, (entry.reason || "").toUpperCase(),
     ]),
   ];
   const ws = xlsx.utils.aoa_to_sheet(data);
