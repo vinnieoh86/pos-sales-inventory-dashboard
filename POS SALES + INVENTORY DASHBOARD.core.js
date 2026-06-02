@@ -2534,7 +2534,7 @@ function normalizeExcelRow(row) {
     }
     return "";
   };
-  const code = masterBarcodeFromRow(row, row.code ?? row.CODE);
+  const code = normalizeCode(row.code ?? row.CODE);
   return {
     code,
     product: cleanCell(field("item_name", "ITEM NAME", "Item Name", "NAME", "Product", "PRODUCT")),
@@ -2642,11 +2642,15 @@ function normalizeSalesRow(row, date) {
 }
 
 function normalizeInventoryRow(row, date) {
-  const field = (...names) => valueFromAnyHeader(row, names);
-  const primaryCode = masterBarcodeFromRow(row, field("CODE", "code"));
+  const field = (...names) => {
+    for (const name of names) {
+      if (Object.prototype.hasOwnProperty.call(row, name) && cleanCell(row[name]) !== "") return row[name];
+    }
+    return "";
+  };
   return {
     date: date.iso,
-    code: primaryCode,
+    code: normalizeCode(field("CODE", "code")),
     category: cleanCell(field("CATEGORY", "category")),
     product: cleanCell(field("NAME", "name", "ITEM NAME", "Item Name", "item_name", "product", "Product", "PRODUCT")),
     plu: cleanCell(field("PLU", "plu")),
@@ -2656,7 +2660,6 @@ function normalizeInventoryRow(row, date) {
     stock: toNumber(field("STOCK", "stock")),
     vendor: cleanCell(field("VENDOR", "vendor")),
     vendorCode: cleanCell(field("VENDOR CODE", "vendor code")),
-    upc: normalizeCode(field("UPC", "UPC CODE", "UPC/EAN", "EAN", "BARCODE", "BAR CODE", "SCAN CODE", "SKU", "PID", "ITEM CODE", "PRODUCT CODE")),
     color: cleanCell(field("COLOR", "color")),
     size: cleanCell(field("SIZE", "size")),
     length: cleanCell(field("LENGTH", "length")),
@@ -2911,8 +2914,6 @@ function buildPriceCheckEntry(inventory = {}, excel = {}) {
     vendor: inventory.vendor || excel.vendor || "",
     plu: inventory.plu || excel.plu || "",
     itemNumber: inventory.itemNumber || excel.itemNumber || "",
-    vendorCode: inventory.vendorCode || excel.vendorCode || "",
-    upc: inventory.upc || excel.upc || "",
     color: inventory.color || excel.color || "",
     state: stateLabel,
     itemState: stateLabel.toLowerCase(),
@@ -2944,7 +2945,7 @@ function ensurePriceCheckExactIndex() {
   const startedAt = performanceNow();
   const exact = new Map();
   const indexEntry = (entry) => {
-    [entry.code, entry.upc, entry.plu, entry.itemNumber, entry.vendorCode].forEach((value) => {
+    [entry.code, entry.plu, entry.itemNumber].forEach((value) => {
       const key = codeKey(value);
       if (key && !exact.has(key)) exact.set(key, entry);
     });
@@ -2987,12 +2988,12 @@ function priceCheckRows() {
   const rowMap = new Map();
   [...state.latestInventory.values()].forEach((inventory) => {
     const itemCode = inventory.code || "";
-    const key = codeKey(itemCode || inventory.upc || inventory.plu || inventory.itemNumber || inventory.vendorCode || inventory.product);
+    const key = codeKey(itemCode || inventory.plu || inventory.itemNumber || inventory.product);
     if (!key) return;
     rowMap.set(key, buildPriceCheckEntry(inventory, findExcelFor(inventory)));
   });
   [...state.excelItems.values()].forEach((excel) => {
-    const key = codeKey(excel.code || excel.upc || excel.plu || excel.itemNumber || excel.vendorCode || excel.product);
+    const key = codeKey(excel.code || excel.plu || excel.itemNumber || excel.product);
     if (!key || rowMap.has(key)) return;
     rowMap.set(key, buildPriceCheckEntry({}, excel));
   });
@@ -3099,18 +3100,16 @@ function priceCheckMatches(query, limit = 12) {
     const code = cleanCell(item.code);
     const plu = cleanCell(item.plu);
     const itemNumber = cleanCell(item.itemNumber);
-    const upc = cleanCell(item.upc);
-    const vendorCode = cleanCell(item.vendorCode);
     const product = cleanCell(item.product);
     const vendor = cleanCell(item.vendor);
     const category = cleanCell(item.category);
     const department = cleanCell(item.department);
-    const keys = [code, upc, plu, itemNumber, vendorCode].map(codeKey).filter(Boolean);
+    const keys = [code, plu, itemNumber].map(codeKey).filter(Boolean);
     let score = -1;
     if (keyed && keys.includes(keyed)) score = 0;
-    else if ([code, upc, plu, itemNumber, vendorCode].some((value) => value && value.toLowerCase().startsWith(search))) score = 1;
+    else if ([code, plu, itemNumber].some((value) => value && value.toLowerCase().startsWith(search))) score = 1;
     else if (product && product.toLowerCase().startsWith(search)) score = 2;
-    else if ([code, upc, product, plu, itemNumber, vendorCode, vendor, category, department].some((value) => value && value.toLowerCase().includes(search))) score = 3;
+    else if ([code, product, plu, itemNumber, vendor, category, department].some((value) => value && value.toLowerCase().includes(search))) score = 3;
     if (score >= 0) scored.push({ item, score, product });
   }
   return scored
@@ -3190,17 +3189,16 @@ function renderPriceCheckResult(item) {
     }
     return;
   }
-  const lookupKey = codeKey(item.code || item.upc || item.plu || item.itemNumber || item.vendorCode);
-  const inventory = state.latestInventory.get(lookupKey) || item;
-  const excel = findExcelFor(inventory.code ? inventory : item);
-  const price = pickNumber(inventory.price, item.price, excel.price);
-  const stock = Number(inventory.stock ?? item.stock ?? excel.stock ?? 0);
-  const cost = pickNumber(inventory.cost, item.unitCost, item.cost, excel.cost);
-  const vendor = cleanCell(inventory.vendor || item.vendor || excel.vendor) || "Unassigned";
-  const plu = cleanCell(inventory.plu || item.plu || excel.plu) || "-";
-  const itemNumber = cleanCell(inventory.itemNumber || item.itemNumber || excel.itemNumber) || "-";
-  const category = cleanCell(inventory.category || item.category || excel.category) || "Unassigned";
-  const department = cleanCell(inventory.department || item.department || excel.department) || "Unassigned";
+  const inventory = state.latestInventory.get(codeKey(item.code)) || item;
+  const excel = findExcelFor(item);
+  const price = Number(item.price || excel.price || 0);
+  const stock = Number(inventory.stock || excel.stock || 0);
+  const cost = Number(item.unitCost || excel.cost || 0);
+  const vendor = cleanCell(item.vendor || excel.vendor) || "Unassigned";
+  const plu = cleanCell(item.plu || excel.plu) || "-";
+  const itemNumber = cleanCell(item.itemNumber || excel.itemNumber) || "-";
+  const category = cleanCell(item.category || excel.category) || "Unassigned";
+  const department = cleanCell(item.department || excel.department) || "Unassigned";
   const showCost = isAdmin();
   const html = `
     <div class="price-check-result__hero">
@@ -3962,14 +3960,7 @@ function handleScanModeLookup(value, options = {}) {
   const exact = priceCheckExactMatch(query);
   const item = exact || priceCheckMatches(query, 1)[0] || null;
   const elapsed = Number((performance.now() - start).toFixed(2));
-  console.debug("[ScanPerf] lookup", {
-    ms: elapsed,
-    exact: !!exact,
-    found: !!item,
-    masterInventoryRows: state.latestInventory.size,
-    excelRows: state.excelItems.size,
-    barcodeIndexRows: state._priceCheckExactIndex?.size || 0,
-  });
+  console.debug("[ScanPerf] lookup", { ms: elapsed, exact: !!exact, found: !!item });
   renderPriceCheckResult(item);
   if (els.scanModeStatus) {
     els.scanModeStatus.textContent = item
@@ -9029,24 +9020,6 @@ function cleanCell(value) {
   return String(value ?? "").replace(/^="/, "").replace(/"$/, "").trim();
 }
 
-function valueFromAnyHeader(row = {}, names = []) {
-  const wanted = new Set(names.map((name) => cleanHeader(name).toUpperCase().replace(/[^A-Z0-9]+/g, "")));
-  for (const [key, value] of Object.entries(row || {})) {
-    const normalizedKey = cleanHeader(key).toUpperCase().replace(/[^A-Z0-9]+/g, "");
-    if (wanted.has(normalizedKey) && cleanCell(value) !== "") return value;
-  }
-  return "";
-}
-
-const MASTER_BARCODE_HEADERS = [
-  "CODE", "UPC", "UPC CODE", "UPC/EAN", "EAN", "BARCODE", "BAR CODE", "SCAN CODE",
-  "SKU", "PID", "ITEM CODE", "ITEMCODE", "PRODUCT CODE", "PRODUCTCODE", "ALT CODE", "ALTERNATE CODE"
-];
-
-function masterBarcodeFromRow(row = {}, fallback = "") {
-  return normalizeCode(valueFromAnyHeader(row, MASTER_BARCODE_HEADERS) || fallback);
-}
-
 function stableVendorRuleId(vendor = "") {
   const normalized = cleanCell(vendor).toUpperCase();
   if (!normalized) return "";
@@ -10408,29 +10381,49 @@ async function restoreSharedProductsOnlyFromSupabase(options = {}) {
   if (!ENABLE_SHARED_SYNC) return false;
   const { silent = false } = options;
   try {
-    const productMetaRows = await supabaseSelectRowsSafe("product_meta", {
-      select: "*",
-      order: "updated_at.desc",
-      limit: String(SHARED_PRODUCT_META_PULL_LIMIT),
+    // IMPORTANT: Products/Scan must be hydrated from the real shared products table,
+    // not only product_meta. Loading only metadata left devices stuck with a tiny
+    // local subset (ex: ~297 ONYX rows), causing scan mode to miss most inventory
+    // or return $0 / Unassigned alias records.
+    const [productRows, productMetaRows] = await Promise.all([
+      supabaseSelectRowsSafe("products", { select: "*", order: "code.asc" }),
+      supabaseSelectRowsSafe("product_meta", {
+        select: "*",
+        order: "updated_at.desc",
+        limit: String(SHARED_PRODUCT_META_PULL_LIMIT),
+      }),
+    ]);
+    const mergedRows = mergeSharedProductRows(productRows, productMetaRows);
+    const localCount = Math.max(state.latestInventory.size || 0, state.excelItems.size || 0);
+    console.info("[InventoryLoad] shared products restore", {
+      products: productRows.length,
+      productMeta: productMetaRows.length,
+      merged: mergedRows.length,
+      localCount,
     });
-    const changedCodes = applySharedProductMetaRowsLight(productMetaRows);
+
+    let changedCodes = [];
+    if (mergedRows.length && mergedRows.length >= localCount) {
+      changedCodes = mergedRows.map((row) => codeKey(row.code)).filter(Boolean);
+      applySharedProductRows(mergedRows);
+    } else {
+      changedCodes = applySharedProductMetaRowsLight(productMetaRows);
+    }
     if (!changedCodes.length) return false;
+    queueScanExactIndexBuild?.({ prioritize: true, immediate: true });
     if (!state.activeCountSession) {
       if (activeTabName() === "inventory") {
-        const visibleCodes = new Set([...(els.inventoryBody?.querySelectorAll("tr[data-item-code]") || [])]
-          .map((row) => row.dataset.itemCode)
-          .filter(Boolean)
-          .map(codeKey));
-        changedCodes.filter((code) => visibleCodes.has(codeKey(code))).forEach((code) => patchInventoryRowFromCache(code));
-        renderInventorySummary(state.inventoryRows || currentInventoryRows());
+        bumpDataStamp();
+        renderInventory();
         refreshDetailDrawer();
       } else if (activeTabName() === "ordering") {
         renderOrders();
       }
     }
-    if (!silent) showToast(`Shared product updates loaded (${number.format(changedCodes.length)} items)`, 1800, "success");
+    if (!silent) showToast(`Shared products loaded (${number.format(Math.max(mergedRows.length, changedCodes.length))} items)`, 2200, "success");
     return true;
   } catch (error) {
+    console.warn("Shared product restore failed", error);
     if (!silent) showToast("Shared product refresh failed.", 2600, "warning");
     return false;
   }
@@ -10864,7 +10857,16 @@ async function syncSharedDataToSupabase(options = {}) {
       });
     const productRows = [...productRowMap.values()].filter((row) => cleanCell(row.code));
     const productMetaRows = buildProductMetaRowsSnapshot();
-    if (!productsOnly) {
+    const destructiveProductSyncLooksPartial = !productsOnly && productRows.length > 0 && productRows.length < 1000;
+    if (destructiveProductSyncLooksPartial) {
+      console.warn("[SyncGuard] Blocked full products overwrite because local product set looks partial", {
+        productRows: productRows.length,
+        latestInventory: state.latestInventory.size,
+        excelItems: state.excelItems.size,
+      });
+      // Do not delete the shared products table with a small local subset. Still sync
+      // product_meta/vendor/count edits below so user changes are preserved.
+    } else if (!productsOnly) {
       await supabaseDeleteAllRows("products");
       if (productRows.length) await supabaseInsertRows("products", productRows);
     } else if (productRows.length) {
