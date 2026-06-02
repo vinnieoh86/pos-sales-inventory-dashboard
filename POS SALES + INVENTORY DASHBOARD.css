@@ -7224,3 +7224,293 @@ body.scan-mode-active.scan-performance-medium .scan-mode-panel * {
   #countReportModal .table-tools { display:grid !important; grid-template-columns: repeat(2, minmax(0,1fr)) !important; gap:.4rem !important; }
   #countReportModal .table-tools button { width:100% !important; min-height:2.45rem !important; padding:.45rem .35rem !important; font-size:.78rem !important; }
 }
+
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   PHONE-ONLY SCAN MODE PASS  — targets narrow phones (≤480 px, touch)
+   Tablets (768px+) and laptops/desktops are never touched by these rules.
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+/* ── Phone detection: ≤480 px viewport width AND a touch pointer.
+      An iPad mini at 768 px fails the width test.
+      A resized desktop browser window at 480 px but with a mouse
+      fails the pointer:coarse test. Both are left alone.         ── */
+@media (max-width: 480px) and (pointer: coarse) {
+
+  /* ── 1. Command bar: let it stack naturally on one narrow column ── */
+  .command-bar {
+    position: sticky !important;
+    top: 0 !important;
+    z-index: 100 !important;
+    grid-template-columns: 1fr !important;
+    padding: 0.2rem 0.35rem !important;
+    gap: 0.15rem !important;
+  }
+
+  /* Hide the file-upload inbox in the header — phone scan mode users
+     don't need drag-and-drop file loading on-device. */
+  .command-bar .compact-uploader,
+  .command-bar .drop-inbox,
+  .command-bar .load-strip {
+    display: none !important;
+  }
+
+  /* ── 2. Tab nav: wrap into a tight pill-row, smaller text ── */
+  .tab-list {
+    flex-wrap: wrap !important;
+    gap: 0.22rem !important;
+    justify-content: flex-start !important;
+    padding: 0.1rem 0 !important;
+  }
+
+  .tab-button {
+    padding: 0.28rem 0.55rem !important;
+    font-size: 0.72rem !important;
+    line-height: 1.1 !important;
+    min-width: 0 !important;
+    border-radius: 6px !important;
+    white-space: nowrap !important;
+  }
+
+  /* SCAN MODE tab stands out — keep it prominent */
+  .tab-button--pricecheck {
+    font-size: 0.78rem !important;
+    padding: 0.32rem 0.65rem !important;
+  }
+
+  /* Sync button takes full width on phones so it's easy to tap */
+  .command-bar .global-sync-now {
+    width: 100% !important;
+    order: -1 !important;
+    flex: 1 0 100% !important;
+    min-height: 2.2rem !important;
+    font-size: 0.78rem !important;
+    margin-bottom: 0.1rem !important;
+  }
+
+  /* ── 3. Scan mode panel layout ── */
+  body[data-active-tab="scanmode"] .app {
+    padding: 0.45rem 0.45rem 1.5rem !important;
+  }
+
+  .scan-mode-panel {
+    max-width: 100% !important;
+    padding: 0.65rem !important;
+  }
+
+  /* Hide the descriptive paragraph — not needed when scanning */
+  .scan-mode-panel > p.muted {
+    display: none !important;
+  }
+
+  /* Panel heading: tighter */
+  .scan-mode-panel .panel-heading {
+    padding-bottom: 0.35rem !important;
+    margin-bottom: 0.35rem !important;
+  }
+
+  .scan-mode-panel .panel-heading h2 {
+    font-size: 1.05rem !important;
+  }
+
+  .scan-mode-panel .panel-heading .eyebrow {
+    font-size: 0.68rem !important;
+  }
+
+  /* ── 4. Scan input: large, easy to tap / read ── */
+  #scanModeInput {
+    min-height: 3.6rem !important;
+    font-size: 1.15rem !important;
+    border-radius: 10px !important;
+    padding: 0 0.75rem !important;
+  }
+
+  /* ── 5. Action buttons: 3 columns, full width, large tap targets ── */
+  .scan-mode-actions {
+    display: grid !important;
+    grid-template-columns: repeat(3, 1fr) !important;
+    gap: 0.4rem !important;
+    margin-top: 0.45rem !important;
+  }
+
+  .scan-mode-actions button {
+    min-height: 2.8rem !important;
+    font-size: 0.82rem !important;
+    padding-inline: 0.3rem !important;
+    border-radius: 8px !important;
+  }
+
+  /* ── 6. Status strip: compact ── */
+  #scanModeStatus {
+    margin-top: 0.5rem !important;
+    padding: 0.55rem 0.75rem !important;
+    font-size: 0.8rem !important;
+    border-radius: 10px !important;
+  }
+
+  /* ── 7. Result card: fits phone width, no horizontal overflow ── */
+  .price-check-result {
+    margin-top: 0.6rem !important;
+    border-radius: 14px !important;
+    padding: 0.7rem 0.75rem !important;
+  }
+
+  /* Hero row: item name + price side-by-side but wrap if name is long */
+  .price-check-result__hero {
+    flex-wrap: wrap !important;
+    gap: 0.45rem 0.65rem !important;
+    margin-bottom: 0.6rem !important;
+    align-items: baseline !important;
+  }
+
+  .price-check-result__hero h3 {
+    font-size: 1.05rem !important;
+    line-height: 1.2 !important;
+    flex: 1 1 55% !important;
+    min-width: 0 !important;
+    word-break: break-word !important;
+  }
+
+  /* Price: big and green, right-aligned */
+  .price-check-result__price {
+    font-size: 2rem !important;
+    font-weight: 900 !important;
+    flex: 0 0 auto !important;
+    white-space: nowrap !important;
+  }
+
+  /* ── 8. Result grid: 2-col on phone — enough room at ≥320 px ── */
+  .price-check-result__grid {
+    grid-template-columns: repeat(2, 1fr) !important;
+    gap: 0.45rem !important;
+  }
+
+  .price-check-result__grid article {
+    padding: 0.55rem 0.6rem !important;
+    border-radius: 10px !important;
+  }
+
+  .price-check-result__grid span {
+    font-size: 0.65rem !important;
+    margin-bottom: 0.2rem !important;
+    letter-spacing: 0.03em !important;
+  }
+
+  .price-check-result__grid strong {
+    font-size: 0.88rem !important;
+    line-height: 1.2 !important;
+    word-break: break-word !important;
+  }
+
+  /* Empty state placeholder */
+  .price-check-result.empty {
+    min-height: 6rem !important;
+    font-size: 0.82rem !important;
+    border-radius: 12px !important;
+  }
+
+  /* ── 9. Eyebrow label in result ── */
+  .price-check-result__hero .eyebrow {
+    font-size: 0.65rem !important;
+  }
+}
+
+/* ── Very narrow phones (older Motorola G series, ~360 px) ──
+   Only tighten further where the 480 px rules still leave things cramped. ── */
+@media (max-width: 390px) and (pointer: coarse) {
+
+  .scan-mode-panel {
+    padding: 0.5rem !important;
+  }
+
+  #scanModeInput {
+    min-height: 3.2rem !important;
+    font-size: 1.05rem !important;
+  }
+
+  .scan-mode-actions button {
+    min-height: 2.6rem !important;
+    font-size: 0.76rem !important;
+  }
+
+  .price-check-result__grid {
+    grid-template-columns: repeat(2, 1fr) !important;
+    gap: 0.35rem !important;
+  }
+
+  .price-check-result__grid article {
+    padding: 0.45rem 0.5rem !important;
+  }
+
+  .price-check-result__grid span {
+    font-size: 0.6rem !important;
+  }
+
+  .price-check-result__grid strong {
+    font-size: 0.82rem !important;
+  }
+
+  .price-check-result__price {
+    font-size: 1.75rem !important;
+  }
+
+  .price-check-result__hero h3 {
+    font-size: 0.95rem !important;
+  }
+
+  .tab-button {
+    font-size: 0.66rem !important;
+    padding: 0.25rem 0.42rem !important;
+  }
+}
+
+/* ── When SCAN MODE tab is active on a phone: collapse nav to essentials only.
+   This frees maximum vertical space for the scan result card.
+   Only non-essential tabs are hidden. The active SCAN MODE tab always shows.
+   Tablet and desktop: unaffected (max-width:480px + pointer:coarse guard).  ── */
+@media (max-width: 480px) and (pointer: coarse) {
+  body[data-active-tab="scanmode"] .command-bar {
+    /* Tighten the header as much as possible so the scan result fills the screen */
+    padding: 0.15rem 0.35rem 0.2rem !important;
+    gap: 0.12rem !important;
+  }
+
+  /* In scan mode: hide tabs that aren't useful while scanning.
+     Keep: SCAN MODE (pricecheck), Inventory (counts), Settings.
+     Hide: Dashboard, Products, New Items, Ordering, Reports, Vendors, Logs.  */
+  body[data-active-tab="scanmode"] .tab-button[data-tab="dashboard"],
+  body[data-active-tab="scanmode"] .tab-button[data-tab="inventory"],
+  body[data-active-tab="scanmode"] .tab-button[data-tab="newitems"],
+  body[data-active-tab="scanmode"] .tab-button[data-tab="ordering"],
+  body[data-active-tab="scanmode"] .tab-button[data-tab="reports"],
+  body[data-active-tab="scanmode"] .tab-button[data-tab="vendors"],
+  body[data-active-tab="scanmode"] .tab-button[data-tab="logs"],
+  body[data-active-tab="scanmode"] .tab-button[data-tab="parents"] {
+    display: none !important;
+  }
+
+  /* The remaining nav: SCAN MODE + Inventory + Settings + Logout — make them larger */
+  body[data-active-tab="scanmode"] .tab-button {
+    padding: 0.38rem 0.8rem !important;
+    font-size: 0.78rem !important;
+    min-height: 2rem !important;
+  }
+
+  body[data-active-tab="scanmode"] .tab-button--pricecheck {
+    font-size: 0.82rem !important;
+    padding: 0.4rem 1rem !important;
+  }
+
+  /* Scan result takes precedence — give it maximum height */
+  body[data-active-tab="scanmode"] .price-check-result {
+    /* Let it grow to fill remaining viewport */
+    min-height: 0 !important;
+  }
+
+  /* Make the scan mode panel fill the full available width */
+  body[data-active-tab="scanmode"] .scan-mode-panel {
+    width: 100% !important;
+    max-width: 100% !important;
+    box-sizing: border-box !important;
+  }
+}
