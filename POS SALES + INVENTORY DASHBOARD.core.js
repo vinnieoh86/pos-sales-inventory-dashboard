@@ -2486,8 +2486,9 @@ function seedItemMetaFromExcelRows(rows = []) {
 function registerInventorySnapshotMeta(snapshotDate, rows = [], previousCodes = new Set()) {
   let changed = false;
   rows.forEach((row) => {
-    const key = codeKey(row.code);
+    const key = codeKey(row.code || row.plu || row.itemNumber || row.vendorCode);
     if (!key) return;
+    if (!row.code) row.code = row.plu || row.itemNumber || row.vendorCode || "";
     const existing = state.itemMeta[key] || {};
     const isNew = !previousCodes.has(key) && !existing.addDate;
     const rowCaseSize = Math.max(1, Math.round(toNumber(row.caseSize) || 1));
@@ -2655,11 +2656,11 @@ function normalizeInventoryRow(row, date) {
   };
   return {
     date: date.iso,
-    code: normalizeCode(field("CODE", "code")),
+    code: normalizeCode(field("CODE", "Code", "code", "UPC", "Upc", "upc", "BARCODE", "Barcode", "barcode", "SKU", "Sku", "sku", "PID", "Pid", "pid")),
     category: cleanCell(field("CATEGORY", "category")),
     product: cleanCell(field("NAME", "name", "ITEM NAME", "Item Name", "item_name", "product", "Product", "PRODUCT")),
-    plu: cleanCell(field("PLU", "plu")),
-    itemNumber: cleanCell(field("ITEM NUMBER", "item number", "ITEMNUM", "itemnum", "itemNumber", "Item Number")),
+    plu: cleanCell(field("PLU", "plu", "ITEM", "Item", "item", "STYLE", "Style", "style")),
+    itemNumber: cleanCell(field("ITEM NUMBER", "item number", "ITEMNUM", "itemnum", "itemNumber", "Item Number", "VENDOR CODE", "vendor code", "Vendor Code", "SUPPLIER CODE", "Supplier Code", "supplier code")),
     price: toNumber(field("PRICE", "price")),
     cost: toNumber(field("COST", "cost", "unitCost", "Unit Cost", "unit_cost")),
     stock: toNumber(field("STOCK", "stock")),
@@ -2679,8 +2680,9 @@ function normalizeInventoryRow(row, date) {
 function mergeInventoryRowsByCode(rows = []) {
   const merged = new Map();
   rows.forEach((row) => {
-    const key = codeKey(row.code);
+    const key = codeKey(row.code || row.plu || row.itemNumber || row.vendorCode);
     if (!key) return;
+    if (!row.code) row.code = row.plu || row.itemNumber || row.vendorCode || "";
     const existing = merged.get(key);
     if (!existing) {
       merged.set(key, { ...row, stock: toNumber(row.stock) || 0 });
@@ -2704,7 +2706,11 @@ function buildLatestInventory() {
   state.latestInventory = new Map();
   [...state.inventories.entries()].sort(([a], [b]) => a.localeCompare(b)).forEach(([, rows]) => {
     mergeInventoryRowsByCode(rows).forEach((row) => {
-      if (row.code) state.latestInventory.set(codeKey(row.code), row);
+      const primary = row.code || row.plu || row.itemNumber || row.vendorCode;
+      const key = codeKey(primary);
+      if (!key) return;
+      if (!row.code) row.code = primary;
+      state.latestInventory.set(key, row);
     });
   });
 }
@@ -2951,8 +2957,11 @@ function ensurePriceCheckExactIndex() {
   const exact = new Map();
   const indexEntry = (entry) => {
     [entry.code, entry.plu, entry.itemNumber].forEach((value) => {
-      const key = codeKey(value);
-      if (key && !exact.has(key)) exact.set(key, entry);
+      codeLookupVariants(value).forEach((key) => {
+        if (key && !exact.has(key)) exact.set(key, entry);
+      });
+      const canonical = codeKey(value);
+      if (canonical && !exact.has(canonical)) exact.set(canonical, entry);
     });
   };
   [...state.latestInventory.values()].forEach((inventory) => {
@@ -2983,6 +2992,10 @@ function priceCheckExactMatch(query) {
   const keyed = codeKey(query);
   if (!keyed) return null;
   ensurePriceCheckExactIndex();
+  for (const variant of codeLookupVariants(query)) {
+    const match = state._priceCheckExactIndex?.get(variant);
+    if (match) return match;
+  }
   return state._priceCheckExactIndex?.get(keyed) || null;
 }
 
@@ -4380,6 +4393,10 @@ function findAnyCountMatch(query) {
   const needle = raw.toLowerCase();
   const normalizedNeedle = codeKey(raw);
   if (!state._countSearchIndex || state._countIndexStamp !== state._dataCacheStamp) buildCountSearchIndex();
+  for (const variant of codeLookupVariants(raw)) {
+    const exact = state._countExactIndex?.get(variant);
+    if (exact) return exact;
+  }
   return state._countExactIndex?.get(normalizedNeedle)
     || state._countExactIndex?.get(needle)
     || allCountCandidateRows().find((item) =>
@@ -4397,9 +4414,13 @@ function findCountMatch(query) {
 
   if (!state._countSearchIndex || state._countIndexStamp !== state._dataCacheStamp) buildCountSearchIndex();
   // Scanner submissions use the exact map before any text search.
-  const exactMatch = state._countExactIndex?.get(normalizedNeedle)
-    || state._countExactIndex?.get(needle)
-    || null;
+  let exactMatch = state._countExactIndex?.get(normalizedNeedle) || state._countExactIndex?.get(needle) || null;
+  if (!exactMatch) {
+    for (const variant of codeLookupVariants(raw)) {
+      exactMatch = state._countExactIndex?.get(variant);
+      if (exactMatch) break;
+    }
+  }
   if (exactMatch && (countItemIsInScope(exactMatch) || countSessionAllowsOutOfScope())) return exactMatch;
 
   // Second: try filtered pool with partial text match
@@ -4738,9 +4759,10 @@ function buildCountSearchIndex() {
   state._countExactIndex = new Map();
   allRows.forEach((item) => {
     [item.code, item.plu, item.itemNumber].forEach((value) => {
-      const rawKey = cleanCell(value).toLowerCase();
+      codeLookupVariants(value).forEach((key) => {
+        if (key && !state._countExactIndex.has(key)) state._countExactIndex.set(key, item);
+      });
       const normalizedKey = codeKey(value);
-      if (rawKey && !state._countExactIndex.has(rawKey)) state._countExactIndex.set(rawKey, item);
       if (normalizedKey && !state._countExactIndex.has(normalizedKey)) state._countExactIndex.set(normalizedKey, item);
     });
   });
@@ -9177,13 +9199,40 @@ function buildSearchHaystack(values) {
 }
 
 function normalizeCode(value) {
-  return cleanCell(value).replace(/^=/, "").replace(/^"|"$/g, "");
+  // Scanner-safe cleanup: supports POS exports like ="012345", leading apostrophes,
+  // spaces/hyphens from copied barcode values, and plain UPC/EAN strings.
+  let code = cleanCell(value)
+    .replace(/^=/, "")
+    .replace(/^['\s]+/, "")
+    .replace(/^"|"$/g, "")
+    .trim();
+  if (/^\d[\d\s-]*\d$/.test(code)) code = code.replace(/[\s-]+/g, "");
+  return code;
 }
 
 function rawCodeKey(value) {
   const code = normalizeCode(value);
   if (!code) return "";
   return /^\d+$/.test(code) ? (code.replace(/^0+/, "") || "0") : code.toUpperCase();
+}
+
+function codeLookupVariants(value) {
+  const normalized = normalizeCode(value);
+  const raw = cleanCell(value);
+  const variants = new Set();
+  [normalized, raw, rawCodeKey(value)].forEach((entry) => {
+    const text = cleanCell(entry);
+    if (!text) return;
+    variants.add(text);
+    variants.add(text.toLowerCase());
+    variants.add(text.toUpperCase());
+    if (/^\d+$/.test(text)) {
+      variants.add(text.replace(/^0+/, "") || "0");
+      if (text.length === 11) variants.add(`0${text}`);
+      if (text.length === 12 && text.startsWith("0")) variants.add(text.slice(1));
+    }
+  });
+  return [...variants].filter(Boolean);
 }
 
 function codeKey(value) {
