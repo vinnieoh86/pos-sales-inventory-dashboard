@@ -10381,49 +10381,29 @@ async function restoreSharedProductsOnlyFromSupabase(options = {}) {
   if (!ENABLE_SHARED_SYNC) return false;
   const { silent = false } = options;
   try {
-    // IMPORTANT: Products/Scan must be hydrated from the real shared products table,
-    // not only product_meta. Loading only metadata left devices stuck with a tiny
-    // local subset (ex: ~297 ONYX rows), causing scan mode to miss most inventory
-    // or return $0 / Unassigned alias records.
-    const [productRows, productMetaRows] = await Promise.all([
-      supabaseSelectRowsSafe("products", { select: "*", order: "code.asc" }),
-      supabaseSelectRowsSafe("product_meta", {
-        select: "*",
-        order: "updated_at.desc",
-        limit: String(SHARED_PRODUCT_META_PULL_LIMIT),
-      }),
-    ]);
-    const mergedRows = mergeSharedProductRows(productRows, productMetaRows);
-    const localCount = Math.max(state.latestInventory.size || 0, state.excelItems.size || 0);
-    console.info("[InventoryLoad] shared products restore", {
-      products: productRows.length,
-      productMeta: productMetaRows.length,
-      merged: mergedRows.length,
-      localCount,
+    const productMetaRows = await supabaseSelectRowsSafe("product_meta", {
+      select: "*",
+      order: "updated_at.desc",
+      limit: String(SHARED_PRODUCT_META_PULL_LIMIT),
     });
-
-    let changedCodes = [];
-    if (mergedRows.length && mergedRows.length >= localCount) {
-      changedCodes = mergedRows.map((row) => codeKey(row.code)).filter(Boolean);
-      applySharedProductRows(mergedRows);
-    } else {
-      changedCodes = applySharedProductMetaRowsLight(productMetaRows);
-    }
+    const changedCodes = applySharedProductMetaRowsLight(productMetaRows);
     if (!changedCodes.length) return false;
-    queueScanExactIndexBuild?.({ prioritize: true, immediate: true });
     if (!state.activeCountSession) {
       if (activeTabName() === "inventory") {
-        bumpDataStamp();
-        renderInventory();
+        const visibleCodes = new Set([...(els.inventoryBody?.querySelectorAll("tr[data-item-code]") || [])]
+          .map((row) => row.dataset.itemCode)
+          .filter(Boolean)
+          .map(codeKey));
+        changedCodes.filter((code) => visibleCodes.has(codeKey(code))).forEach((code) => patchInventoryRowFromCache(code));
+        renderInventorySummary(state.inventoryRows || currentInventoryRows());
         refreshDetailDrawer();
       } else if (activeTabName() === "ordering") {
         renderOrders();
       }
     }
-    if (!silent) showToast(`Shared products loaded (${number.format(Math.max(mergedRows.length, changedCodes.length))} items)`, 2200, "success");
+    if (!silent) showToast(`Shared product updates loaded (${number.format(changedCodes.length)} items)`, 1800, "success");
     return true;
   } catch (error) {
-    console.warn("Shared product restore failed", error);
     if (!silent) showToast("Shared product refresh failed.", 2600, "warning");
     return false;
   }
@@ -10857,16 +10837,7 @@ async function syncSharedDataToSupabase(options = {}) {
       });
     const productRows = [...productRowMap.values()].filter((row) => cleanCell(row.code));
     const productMetaRows = buildProductMetaRowsSnapshot();
-    const destructiveProductSyncLooksPartial = !productsOnly && productRows.length > 0 && productRows.length < 1000;
-    if (destructiveProductSyncLooksPartial) {
-      console.warn("[SyncGuard] Blocked full products overwrite because local product set looks partial", {
-        productRows: productRows.length,
-        latestInventory: state.latestInventory.size,
-        excelItems: state.excelItems.size,
-      });
-      // Do not delete the shared products table with a small local subset. Still sync
-      // product_meta/vendor/count edits below so user changes are preserved.
-    } else if (!productsOnly) {
+    if (!productsOnly) {
       await supabaseDeleteAllRows("products");
       if (productRows.length) await supabaseInsertRows("products", productRows);
     } else if (productRows.length) {
