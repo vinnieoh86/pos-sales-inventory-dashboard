@@ -7077,3 +7077,38 @@ body.scan-mode-active.scan-performance-medium .scan-mode-panel * {
     overflow-x: auto !important;
   }
 }
+
+/* 2026-06-03 physical count stacking fixes */
+#countSessionModal.count-modal:not([hidden]) {
+  z-index: 9000 !important;
+}
+#sessionHistoryModal.count-modal:not([hidden]),
+#countReportModal.count-modal:not([hidden]),
+#reportCountModal.count-modal:not([hidden]),
+#reportLogsModal.count-modal:not([hidden]),
+#reportPoModal.count-modal:not([hidden]),
+#reportAdjustModal.count-modal:not([hidden]) {
+  position: fixed !important;
+  z-index: 9500 !important;
+}
+#countSetupModal.count-modal:not([hidden]),
+#countDuplicateModal.count-modal:not([hidden]),
+#confirmDeleteSessionModal.count-modal:not([hidden]),
+.count-modal.count-modal--confirm:not([hidden]) {
+  position: fixed !important;
+  z-index: 11000 !important;
+}
+.toast,
+#toast,
+.toast-container {
+  z-index: 12000 !important;
+}
+.count-modal__dialog,
+.count-panel,
+.count-workspace,
+.count-report-table,
+.count-report-table th,
+.count-report-table td {
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}

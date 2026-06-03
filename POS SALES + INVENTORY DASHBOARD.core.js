@@ -24,7 +24,7 @@
   inventoryRows: [],
   parentRows: [],
   activePresetDays: 90,
-  // Performance cache Ã¢â‚¬â€ invalidated on data load, valid across filter/search changes
+  // Performance cache - invalidated on data load, valid across filter/search changes
   _skuCache: null,      // full unfiltered SKU map keyed by codeKey
   _skuCacheStamp: 0,    // increments when raw data changes
   _dataCacheStamp: 0,   // stamp written on load; cache valid when stamps match
@@ -310,7 +310,7 @@ function clearInventorySelection() {
   });
 }
 
-// Debounce helper Ã¢â‚¬â€ delays fast-typing renders
+// Debounce helper - delays fast-typing renders
 function debounce(fn, ms) {
   let timer;
   return (...args) => {
@@ -847,6 +847,28 @@ els.countSetupModal?.addEventListener("click", (event) => {
 });
 els.countSearchButton?.addEventListener("click", handleCountLookup);
 els.countClearSearchButton?.addEventListener("click", clearCountLookup);
+let countAutoCommitTimer = null;
+function clearCountAutoCommitTimer() {
+  if (countAutoCommitTimer) {
+    clearTimeout(countAutoCommitTimer);
+    countAutoCommitTimer = null;
+  }
+}
+function scheduleCountAutoCommit(delay = 75) {
+  if (!state.countAutoPlusMode || !els.countSearchInput || !state.activeCountSession) return;
+  const raw = cleanCell(els.countSearchInput.value || '').trim();
+  if (!raw || raw.length < 4) return;
+  clearCountAutoCommitTimer();
+  countAutoCommitTimer = setTimeout(() => {
+    countAutoCommitTimer = null;
+    if (!state.countAutoPlusMode || !state.activeCountSession || !els.countSearchInput) return;
+    const value = cleanCell(els.countSearchInput.value || '').trim();
+    if (!value || value.length < 4) return;
+    // Safety net for scanners/browsers that occasionally miss the Enter key.
+    // handleCountLookup() still performs the real matching and scope checks.
+    handleCountLookup();
+  }, delay);
+}
 els.countSearchInput?.addEventListener("keydown", (event) => {
   if (
     event.key.length === 1
@@ -861,8 +883,8 @@ els.countSearchInput?.addEventListener("keydown", (event) => {
   if (state.countAutoPlusMode && event.key === "Enter") {
     event.preventDefault();
     event.stopPropagation();
+    clearCountAutoCommitTimer();
     hideCountDropdown();
-    state._replaceCountInputOnNextKey = true;
     handleCountLookup();
     return;
   }
@@ -906,7 +928,7 @@ els.countSearchInput?.addEventListener("keydown", (event) => {
     hideCountDropdown();
   }
 });
-// Debounced count search â€” avoids scanning 25k items on every keystroke
+// Debounced count search - avoids scanning 25k items on every keystroke
 const renderCountDropdownDebounced = debounce((val) => renderCountDropdown(val), 120);
 els.countSearchInput?.addEventListener("input", () => {
   // In +1 Auto mode the scan box must act like a scanner-only lane.
@@ -914,6 +936,7 @@ els.countSearchInput?.addEventListener("input", () => {
   // suggestion instead of committing the +1, causing every-other-scan misses.
   if (state.countAutoPlusMode) {
     hideCountDropdown();
+    scheduleCountAutoCommit();
     return;
   }
   renderCountDropdownDebounced(els.countSearchInput.value);
@@ -1046,6 +1069,14 @@ els.countDuplicateModal?.addEventListener("click", (event) => {
 els.countSessionModal?.addEventListener("click", (event) => {
   if (els.countDuplicateModal && !els.countDuplicateModal.hidden) return;
   if (els.countReportModal && !els.countReportModal.hidden) return;
+  // When a report/history action re-opens the count workspace, the same tap/click
+  // can bubble into this backdrop handler and instantly close it. Ignore that
+  // one backdrop close for a short moment.
+  if (event.target === els.countSessionModal && Date.now() < Number(state._ignoreNextCountBackdropCloseUntil || 0)) {
+    event.preventDefault();
+    event.stopPropagation();
+    return;
+  }
   if (event.target === els.countSessionModal) {
     state._countSessionOpen = false;
     els.countSessionModal.hidden = true;
@@ -1297,7 +1328,7 @@ document.addEventListener("keydown", (event) => {
     closeCountSetupModal();
     return;
   }
-  // Enter in setup modal navigates: date â†’ vendor â†’ category â†’ status â†’ start
+  // Enter in setup modal navigates: date -> vendor -> category -> status -> start
   if (!els.countSetupModal.hidden && event.key === "Enter") {
     event.preventDefault();
     const focused = document.activeElement;
@@ -1320,6 +1351,7 @@ document.addEventListener("keydown", (event) => {
   if (!els.countSessionModal.hidden) {
     if (event.key === "Escape") {
       event.preventDefault();
+      state._countSessionOpen = false;
       els.countSessionModal.hidden = true;
       return;
     }
@@ -1538,7 +1570,7 @@ els.inventoryBody?.addEventListener("click", (event) => {
     return;
   }
   if (event.target.closest(".mini-input, .reset-override, [data-item-field]")) return;
-  // Stock cell click â†’ open stock adjust modal
+  // Stock cell click -> open stock adjust modal
   const stockCell = event.target.closest("td[data-col='stock']");
   if (stockCell) {
     const row = stockCell.closest("tr[data-item-code]");
@@ -3180,7 +3212,7 @@ function renderPriceCheckDropdown(query) {
       cleanCell(item.code),
       cleanCell(item.plu) ? `PLU ${cleanCell(item.plu)}` : "",
       cleanCell(item.vendor),
-    ].filter(Boolean).join(" Â· ");
+    ].filter(Boolean).join("  -  ");
     return `<div class="price-check-dd-item${index === 0 ? " price-check-dd-item--active" : ""}" data-key="${escapeHtml(itemKey)}">
       <span class="price-check-dd-name">${escapeHtml(item.product || item.code || "Unknown item")}</span>
       <span class="price-check-dd-meta">${escapeHtml(meta)}</span>
@@ -4142,7 +4174,7 @@ function countSessionLabel(session) {
   const vendorLabel = session.vendor || session.department || "All vendors";
   const parts = [session.date || "No date", vendorLabel, session.category || "All categories"];
   if (session.searchFilter) parts.push(`Filter: ${session.searchFilter}`);
-  return parts.join(" Â· ");
+  return parts.join("  -  ");
 }
 
 // ARCH-B: Human-readable status label for count session history rows.
@@ -4319,7 +4351,7 @@ async function saveCountSession() {
       state.latestInventory.set(key, existing);
       updatedCount++;
     } else {
-      // Item may be keyed differently â€” try to find it
+      // Item may be keyed differently - try to find it
       state.latestInventory.forEach((item, k) => {
         if (codeKey(item.code) === key) {
           item.stock = Number(entry.countedQty || 0);
@@ -4432,19 +4464,31 @@ function undoLastCountAutoPlus() {
   const idx = entries.findIndex((entry) => entry.entryId === last.entryId);
   if (idx >= 0) {
     entries.splice(idx, 1);
-    state.activeCountSession = {
+    const updated = markCountSessionDirty({
       ...session,
       entries,
       updatedAt: new Date().toISOString(),
       localSyncPending: true,
-    };
+    });
+    state.activeCountSession = updated;
     state.countAutoUndoStack = stack;
+    if (updated.id) {
+      const activeId = cleanCell(updated.id);
+      state.countSessions = [
+        { ...updated, isActiveLive: true },
+        ...(state.countSessions || []).filter((saved) => cleanCell(saved?.id) !== activeId),
+      ];
+    }
     persistActiveCountSession();
     renderCountEntryRows(false);
     updateCountSummaryStrip();
     renderSelectedCountItem();
     renderCountQuantity();
     showToast(`Undid +1 for ${last.code}`, 1800, "warning");
+    void syncSharedCountSessionsToSupabase(true).catch(() => {
+      // Local state is already correct; the normal queued sync will retry.
+      scheduleSharedCountSessionsSync();
+    });
   } else {
     state.countAutoUndoStack = stack;
   }
@@ -4540,7 +4584,7 @@ function handleCountLookup() {
   if (!match) {
     state.selectedCountItemCode = "";
     renderSelectedCountItem();
-    // Immediately flash red â€” don't wait for qty entry
+    // Immediately flash red - don't wait for qty entry
     if (els.countSearchInput) {
       els.countSearchInput.classList.add("count-search-error");
       setTimeout(() => els.countSearchInput && els.countSearchInput.classList.remove("count-search-error"), 1200);
@@ -4620,6 +4664,7 @@ function closeDuplicateCountModal() {
 }
 
 function commitCountEntry(item, qty, mode, options = {}) {
+  clearCountAutoCommitTimer?.();
   const session = {
     ...state.activeCountSession,
     updatedAt: new Date().toISOString(),
@@ -4656,13 +4701,20 @@ function commitCountEntry(item, qty, mode, options = {}) {
     state.countAutoUndoStack = [...(state.countAutoUndoStack || []), { entryId, code: item.code }].slice(-50);
   }
   state.activeCountSession = session;
+  if (session.id) {
+    const activeId = cleanCell(session.id);
+    state.countSessions = [
+      { ...session, isActiveLive: true },
+      ...(state.countSessions || []).filter((saved) => cleanCell(saved?.id) !== activeId),
+    ];
+  }
   state._countSessionOpen = true;
   state.countQtyBuffer = "0";
   state.countStage = "search";
   state.selectedCountItemCode = "";
   state.pendingDuplicateMode = null;
   persistActiveCountSession();
-  // Fast path: prepend new row, update summary, reset UI â€” no full workspace rebuild
+  // Fast path: prepend new row, update summary, reset UI - no full workspace rebuild
   renderCountEntryRows(true);
   renderSelectedCountItem();
   renderCountQuantity();
@@ -4795,17 +4847,17 @@ function renderCountDropdown(query) {
   const inScopeMatches = matches.filter((e) => inScopeCodes.has(e.codeKey));
   const outScopeMatches = matches.filter((e) => !inScopeCodes.has(e.codeKey));
   const session = state.activeCountSession;
-  const scopeLabel = [session?.vendor, session?.category, session?.status].filter(Boolean).join(" Â· ") || "All items";
+  const scopeLabel = [session?.vendor, session?.category, session?.status].filter(Boolean).join("  -  ") || "All items";
   const counted = new Set((session?.entries || []).map((e) => codeKey(e.code)));
 
   let html = "";
   if (inScopeMatches.length) {
-    html += `<div class="count-dd-group-label">âœ“ In scope â€” ${escapeHtml(scopeLabel)}</div>`;
+    html += `<div class="count-dd-group-label">✓ In scope - ${escapeHtml(scopeLabel)}</div>`;
     html += inScopeMatches.map(({ item }) => {
       const alreadyCounted = counted.has(codeKey(item.code));
       return `<div class="count-dd-item${alreadyCounted ? " count-dd-counted" : ""}" data-code="${escapeHtml(item.code)}">
         <span class="count-dd-name">${escapeHtml(item.product)}</span>
-        <span class="count-dd-meta">${escapeHtml(item.code)}${item.vendor ? ` Â· ${escapeHtml(item.vendor)}` : ""}${alreadyCounted ? " Â· <b>Counted</b>" : ""}</span>
+        <span class="count-dd-meta">${escapeHtml(item.code)}${item.vendor ? `  -  ${escapeHtml(item.vendor)}` : ""}${alreadyCounted ? "  -  <b>Counted</b>" : ""}</span>
       </div>`;
     }).join("");
   }
@@ -4814,7 +4866,7 @@ function renderCountDropdown(query) {
     html += outScopeMatches.map(({ item }) => `
       <div class="count-dd-item count-dd-out" data-code="${escapeHtml(item.code)}" title="Manager override allows this out-of-scope item">
         <span class="count-dd-name">${escapeHtml(item.product)}</span>
-        <span class="count-dd-meta">${escapeHtml(item.code)}${item.vendor ? ` Â· ${escapeHtml(item.vendor)}` : ""}</span>
+        <span class="count-dd-meta">${escapeHtml(item.code)}${item.vendor ? `  -  ${escapeHtml(item.vendor)}` : ""}</span>
       </div>`).join("");
   }
 
@@ -4874,8 +4926,8 @@ function openCountReport(sessionId = state.activeCountSession?.id, mode = state.
   els.countContinueButton?.blur();
   if (els.countReportTitle) {
     els.countReportTitle.textContent = mode === "comparison"
-      ? `${countSessionLabel(session)} Â· Comparison report`
-      : `${countSessionLabel(session)} Â· Input log`;
+      ? `${countSessionLabel(session)}  -  Comparison report`
+      : `${countSessionLabel(session)}  -  Input log`;
   }
   if (els.countReportHead) {
     els.countReportHead.innerHTML = mode === "comparison"
@@ -4953,7 +5005,7 @@ function exportCountReportPdf() {
   }
 
   const html = `<!DOCTYPE html><html><head><meta charset="UTF-8">
-  <title>Physical Count Report â€“ ${escapeHtml(session.date || "-")}</title>
+  <title>Physical Count Report - ${escapeHtml(session.date || "-")}</title>
   <style>
     body { font-family: Arial, sans-serif; font-size: 11px; color: #1c2320; margin: 0; padding: 24px; }
     h1 { font-size: 18px; margin: 0 0 4px; }
@@ -4980,11 +5032,11 @@ function exportCountReportPdf() {
   </body></html>`;
 
   const win = window.open("", "_blank", "width=1000,height=750");
-  if (!win) { showToast("Pop-up blocked â€” allow pop-ups to export PDF.", 3500, "warning"); return; }
+  if (!win) { showToast("Pop-up blocked - allow pop-ups to export PDF.", 3500, "warning"); return; }
   win.document.write(html);
   win.document.close();
   setTimeout(() => win.print(), 500);
-  showToast("Print dialog opened â€” use 'Save as PDF'.", 3200, "success");
+  showToast("Print dialog opened - use 'Save as PDF'.", 3200, "success");
 }
 
 async function exportCountReportExcel() {
@@ -5038,7 +5090,7 @@ async function exportCountReportExcel() {
   xlsx.utils.book_append_sheet(wb, wsComp, "Comparison");
 
   xlsx.writeFile(wb, `PhysicalCount_${session.date || "report"}.xlsx`);
-  showToast(`Count report exported â€” ${entries.length} entries, ${allItems.length} items in scope`, 3200, "success");
+  showToast(`Count report exported - ${entries.length} entries, ${allItems.length} items in scope`, 3200, "success");
 }
 
 function renderCountReportRows(session, mode = state.countReportMode || "input") {
@@ -6001,7 +6053,7 @@ function renderDrillDown(groupValue = "", groupKey = "department", sourceRows = 
   if (!target) return;
   const metric = els.segmentMetric.value;
   const rows = groupValue ? sourceRows.filter((sku) => sku[groupKey] === groupValue) : sourceRows;
-  // Drill one level deeper: if grouped by deptÃ¢â€ â€™show categories; by categoryÃ¢â€ â€™show items; by vendorÃ¢â€ â€™show items
+  // Drill one level deeper: if grouped by dept->show categories; by category->show items; by vendor->show items
   const subKey = groupKey === "department" ? "category" : "product";
   const subGroups = groupKey === "department"
     ? groupBy(rows, "category", metric).slice(0, 8)
@@ -6010,7 +6062,7 @@ function renderDrillDown(groupValue = "", groupKey = "department", sourceRows = 
   target.innerHTML = `
     <div class="drill-heading">
       <strong>${groupValue ? escapeHtml(groupValue) : `Click a ${groupKey}`}</strong>
-      <span>${groupKey === "department" ? "Ã¢â€ â€™ categories Ã¢â€ â€™ items" : "Ã¢â€ â€™ top items"}</span>
+      <span>${groupKey === "department" ? "-> categories -> items" : "-> top items"}</span>
     </div>
     ${subGroups.map((sub) => {
       // Top 8 items within that sub-group, sorted by metric descending (not random)
@@ -6126,11 +6178,11 @@ function renderCompareCards() {
   if (!rows.length) { target.innerHTML = `<p class="muted">No sales data for the selected period.</p>`; return; }
 
   const periodLabel = { "30": "30 days", "60": "60 days", "90": "90 days", "182": "6 months", "365": "12 months", ytd: "YTD", custom: "current range" }[periodVal];
-  const fmtChg = (v) => v == null ? "Ã¢â‚¬â€" : (v >= 0 ? `Ã¢â€“Â² +${v.toFixed(1)}%` : `Ã¢â€“Â¼ ${v.toFixed(1)}%`);
+  const fmtChg = (v) => v == null ? "-" : (v >= 0 ? `▲ +${v.toFixed(1)}%` : `▼ ${v.toFixed(1)}%`);
   const chgCls = (v) => v == null ? "" : v >= 0 ? "compare-up" : "compare-down";
 
   target.innerHTML = `
-    <p class="compare-period-label">Current ${periodLabel} vs prior same-length period Ã‚Â· grouped by ${groupKey}</p>
+    <p class="compare-period-label">Current ${periodLabel} vs prior same-length period  -  grouped by ${groupKey}</p>
     <div class="compare-card-grid">
       ${rows.slice(0, 16).map((r) => `
         <div class="compare-card">
@@ -6258,10 +6310,10 @@ function renderOrders() {
     let alertHtml = "";
     if (todayVendors.length) {
       alertHtml += `<div class="order-day-alert">
-        ðŸ“… <b>Order today:</b>
+        Order today: <b>Order today:</b>
         ${todayVendors.map((r) => {
           const isPending = state.pendingOrders?.some((po) => po.vendor === r.vendor && !po.cleared);
-          return `<span class="order-vendor-chip-wrap"><button type="button" class="order-vendor-chip-btn${isPending?" order-pending-chip":""}" data-vendor-order="${escapeHtml(r.vendor)}">${escapeHtml(r.vendor)}${isPending?" ðŸ•":""}</button><button type="button" class="order-vendor-chip-dismiss" data-dismiss-order-vendor="${escapeHtml(r.vendor)}" title="Dismiss ${escapeHtml(r.vendor)}">×</button></span>`;
+          return `<span class="order-vendor-chip-wrap"><button type="button" class="order-vendor-chip-btn${isPending?" order-pending-chip":""}" data-vendor-order="${escapeHtml(r.vendor)}">${escapeHtml(r.vendor)}${isPending?" Pending":""}</button><button type="button" class="order-vendor-chip-dismiss" data-dismiss-order-vendor="${escapeHtml(r.vendor)}" title="Dismiss ${escapeHtml(r.vendor)}">×</button></span>`;
         }).join("")}
         <button type="button" id="submitAllPoButton" class="count-submit-btn" style="margin-left:auto">Submit All PO</button>
       </div>`;
@@ -6364,7 +6416,7 @@ function renderOrders() {
   const colgroupHtml = visibleCols.map((c) => `<col style="width:${widthByColumn[c.key] || "6rem"}">`).join("");
   const headerHtml = visibleCols.map((c) => {
     const isActive = c.key === sortKey;
-    const arrow = isActive ? (sortDir === "asc" ? " â†‘" : " â†“") : "";
+    const arrow = isActive ? (sortDir === "asc" ? " ↑" : " ↓") : "";
     return `<th class="order-sortable-th${isActive ? " sort-active" : ""}${state.orderArrangeColumns ? " arrange-column-active" : ""}" data-col="${c.key}" data-order-sort="${c.key}" data-order-col-header="${c.key}" draggable="${state.orderArrangeColumns ? "true" : "false"}"><span class="order-arrange-label">${c.label}${state.orderArrangeColumns ? "" : arrow}</span></th>`;
   }).join("");
 
@@ -6457,7 +6509,7 @@ function renderOrders() {
       });
     });
   }
-  // Wire editable Rec Order inputs â€” stopPropagation prevents opening detail drawer
+  // Wire editable Rec Order inputs - stopPropagation prevents opening detail drawer
   els.orderCards.querySelectorAll(".order-rec-input").forEach((input) => {
     input.addEventListener("click", (e) => e.stopPropagation());
     input.addEventListener("focus", () => input.select?.());
@@ -6556,7 +6608,7 @@ function renderInventory() {
     return;
   }
 
-  // Chunked rendering â€” build DOM in batches via requestAnimationFrame so the
+  // Chunked rendering - build DOM in batches via requestAnimationFrame so the
   // browser stays responsive. Tooltip HTML is deferred until mouseover.
   const CHUNK = 80;
   const visibleLimit = Math.max(200, Math.min(rows.length, state._inventoryVisibleLimit || 200));
@@ -7321,7 +7373,7 @@ function buildInventoryRows(options = {}) {
   }
 
   return state._inventoryCache.filter((item) => {
-    // Force Order is treated as Active â€” always include it when filtering by Active
+    // Force Order is treated as Active - always include it when filtering by Active
     if (stateFilter) {
       const itemState = item.state || "";
       if (stateFilter === "Active") {
@@ -7530,7 +7582,7 @@ function downloadBlob(fileName, blob) {
   URL.revokeObjectURL(url);
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ PO Export helpers Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// -- PO Export helpers --------------------------------------------------------
 
 function buildPoRows() {
   return currentOrderRows()
@@ -7548,7 +7600,7 @@ function buildPoRows() {
       totalCost:        orderLineCost(item),
       currentStock:     item.stock || 0,
       svPerDay:         Number(item.velocity || 0).toFixed(2),
-      daysSupply:       Number.isFinite(item.daysSupply) ? Math.round(item.daysSupply) : "âˆž",
+      daysSupply:       Number.isFinite(item.daysSupply) ? Math.round(item.daysSupply) : "∞",
       reorderMin:       item.reorderMin || 0,
       reorderMax:       item.reorderMax || 0,
       isOverridden:     item.isOverridden ? "Yes" : "No",
@@ -7586,7 +7638,7 @@ async function exportPoExcel() {
   const vendors = [...new Set(rows.map((r) => r.vendor))];
   const wb = xlsx.utils.book_new();
 
-  // Summary sheet Ã¢â‚¬â€ all items
+  // Summary sheet - all items
   const summaryData = [
     ["PO Summary", "", "", "", "", "", `Generated: ${new Date().toLocaleDateString()}`],
     [],
@@ -7603,7 +7655,7 @@ async function exportPoExcel() {
   vendors.forEach((vendor) => {
     const vRows = rows.filter((r) => r.vendor === vendor);
     const vData = [
-      [`Purchase Order Ã¢â‚¬â€ ${vendor}`, "", `Date: ${new Date().toLocaleDateString()}`],
+      [`Purchase Order - ${vendor}`, "", `Date: ${new Date().toLocaleDateString()}`],
       [],
     ["Code", "Product", "PLU", "Item #", "Case", "Order Qty", "Case Order", "Unit Cost", "Total Cost", "Stock", "SV/Day", "Override"],
     ...vRows.map((r) => [r.code, r.product, r.plu, r.itemNumber, r.caseSize, r.orderQty, r.caseOrderQty, r.unitCost, r.totalCost, r.currentStock, r.svPerDay, r.isOverridden]),
@@ -7612,13 +7664,13 @@ async function exportPoExcel() {
     ];
     const ws = xlsx.utils.aoa_to_sheet(vData);
     ws["!cols"] = [12,34,10,12,6,9,10,10,8,8,8].map((w) => ({ wch: w }));
-    // Safe sheet name Ã¢â‚¬â€ Excel limits to 31 chars, no special chars
+    // Safe sheet name - Excel limits to 31 chars, no special chars
     const sheetName = vendor.replace(/[\\/*?:[\]]/g, "").slice(0, 31) || "Vendor";
     xlsx.utils.book_append_sheet(wb, ws, sheetName);
   });
 
   xlsx.writeFile(wb, `PO_${new Date().toISOString().slice(0, 10)}.xlsx`);
-  showToast(`PO exported Ã¢â‚¬â€ ${rows.length} items across ${vendors.length} vendor(s)`);
+  showToast(`PO exported - ${rows.length} items across ${vendors.length} vendor(s)`);
 }
 
 function exportPoPdf() {
@@ -7655,7 +7707,7 @@ function exportPoPdf() {
     @media print { body { padding: 8px; } h2 { break-before: auto; } }
   </style></head><body>
   <h1>Purchase Order</h1>
-  <div class="meta">Generated ${dateStr} &nbsp;Ã‚Â·&nbsp; ${rows.length} items &nbsp;Ã‚Â·&nbsp; ${vendors.length} vendor(s)</div>`;
+  <div class="meta">Generated ${dateStr} &nbsp; - &nbsp; ${rows.length} items &nbsp; - &nbsp; ${vendors.length} vendor(s)</div>`;
 
   vendors.forEach((vendor) => {
     const vRows = rows.filter((r) => r.vendor === vendor);
@@ -7690,7 +7742,7 @@ function exportPoPdf() {
   </body></html>`;
 
   const win = window.open("", "_blank", "width=900,height=700");
-  if (!win) { showToast("Pop-up blocked â€” allow pop-ups first.", 3000, "warning"); return; }
+  if (!win) { showToast("Pop-up blocked - allow pop-ups first.", 3000, "warning"); return; }
   win.document.write(html);
   win.document.close();
   setTimeout(() => win.print(), 400);
@@ -8235,7 +8287,7 @@ function isHairCategory(item) {
 // Hair-specific: extract length token (10,12,14,16,18,20,22,24,26,28,30) from subType
 // Returns { length: "14", remainder: "1B" } or null
 function extractHairLength(subType) {
-  // Match standalone length numbers 8Ã¢â‚¬â€œ30 (even), possibly prefixed with space or parenthesis
+  // Match standalone length numbers 8-30 (even), possibly prefixed with space or parenthesis
   const match = subType.match(/(?:^|\s|\()(\b(?:8|10|12|14|16|18|20|22|24|26|28|30)\b)(?:["']?\s*(?:INCH|IN\b|")?)/i);
   if (!match) return null;
   const len = match[1];
@@ -8854,7 +8906,7 @@ function openInventoryBulkActionsModal() {
   });
 }
 
-// Date preset helpers Ã¢â‚¬â€ sets start/end inputs and re-renders
+// Date preset helpers - sets start/end inputs and re-renders
 function applyDatePreset(days) {
   if (!state.dates.length) return;
   clearInventorySelection();
@@ -8886,7 +8938,7 @@ function applyDatePreset(days) {
   render();
 }
 
-// Navigate date range by period â€” arrows follow the active preset button
+// Navigate date range by period - arrows follow the active preset button
 function shiftDateRange(direction) {
   const preset = state.activePresetDays;
   // Determine shift size from active preset
@@ -8953,7 +9005,7 @@ function renderDatePresets() {
     document.getElementById("datePresetPrev")?.addEventListener("click", () => shiftDateRange(-1));
     document.getElementById("datePresetNext")?.addEventListener("click", () => shiftDateRange(1));
 
-    // Click date label â†’ open calendar popup
+    // Click date label -> open calendar popup
     document.getElementById("dateRangeLabel")?.addEventListener("click", (e) => {
       e.stopPropagation();
       let popup = document.getElementById("datePickerPopup");
@@ -8997,8 +9049,8 @@ function renderDatePresets() {
   if (lbl) {
     const s = els.startDate.value;
     const e = els.endDate.value;
-    const fmt = (iso) => { if (!iso) return "â€”"; const [y,m,d] = iso.split("-"); return `${m}/${d}/${y}`; };
-    lbl.textContent = (s && e && s !== e) ? `${fmt(s)} â€“ ${fmt(e)}` : fmt(s || e);
+    const fmt = (iso) => { if (!iso) return "-"; const [y,m,d] = iso.split("-"); return `${m}/${d}/${y}`; };
+    lbl.textContent = (s && e && s !== e) ? `${fmt(s)} - ${fmt(e)}` : fmt(s || e);
   }
 }
 
@@ -9276,7 +9328,7 @@ function fileSummary() {
   const inventoryDays = new Set([...state.inventories.keys(), ...loggedInventoryDates]).size;
   const excelItems = state.excelItems.size;
   if (!salesDays && !inventoryDays && !excelItems) return "No files loaded";
-  return `${salesDays} sales days Ã‚Â· ${inventoryDays} inventory snapshots Ã‚Â· ${number.format(excelItems)} Excel items`;
+  return `${salesDays} sales days  -  ${inventoryDays} inventory snapshots  -  ${number.format(excelItems)} Excel items`;
 }
 
 function coverageSummary() {
@@ -9619,25 +9671,25 @@ function escapeRegex(value) {
 function repairMojibakeText(root = document.body) {
   if (!root) return;
   const replacements = [
-    ["Â·", "·"],
-    ["Ã‚Â·", "·"],
-    ["â†’", "->"],
-    ["âœ“", "Submit"],
-    ["âœ•", "Close"],
-    ["â€“", "-"],
-    ["â€”", "-"],
-    ["Ã¢â‚¬â€", "-"],
-    ["Ã¢â‚¬Â¢", "·"],
-    ["â–¼", "▼"],
-    ["â†‘", "↑"],
-    ["â†“", "↓"],
-    ["âš ï¸", "Alert:"],
-    ["âš ", "min"],
-    ["ðŸ“…", "Order today:"],
-    ["ðŸ•", "Pending"],
-    ["Ã°Å¸â€â€™", "Auto"],
-    ["NULLâ†’0", "NULL -> 0"],
-    ["â†’ 0", "-> 0"],
+    [" - ", "·"],
+    [" - ", "·"],
+    ["->", "->"],
+    ["✓", "Submit"],
+    ["x", "Close"],
+    ["-", "-"],
+    ["-", "-"],
+    ["-", "-"],
+    ["-", "·"],
+    ["▼", "▼"],
+    ["↑", "↑"],
+    ["↓", "↓"],
+    ["WARNING:", "Alert:"],
+    ["WARNING:", "min"],
+    ["Order today:", "Order today:"],
+    ["Pending", "Pending"],
+    ["Lock", "Auto"],
+    ["NULL->0", "NULL -> 0"],
+    ["-> 0", "-> 0"],
   ];
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   const nodes = [];
@@ -10936,7 +10988,7 @@ async function restoreSharedDataFromSupabase(options = {}) {
       updateInventoryStateFilter();
       setDefaultDates();
     }
-    if (!silent) showToast(`Loaded shared data â€” ${number.format(mergedProductRows.length)} products, ${number.format(salesRows.length)} sales rows`, 3200, "success");
+    if (!silent) showToast(`Loaded shared data - ${number.format(mergedProductRows.length)} products, ${number.format(salesRows.length)} sales rows`, 3200, "success");
     return true;
   } catch (error) {
     if (!silent) showToast("Supabase shared data could not be loaded.", 3200, "warning");
@@ -11083,7 +11135,7 @@ function bootAppIfNeeded() {
   return appInitPromise;
 }
 
-// â”€â”€ Confirm delete saved session â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Confirm delete saved session ------------------------------------------
 function openConfirmDeleteSession(sessionId) {
   state.pendingDeleteSessionId = sessionId;
   const session = state.countSessions.find((s) => s.id === sessionId);
@@ -11125,7 +11177,7 @@ function confirmDeleteSavedSession() {
   showToast("Physical count deleted locally and queued for shared removal.", 2800, "warning");
 }
 
-// â”€â”€ Continue count from report (re-open the session as active) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Continue count from report (re-open the session as active) -------------
 async function continueCountFromReport() {
   // PERF-F: Try to find the session locally first — no need to block on remote fetch if
   // we already have it. Fall back to a timed remote pull only if it's not found locally.
@@ -11150,11 +11202,15 @@ async function continueCountFromReport() {
   state.countStage = "search";
   state.pendingDuplicateCount = null;
   state.pendingDuplicateMode = null;
+  state._ignoreNextCountBackdropCloseUntil = Date.now() + 700;
   persistCountSessions();
   closeCountReport();
   if (document.querySelector("#reportCountModal")) document.querySelector("#reportCountModal").hidden = true;
   if (document.querySelector("#sessionHistoryModal")) document.querySelector("#sessionHistoryModal").hidden = true;
+  if (els.countReportModal) els.countReportModal.hidden = true;
   renderCountsWorkspace();
+  if (els.countSessionModal) els.countSessionModal.hidden = false;
+  requestAnimationFrame(() => focusCountSearch());
   void syncSharedCountSessionsToSupabase(true);
   showToast(`Continuing count: ${countSessionLabel(session)}`, 2800, "success");
 }
@@ -11182,7 +11238,7 @@ async function ensureCountSessionReadyToApply(session, action = "submitting") {
   return null;
 }
 
-// â”€â”€ Submit & apply count (from report modal) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Submit & apply count (from report modal) -------------------------------
 async function openConfirmSubmitCount() {
   const sessionId = state.countReportOpenId;
   state.pendingSubmitSessionId = sessionId;
@@ -11198,7 +11254,7 @@ async function openConfirmSubmitCount() {
     els.confirmSubmitCountMessage.innerHTML =
       `<b>${entryCount}</b> scanned item${entryCount !== 1 ? "s" : ""} will be updated to physical counts.<br>` +
       (nullCount > 0 ? `<b>${nullCount}</b> unscanned item${nullCount !== 1 ? "s" : ""} in scope will be set to <b>0</b>.<br>` : "") +
-      `<br>A pre-count snapshot will be saved so you can restore if needed.<br><br>âš ï¸ Are you sure you want to apply?`;
+      `<br>A pre-count snapshot will be saved so you can restore if needed.<br><br>WARNING: Are you sure you want to apply?`;
   }
   document.querySelector("#confirmSubmitCountModal").hidden = false;
 }
@@ -11243,7 +11299,7 @@ function restorePreviousCount(sessionId) {
   void syncSharedCountSessionsToSupabase(true);
   void syncSharedProductsByCodes(Object.keys(session.preCountSnapshot || {}), { silent: true });
   void syncSharedInventoryFactsByCodes(Object.keys(session.preCountSnapshot || {}), { silent: true, updateSyncState: false });
-  showToast(`Restored â€” ${restored} stock values reverted`, 3200, "success");
+  showToast(`Restored - ${restored} stock values reverted`, 3200, "success");
 }
 
 async function submitAndApplyCount() {
@@ -11264,7 +11320,7 @@ async function submitAndApplyCount() {
   const savedSession = markCountSessionDirty({ ...session, preCountSnapshot: snapshot, submittedAt: new Date().toISOString() });
   state.countSessions = state.countSessions.map((s) => s.id === sessionId ? savedSession : s);
 
-  // All items in scope â€” scanned items get their count, null/unscanned items get 0
+  // All items in scope - scanned items get their count, null/unscanned items get 0
   const candidates = currentCountSessionCandidates(session);
   const scopeCodes = new Set(candidates.map((item) => codeKey(item.code)));
   let updated = 0;
@@ -11272,7 +11328,7 @@ async function submitAndApplyCount() {
     if (!scopeCodes.has(key) && !scopeCodes.has(codeKey(item.code))) return;
     const entry = latestByCode.get(key) || latestByCode.get(codeKey(item.code));
     const before = item.stock;
-    const after = entry ? Number(entry.countedQty || 0) : 0; // NULL â†’ 0
+    const after = entry ? Number(entry.countedQty || 0) : 0; // NULL -> 0
     if (before === after) return;
     item.stock = after;
     state.latestInventory.set(key, item);
@@ -11289,7 +11345,7 @@ async function submitAndApplyCount() {
       qtyChange: after - before,
       qtyBefore: before,
       qtyAfter: after,
-      reason: entry ? `Physical count: ${countSessionLabel(session)}` : `NULL â†’ 0: ${countSessionLabel(session)}`,
+      reason: entry ? `Physical count: ${countSessionLabel(session)}` : `NULL -> 0: ${countSessionLabel(session)}`,
     });
   });
   localStorage.setItem("posDashboardAdjustLog:v1", JSON.stringify(state.adjustmentLog));
@@ -11303,10 +11359,10 @@ async function submitAndApplyCount() {
   void syncSharedCountSessionsToSupabase(true);
   void syncSharedProductsByCodes([...scopeCodes], { silent: true });
   void syncSharedInventoryFactsByCodes([...scopeCodes], { silent: true, updateSyncState: false });
-  showToast(`Submitted â€” ${updated} stock values updated`, 3200, "success");
+  showToast(`Submitted - ${updated} stock values updated`, 3200, "success");
 }
 
-// â”€â”€ Zero negatives â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Zero negatives ---------------------------------------------------------
 function openConfirmZeroNeg() {
   const negItems = [...state.latestInventory.values()].filter((item) => (item.stock || 0) < 0);
   if (els.confirmZeroNegMessage) {
@@ -11373,7 +11429,7 @@ async function applyZeroNegatives() {
   showToast(`${negItems.length} negative stock values set to 0`, 2800, "success");
 }
 
-// â”€â”€ Stock Adjust Modal (Products tab) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Stock Adjust Modal (Products tab) --------------------------------------
 function openStockAdjustModal(item) {
   state.stockAdjustItem = item;
   state.stockAdjustAction = null;
@@ -11477,10 +11533,10 @@ function finalizeStockAdjust(reason) {
   void savePersistedState();
   void syncSharedProductsByCodes([item.code], { silent: true });
   void syncSharedInventoryFactsByCodes([item.code], { silent: true, updateSyncState: false });
-  showToast(`${action === "add" ? "Added" : action === "remove" ? "Removed" : "Set"} ${number.format(qty)} â€” ${item.code} now ${number.format(after)}`, 3000, "success");
+  showToast(`${action === "add" ? "Added" : action === "remove" ? "Removed" : "Set"} ${number.format(qty)} - ${item.code} now ${number.format(after)}`, 3000, "success");
 }
 
-// â”€â”€ Adjust log rendering â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Adjust log rendering ---------------------------------------------------
 function monthKeyForDate(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
@@ -11515,9 +11571,9 @@ function renderAdjustLog() {
     return;
   }
 
-  // Separate normal vs. auto-generated (NULLâ†’0 and RESTORE) entries
-  const normalEntries = entries.filter((e) => !["NULL â†’ 0", "RESTORE", "ZERO NEGATIVES"].some((t) => (e.reason || "").toUpperCase().includes(t) || (e.action || "").toUpperCase().includes(t)));
-  const autoEntries   = entries.filter((e) =>  ["NULL â†’ 0", "RESTORE", "ZERO NEGATIVES"].some((t) => (e.reason || "").toUpperCase().includes(t) || (e.action || "").toUpperCase().includes(t)));
+  // Separate normal vs. auto-generated (NULL->0 and RESTORE) entries
+  const normalEntries = entries.filter((e) => !["NULL -> 0", "RESTORE", "ZERO NEGATIVES"].some((t) => (e.reason || "").toUpperCase().includes(t) || (e.action || "").toUpperCase().includes(t)));
+  const autoEntries   = entries.filter((e) =>  ["NULL -> 0", "RESTORE", "ZERO NEGATIVES"].some((t) => (e.reason || "").toUpperCase().includes(t) || (e.action || "").toUpperCase().includes(t)));
 
   function rowHtml(entry) {
     const change = entry.qtyChange || 0;
@@ -11545,7 +11601,7 @@ function renderAdjustLog() {
   const autoHtml = autoEntries.length
     ? `<tr class="auto-entries-toggle-row"><td colspan="10">
         <details class="auto-entries-details">
-          <summary>${autoEntries.length} auto-generated entr${autoEntries.length === 1 ? "y" : "ies"} (NULLâ†’0 / RESTORE / ZERO NEGATIVES)</summary>
+          <summary>${autoEntries.length} auto-generated entr${autoEntries.length === 1 ? "y" : "ies"} (NULL->0 / RESTORE / ZERO NEGATIVES)</summary>
           <table class="count-report-table inner-auto-table">
             <thead><tr><th>Date/Time</th><th>Code</th><th>Item</th><th>Vendor</th><th>Category</th><th>Action</th><th>Change</th><th>Before</th><th>After</th><th>Reason</th></tr></thead>
             <tbody>${autoEntries.map(rowHtml).join("")}</tbody>
@@ -11557,7 +11613,7 @@ function renderAdjustLog() {
   els.adjustLogBody.innerHTML = normalHtml + autoHtml;
 }
 
-// Reason â†’ color map for reports
+// Reason -> color map for reports
 function reasonColor_css(reason) {
   const r = (reason || "").toUpperCase();
   if (r.includes("DAMAGED"))           return "#e67e22";
@@ -11608,11 +11664,11 @@ async function exportAdjustLogPdf() {
     @media print { body { padding: 4px; } }
   </style></head><body>
   <h1>Stock Adjustment Log</h1>
-  <div class="meta">Generated ${dateStr} &nbsp;Â·&nbsp; ${exportRows.length} records</div>
+  <div class="meta">Generated ${dateStr} &nbsp; - &nbsp; ${exportRows.length} records</div>
   <table><thead><tr><th>Date/Time</th><th>Code</th><th>Item</th><th>Vendor</th><th>Category</th><th>Action</th><th>Change</th><th>Qty Before</th><th>Qty After</th><th>Reason</th></tr></thead>
   <tbody>${rows}</tbody></table></body></html>`;
   const win = window.open("", "_blank", "width=1100,height=750");
-  if (!win) { showToast("Pop-up blocked â€” please allow pop-ups.", 3500, "warning"); return; }
+  if (!win) { showToast("Pop-up blocked - please allow pop-ups.", 3500, "warning"); return; }
   win.document.write(html);
   win.document.close();
   setTimeout(() => win.print(), 500);
@@ -11641,7 +11697,7 @@ async function exportAdjustLogExcel() {
   showToast(`Exported ${exportRows.length} adjustment records`, 2800, "success");
 }
 
-// â”€â”€ Final Count Report (submitted sessions only) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Final Count Report (submitted sessions only) ----------------------------
 function openFinalCountReport(sessionId) {
   const session = state.countSessions.find((s) => s.id === sessionId);
   if (!session?.preCountSnapshot) {
@@ -11649,7 +11705,7 @@ function openFinalCountReport(sessionId) {
     return;
   }
   state.finalReportSessionId = sessionId;
-  if (els.finalReportTitle) els.finalReportTitle.textContent = `Final Count â€” ${countSessionLabel(session)}`;
+  if (els.finalReportTitle) els.finalReportTitle.textContent = `Final Count - ${countSessionLabel(session)}`;
   if (els.finalReportMeta) {
     const syncStats = countSessionSyncStats(session);
     els.finalReportMeta.innerHTML = `
@@ -11684,7 +11740,7 @@ function renderFinalCountReportRows(session) {
     const variance = qtyEnd - qtyStart;
     const costVar = variance * Number(item.unitCost || 0);
     const vCls = variance > 0 ? "entry-positive" : variance < 0 ? "entry-negative" : "entry-exact";
-    const status = entry ? "Scanned" : "Not scanned (â†’ 0)";
+    const status = entry ? "Scanned" : "Not scanned (-> 0)";
     return `<tr>
       <td>${escapeHtml(item.code)}</td>
       <td>${escapeHtml(item.product)}</td>
@@ -11727,7 +11783,7 @@ function exportFinalCountReportPdf() {
       <td class="num">${number.format(qtyEnd)}</td>
       <td class="num">${variance > 0 ? "+" : ""}${number.format(variance)}</td>
       <td class="num">${currency.format(costVar)}</td>
-      <td>${entry ? "Scanned" : "Not scanned (â†’ 0)"}</td>
+      <td>${entry ? "Scanned" : "Not scanned (-> 0)"}</td>
     </tr>`;
   }).join("");
   const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Final Count Report</title>
@@ -11787,7 +11843,7 @@ async function exportFinalCountReportExcel() {
       const qtyEnd = entry ? Number(entry.countedQty || 0) : 0;
       const variance = qtyEnd - qtyStart;
       const costVar = variance * Number(item.unitCost || 0);
-      return [item.code, item.product, item.vendor || "", item.category || "", qtyStart, qtyEnd, variance, costVar, entry ? "Scanned" : "Not scanned (â†’ 0)"];
+      return [item.code, item.product, item.vendor || "", item.category || "", qtyStart, qtyEnd, variance, costVar, entry ? "Scanned" : "Not scanned (-> 0)"];
     }),
   ];
   const ws = xlsx.utils.aoa_to_sheet(data);
@@ -11795,10 +11851,10 @@ async function exportFinalCountReportExcel() {
   applyXlsxTextToCodeColumns(ws, data, [0]); // code column = index 0
   xlsx.utils.book_append_sheet(wb, ws, "Final Count");
   xlsx.writeFile(wb, `FinalCount_${session.date || "report"}.xlsx`);
-  showToast(`Final count exported â€” ${candidates.length} items`, 2800, "success");
+  showToast(`Final count exported - ${candidates.length} items`, 2800, "success");
 }
 
-// â”€â”€ Vendor Rules (Vendors tab) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Vendor Rules (Vendors tab) ----------------------------------------------
 function persistVendorRules() {
   localStorage.setItem("posDashboardVendorRules:v1", JSON.stringify(state.vendorRules));
   bumpDataStamp();
@@ -11869,7 +11925,7 @@ function renderVendorRules() {
     const todayVendors = state.vendorRules.filter((r) => r.status === "Active" && (r.orderDays || []).includes(today));
     summary.innerHTML = `<span><b>${state.vendorRules.length}</b> vendors configured</span>
       <span><b>${active}</b> active for auto-ordering</span>
-      ${todayVendors.length ? `<span class="vendor-today-alert">âš ï¸ <b>${todayVendors.length}</b> vendor${todayVendors.length>1?"s":""} to order TODAY: ${todayVendors.map(v=>v.vendor).join(", ")}</span>` : ""}`;
+      ${todayVendors.length ? `<span class="vendor-today-alert">WARNING: <b>${todayVendors.length}</b> vendor${todayVendors.length>1?"s":""} to order TODAY: ${todayVendors.map(v=>v.vendor).join(", ")}</span>` : ""}`;
   }
 
   const filtered = statusFilter
@@ -11911,7 +11967,7 @@ function renderVendorRules() {
       </tr>`;
     }).join("");
 
-  // Inline number/text/email inputs â€” save on blur or Enter
+  // Inline number/text/email inputs - save on blur or Enter
   body.querySelectorAll(".vendor-inline-input").forEach((input) => {
     const save = () => {
       const rule = state.vendorRules.find((r) => r.id === input.dataset.ruleId);
@@ -12207,7 +12263,7 @@ function preloadVendorsFromInventory() {
   const allVendors = vendorNamesFromLoadedData();
 
   if (!allVendors.length) {
-    showToast("No inventory or sales data loaded yet â€” load your CSV files first.", 3500, "warning");
+    showToast("No inventory or sales data loaded yet - load your CSV files first.", 3500, "warning");
     return;
   }
 
@@ -12235,7 +12291,7 @@ document.querySelectorAll(".vday-btn").forEach((btn) => {
   });
 });
 
-// â”€â”€ Pending Orders â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Pending Orders --------------------------------------------------------
 function loadPendingOrders() {
   return JSON.parse(localStorage.getItem("posPendingOrders:v1") || "[]");
 }
@@ -12483,7 +12539,7 @@ function clearExpiredPendingOrders() {
 // Run on load
 clearExpiredPendingOrders();
 
-// â”€â”€ Vendor Analysis Panel (inline in ordering tab) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Vendor Analysis Panel (inline in ordering tab) ------------------------
 function exportVendorPoPdfLegacy(vendorName, items) {
   const today = new Date().toLocaleDateString("en-US", { year:"numeric", month:"long", day:"numeric" });
   const body = document.querySelector("#vpmBody");
@@ -12524,7 +12580,7 @@ function exportVendorPoPdfLegacy(vendorName, items) {
     .grand { font-size:14px; font-weight:700; text-align:right; padding:10px 6px; border-top:2px solid #1c2320; }
     @media print { body { padding:8px; } }
   </style></head><body>
-  <h1>Purchase Order â€” ${escapeHtml(vendorName)}</h1>
+  <h1>Purchase Order - ${escapeHtml(vendorName)}</h1>
   <div class="meta">
     <span><b>Date</b> ${today}</span>
     <span><b>Items</b> ${rows.length}</span>
@@ -12777,7 +12833,7 @@ function clearVendorPending(vendorName, options = {}) {
   showToast(`Pending cleared for ${vendorName}`, 2400, "success");
 }
 
-// â”€â”€ Final count export (called after Submit & Apply) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Final count export (called after Submit & Apply) ----------------------
 function generateFinalCountExport(session, candidates, latestByCode, snapshot) {
   const entries = candidates.map((item) => {
     const key = codeKey(item.code);
@@ -12826,12 +12882,12 @@ async function exportFinalCountToExcel(report) {
   showToast("Final count exported for POS import.", 2800, "success");
 }
 
-// â”€â”€ Reports tab â€” load saved final count reports â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Reports tab - load saved final count reports ---------------------------
 if (!state.finalCountReports) {
   state.finalCountReports = JSON.parse(localStorage.getItem("posFinalCountReports:v1") || "[]");
 }
 
-// â”€â”€ User/PIN auth system â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- User/PIN auth system ---------------------------------------------------
 const AUTH_KEY = "posAuthUsers:v1";
 const SUPABASE_URL = "https://mqkrgieotabpptsbosdh.supabase.co";
 const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_i0n6EMZnW-E40Dx8Od_8mg_eD9GChBy";
@@ -12907,7 +12963,7 @@ async function refreshUsersFromSupabase(options = {}) {
     return loadUsers();
   } catch (error) {
     state.authUsersLoaded = true;
-    if (!silent) showToast("Using saved login users â€” Supabase sync unavailable.", 3200, "warning");
+    if (!silent) showToast("Using saved login users - Supabase sync unavailable.", 3200, "warning");
     return loadUsers();
   }
 }
@@ -12962,7 +13018,7 @@ function isUserRole() {
 }
 if (!state.authRequired) state.authRequired = true;
 
-// â”€â”€ Render Settings tab â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Render Settings tab -----------------------------------------------------
 function renderSettings() {
   const panel = document.querySelector("#settingsPanel");
   if (!panel) return;
@@ -13037,7 +13093,7 @@ async function addSettingsUser() {
   }
 }
 
-// â”€â”€ Lock screen â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Lock screen ------------------------------------------------------------
 function showLockScreen() {
   const overlay = document.querySelector("#lockScreen");
   if (overlay) {
@@ -13062,8 +13118,8 @@ function updateMetricsSummaryMode() {
   if (!zone || !bar) return;
   zone.classList.toggle("pinned", !!state.metricsPinned);
   bar.textContent = state.metricsPinned
-    ? "Sales summary â€” pinned (click to return to hover)"
-    : "Sales summary â€” hover to expand (click to pin)";
+    ? "Sales summary - pinned (click to return to hover)"
+    : "Sales summary - hover to expand (click to pin)";
 }
 
 function resetIdleLogoutTimer() {
@@ -13124,7 +13180,7 @@ async function tryUnlock(pin) {
   return true;
 }
 
-// â”€â”€ Render ordering vendor filter â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Render ordering vendor filter ------------------------------------------
 function getOrderVendorFilter() {
   return document.querySelector("#orderVendorFilterSelect")?.value || state.orderVendorFilter || "Active";
 }
@@ -13137,7 +13193,7 @@ function filterOrderVendors(vendorName) {
   return rule.status === filter;
 }
 
-// â”€â”€ PO Modal: case order auto-adjusts when rec order changes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- PO Modal: case order auto-adjusts when rec order changes --------------
 function calcCaseOrder(recOrder, caseSize) {
   const orderQty = Math.max(0, toNumber(recOrder) || 0);
   const size = Math.max(1, toNumber(caseSize) || 1);
@@ -13531,7 +13587,7 @@ function applyOrderOverride(item) {
 }
 
 
-// â”€â”€ Reports tab box buttons â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Reports tab box buttons -------------------------------------------------
 document.querySelector("#reportBoxAdjust")?.addEventListener("click", () => {
   document.querySelector("#reportAdjustModal").hidden = false;
   renderAdjustLog();
@@ -13553,14 +13609,14 @@ document.querySelectorAll(".report-modal-close").forEach((btn) => {
   });
 });
 
-// â”€â”€ Report modal Esc + click-outside â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Report modal Esc + click-outside ----------------------------------------
 ["reportAdjustModal","reportPoModal","reportCountModal","reportLogsModal"].forEach((id) => {
   const el = document.querySelector("#" + id);
   if (!el) return;
   el.addEventListener("click", (e) => { if (e.target === el) el.hidden = true; });
 });
 
-// â”€â”€ PO history rendering â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- PO history rendering -----------------------------------------------------
 function renderPoHistory() {
   const body = document.querySelector("#poHistoryBody");
   if (!body) return;
@@ -13641,7 +13697,7 @@ function openPoHistoryDetail(poId) {
   repairMojibakeText(modal);
 }
 
-// â”€â”€ Count report history rendering â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Count report history rendering ------------------------------------------
 function renderCountReportHistory() {
   const body = document.querySelector("#countReportHistoryBody");
   if (!body) return;
@@ -13656,16 +13712,16 @@ function renderCountReportHistory() {
   </tr>`).join("");
 }
 
-// â”€â”€ Ordering vendor filter â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Ordering vendor filter ----------------------------------------------------
 document.querySelector("#orderVendorFilterSelect")?.addEventListener("change", () => {
   state.orderVendorFilter = document.querySelector("#orderVendorFilterSelect").value;
   renderOrders();
 });
 
-// â”€â”€ Report Esc key support â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Report Esc key support ----------------------------------------------------
 
 
-// â”€â”€ Lock screen â€” no lag, visual feedback, keyboard + click â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Lock screen - no lag, visual feedback, keyboard + click -----------------
 (function() {
   const overlay = document.querySelector("#lockScreen");
   if (!overlay) return;
@@ -13724,7 +13780,7 @@ document.querySelector("#orderVendorFilterSelect")?.addEventListener("change", (
   overlay.addEventListener("touchstart", handleLockKeyEvent, { passive: false });
   overlay.addEventListener("click", handleLockKeyEvent);
 
-  // Keyboard â€” capture phase, fires before other handlers
+  // Keyboard - capture phase, fires before other handlers
   document.addEventListener("keydown", (e) => {
     if (overlay.classList.contains("lock-dismissed")) return;
     if (e.key !== "Tab" && e.key !== "F5" && e.key !== "F12") {
