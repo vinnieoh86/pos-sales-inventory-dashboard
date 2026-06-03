@@ -7112,3 +7112,24 @@ body.scan-mode-active.scan-performance-medium .scan-mode-panel * {
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
 }
+
+/* 2026-06-03 physical count focus patch: force the real modal stack order.
+   Report/review stays above workspace, but confirm/action dialogs stay above reports. */
+#countSessionModal.count-modal:not([hidden]) { z-index: 9000 !important; }
+#sessionHistoryModal.count-modal:not([hidden]),
+#countReportModal.count-modal:not([hidden]),
+#reportCountModal.count-modal:not([hidden]),
+#reportLogsModal.count-modal:not([hidden]),
+#reportPoModal.count-modal:not([hidden]),
+#reportAdjustModal.count-modal:not([hidden]) { z-index: 9500 !important; }
+#confirmSubmitCountModal.count-modal:not([hidden]),
+#confirmDeleteSessionModal.count-modal:not([hidden]),
+#confirmZeroNegModal.count-modal:not([hidden]),
+#finalCountReportModal.count-modal:not([hidden]),
+#countDuplicateModal.count-modal:not([hidden]),
+#appConfirmModal.count-modal:not([hidden]),
+#inventoryBulkActionsModal.count-modal:not([hidden]),
+#stockAdjustModal.count-modal:not([hidden]) { z-index: 11000 !important; }
+.toast,
+#toast,
+.app-toast { z-index: 12000 !important; }

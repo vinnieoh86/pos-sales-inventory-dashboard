@@ -3896,11 +3896,27 @@ function recomputeCountEntryTotals(entries = []) {
     });
 }
 
+function countSessionUndoIds(session = {}) {
+  return new Set([
+    ...(Array.isArray(session.undoEntryIds) ? session.undoEntryIds : []),
+    ...(Array.isArray(session.deletedEntryIds) ? session.deletedEntryIds : []),
+  ].map((id) => cleanCell(id)).filter(Boolean));
+}
+
+function filterUndoneCountEntries(entries = [], session = {}) {
+  const undone = countSessionUndoIds(session);
+  if (!undone.size) return entries;
+  return entries.filter((entry) => !undone.has(cleanCell(entry.entryId)));
+}
+
 function normalizeCountSession(session = {}, statusFallback = "pending") {
   if (!session?.id) return session;
-  const entries = (session.entries || []).map((entry, index) => normalizeCountEntry(entry, session, statusFallback, index));
+  const undoEntryIds = [...countSessionUndoIds(session)];
+  const entries = filterUndoneCountEntries(session.entries || [], { undoEntryIds })
+    .map((entry, index) => normalizeCountEntry(entry, session, statusFallback, index));
   return {
     ...session,
+    undoEntryIds,
     deviceId: cleanCell(session.deviceId || session.device_id) || countDeviceId(),
     deviceLabel: cleanCell(session.deviceLabel || session.device_label) || countDeviceLabel(),
     entries: recomputeCountEntryTotals(entries),
@@ -3913,14 +3929,19 @@ function mergeCountSessions(remoteSession, localSession) {
   const remote = normalizeCountSession(remoteSession, "synced");
   const local = normalizeCountSession(localSession, "pending");
   const newest = countSessionUpdatedMs(local) > countSessionUpdatedMs(remote) ? local : remote;
-  const mergedEntries = new Map(remote.entries.map((entry) => [entry.entryId, { ...entry, syncStatus: "synced" }]));
-  local.entries.forEach((entry) => {
+  const undoEntryIds = [...new Set([
+    ...countSessionUndoIds(remote),
+    ...countSessionUndoIds(local),
+  ])];
+  const mergedEntries = new Map(filterUndoneCountEntries(remote.entries, { undoEntryIds }).map((entry) => [entry.entryId, { ...entry, syncStatus: "synced" }]));
+  filterUndoneCountEntries(local.entries, { undoEntryIds }).forEach((entry) => {
     const remoteEntry = mergedEntries.get(entry.entryId);
     if (!remoteEntry || ["pending", "failed"].includes(entry.syncStatus)) mergedEntries.set(entry.entryId, entry);
   });
   const hasPending = [...mergedEntries.values()].some((entry) => entry.syncStatus !== "synced");
   return {
     ...newest,
+    undoEntryIds,
     entries: recomputeCountEntryTotals([...mergedEntries.values()]),
     syncVersion: Math.max(Number(remote.syncVersion || 0), Number(local.syncVersion || 0)),
     localSyncPending: hasPending || local.localSyncPending === true,
@@ -3971,7 +3992,8 @@ function countSessionHasUnsyncedEdits(session) {
 
 function countSessionForRemote(session = {}) {
   const { localSyncPending, syncError, ...payload } = normalizeCountSession(session, "pending");
-  payload.entries = (payload.entries || []).map((entry) => ({ ...entry, syncStatus: "synced" }));
+  payload.undoEntryIds = [...countSessionUndoIds(payload)];
+  payload.entries = filterUndoneCountEntries(payload.entries || [], payload).map((entry) => ({ ...entry, syncStatus: "synced" }));
   return payload;
 }
 
@@ -4461,12 +4483,15 @@ function undoLastCountAutoPlus() {
     return;
   }
   const entries = [...(session.entries || [])];
-  const idx = entries.findIndex((entry) => entry.entryId === last.entryId);
-  if (idx >= 0) {
-    entries.splice(idx, 1);
+  const undoneId = cleanCell(last.entryId);
+  const idx = entries.findIndex((entry) => cleanCell(entry.entryId) === undoneId);
+  if (idx >= 0 || undoneId) {
+    if (idx >= 0) entries.splice(idx, 1);
+    const undoEntryIds = [...new Set([...(session.undoEntryIds || []), undoneId].filter(Boolean))];
     const updated = markCountSessionDirty({
       ...session,
-      entries,
+      entries: filterUndoneCountEntries(entries, { undoEntryIds }),
+      undoEntryIds,
       updatedAt: new Date().toISOString(),
       localSyncPending: true,
     });
@@ -5283,7 +5308,7 @@ function renderCountSessionRows() {
 
 function renderCountEntryRows(prependOnly = false) {
   if (!els.countEntryBody) return;
-  const entries = state.activeCountSession?.entries || [];
+  const entries = filterUndoneCountEntries(state.activeCountSession?.entries || [], state.activeCountSession);
   if (!entries.length) {
     els.countEntryBody.innerHTML = `<tr><td colspan="8" class="empty-cell">No items counted yet.</td></tr>`;
     return;
@@ -5445,6 +5470,7 @@ function renderCountsWorkspace(options = {}) {
     );
   }
   const active = state.activeCountSession;
+  if (state._continuingCountId && active?.id === state._continuingCountId) state._countSessionOpen = true;
   if (els.countSummaryStrip) els.countSummaryStrip.hidden = false;
   if (els.countSessionModal) els.countSessionModal.hidden = !active || !state._countSessionOpen;
   els.countWorkspaceEmpty.hidden = false;
@@ -11202,15 +11228,23 @@ async function continueCountFromReport() {
   state.countStage = "search";
   state.pendingDuplicateCount = null;
   state.pendingDuplicateMode = null;
-  state._ignoreNextCountBackdropCloseUntil = Date.now() + 700;
+  state._ignoreNextCountBackdropCloseUntil = Date.now() + 2000;
+  state._continuingCountId = sessionId;
   persistCountSessions();
   closeCountReport();
   if (document.querySelector("#reportCountModal")) document.querySelector("#reportCountModal").hidden = true;
   if (document.querySelector("#sessionHistoryModal")) document.querySelector("#sessionHistoryModal").hidden = true;
   if (els.countReportModal) els.countReportModal.hidden = true;
-  renderCountsWorkspace();
-  if (els.countSessionModal) els.countSessionModal.hidden = false;
-  requestAnimationFrame(() => focusCountSearch());
+  // Open on the next tick so the click that pressed Continue cannot land on the
+  // workspace backdrop and immediately close the count again.
+  setTimeout(() => {
+    state.activeCountSession = findCountSessionById(sessionId) || state.activeCountSession || liveSession;
+    state._countSessionOpen = true;
+    state._ignoreNextCountBackdropCloseUntil = Date.now() + 2000;
+    renderCountsWorkspace();
+    if (els.countSessionModal) els.countSessionModal.hidden = false;
+    requestAnimationFrame(() => focusCountSearch());
+  }, 75);
   void syncSharedCountSessionsToSupabase(true);
   showToast(`Continuing count: ${countSessionLabel(session)}`, 2800, "success");
 }
