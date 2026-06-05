@@ -7133,3 +7133,30 @@ body.scan-mode-active.scan-performance-medium .scan-mode-panel * {
 .toast,
 #toast,
 .app-toast { z-index: 12000 !important; }
+
+/* 2026-06-05b Products table stability/alignment fix
+   Render only active Product columns and keep the header/body using the same fixed layout. */
+#inventory {
+  table-layout: fixed !important;
+  width: max-content !important;
+  min-width: 100% !important;
+  border-collapse: collapse !important;
+}
+#inventory thead,
+#inventoryBody tr {
+  display: table-row !important;
+}
+#inventory th,
+#inventoryBody td {
+  box-sizing: border-box !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+#inventory th[data-col="category"],
+#inventoryBody td[data-col="category"] { width: 6rem !important; min-width: 6rem !important; }
+#inventory th[data-col="vendor"],
+#inventoryBody td[data-col="vendor"] { width: 6rem !important; min-width: 6rem !important; }
+#inventory th[data-col="state"],
+#inventoryBody td[data-col="state"] { width: 8rem !important; min-width: 8rem !important; }
+#inventory th[data-col="stock"],
+#inventoryBody td[data-col="stock"] { width: 4.5rem !important; min-width: 4.5rem !important; }

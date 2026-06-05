@@ -593,6 +593,23 @@ const inventoryColumns = [
   ["needs", "Needs"],
 ];
 
+
+const PRODUCT_TABLE_HIDDEN_BY_DEFAULT = new Set(["itemNumber", "sizeAttr", "subType", "containerAttr", "inventoryCost"]);
+function inventoryVisibleColumnKeys() {
+  return (state.columnOrder || inventoryColumns.map(([key]) => key))
+    .filter((key) => inventoryColumns.some(([colKey]) => colKey === key))
+    .filter((key) => state.visibleColumns?.[key] !== false);
+}
+function enforceCompactProductColumns() {
+  // Products tab should match the real inventory CSV fields first: CODE, ITEM, PLU,
+  // SD/DOI, CATEGORY, VENDOR, STATE, DATE, STOCK, SOLD, SV/DAY, COST, PRICE.
+  // The parsed style/detail columns are still available from Columns, but keeping
+  // them hidden prevents the header/body offset that made Category/Vendor/Stock
+  // look like they belonged over the wrong values.
+  PRODUCT_TABLE_HIDDEN_BY_DEFAULT.forEach((key) => {
+    if (state.visibleColumns) state.visibleColumns[key] = false;
+  });
+}
 const orderColumns = [
   { key: "status",           label: "Status",      defaultOn: true  },
   { key: "pending",          label: "Pending",     defaultOn: true  },
@@ -657,6 +674,28 @@ state.columnOrder = placeColumnAfter(state.columnOrder, "plu", "product");
 state.columnOrder = placeColumnAfter(state.columnOrder, "rule", "plu");
 state.visibleColumns.plu = true;
 state.visibleColumns.rule = true;
+enforceCompactProductColumns();
+
+// 2026-06-05: one-time Products layout repair. Some browsers kept an older
+// local column layout that exposed secondary detail columns (Item#/Sub/Type/Tag)
+// between SD/DOI and Category/Vendor, making the data look shifted. Keep the
+// compact Products view aligned by default; users can still re-enable columns.
+(function repairInventoryColumnLayoutOnce() {
+  try {
+    const flag = "posDashboardColumnLayoutRepair:20260605b";
+    if (localStorage.getItem(flag) === "done") return;
+    ["itemNumber", "sizeAttr", "subType", "containerAttr", "inventoryCost"].forEach((key) => {
+      state.visibleColumns[key] = false;
+    });
+    state.columnOrder = inventoryColumns.map(([key]) => key);
+    state.columnOrder = placeColumnAfter(state.columnOrder, "product", "code");
+    state.columnOrder = placeColumnAfter(state.columnOrder, "plu", "product");
+    state.columnOrder = placeColumnAfter(state.columnOrder, "rule", "plu");
+    localStorage.setItem("posDashboardVisibleColumns:v4", JSON.stringify(state.visibleColumns));
+    localStorage.setItem("posDashboardColumnOrder:v3", JSON.stringify(state.columnOrder));
+    localStorage.setItem(flag, "done");
+  } catch (_) {}
+})();
 
 const currency = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
 const number = new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 });
@@ -4402,8 +4441,9 @@ async function saveCountSession() {
   // Sync in background. Delay product/inventory fact sync slightly so the UI is not blocked.
   void syncSharedCountSessionsToSupabase(true);
   setTimeout(() => {
-    void syncSharedProductsByCodes([...latestByCode.keys()], { silent: true });
-    void syncSharedInventoryFactsByCodes([...latestByCode.keys()], { silent: true, updateSyncState: false });
+    // Push the stock quantities as a product-meta update too, so Products/Scan Mode
+    // on every device pulls the same inventory counts after a physical-count save.
+    void syncSharedInventoryFactsByCodes([...latestByCode.keys()], { silent: true, updateSyncState: true });
   }, 400);
   showToast(`Count saved · ${updatedCount} item stock quantities updated`, 3200, "success");
 }
@@ -6628,7 +6668,7 @@ function renderInventory() {
   renderInventorySummary(rows);
   renderInventoryHeader();
   if (!rows.length) {
-    els.inventoryBody.innerHTML = `<tr><td colspan="20" class="empty-cell">Load CSV inventory or the Excel import to view all items.</td></tr>`;
+    els.inventoryBody.innerHTML = `<tr><td colspan="${inventoryVisibleColumnKeys().length + 1}" class="empty-cell">Load CSV inventory or the Excel import to view all items.</td></tr>`;
     clearAppLoadStatus("Building product index");
     logPerformanceEnd("products table render", productsRenderStartedAt, { rows: 0 });
     return;
@@ -6762,11 +6802,29 @@ function showInventoryLoadingMore() {
   state._inventoryLoadingMoreTimer = setTimeout(() => { note.hidden = true; }, 900);
 }
 
+
+function ensureInventoryColGroup() {
+  const table = document.querySelector("#inventory");
+  if (!table) return;
+  let colgroup = table.querySelector("colgroup[data-inventory-cols]");
+  const key = JSON.stringify({ order: state.columnOrder, visible: state.visibleColumns });
+  if (colgroup?.dataset.key === key) return;
+  if (!colgroup) {
+    colgroup = document.createElement("colgroup");
+    colgroup.dataset.inventoryCols = "true";
+    table.prepend(colgroup);
+  }
+  colgroup.dataset.key = key;
+  colgroup.innerHTML = `<col class="checkbox-col" />` + inventoryVisibleColumnKeys()
+    .map((colKey) => `<col data-col="${escapeHtml(colKey)}" />`)
+    .join("");
+}
+
 function renderInventoryHeader() {
   const row = document.querySelector("#inventory thead tr");
   if (!row) return;
   const headerKey = JSON.stringify({
-    order: state.columnOrder,
+    order: inventoryVisibleColumnKeys(),
     visible: state.visibleColumns,
     sort: state.inventorySort,
     arrange: state.arrangeColumns,
@@ -6781,8 +6839,9 @@ function renderInventoryHeader() {
   state._inventoryHeaderKey = headerKey;
   const labels = Object.fromEntries(inventoryColumns);
   // Always start with the checkbox th, then data columns
+  ensureInventoryColGroup();
   row.innerHTML = `<th class="checkbox-col"><input type="checkbox" id="selectAllInventory" title="Select / deselect all" /></th>` +
-    state.columnOrder.map((key) => `
+    inventoryVisibleColumnKeys().map((key) => `
     <th data-col="${key}" data-sort="${key}" class="${state.resizeColumns ? "is-resizable" : ""}" ${state.arrangeColumns ? 'draggable="true"' : ""}>
       <span class="inventory-header-label">${escapeHtml(labels[key] || key)}</span>
       <span class="column-resize-handle" data-resize-col="${key}" title="Drag to resize. Double-click to fit."></span>
@@ -6945,7 +7004,7 @@ function buildInventoryRowNode(item) {
   });
   cbTd.append(cbInput);
   tr.append(cbTd);
-  tr.insertAdjacentHTML("beforeend", state.columnOrder.map((key) => inventoryCellHtml(key, item)).join(""));
+  tr.insertAdjacentHTML("beforeend", inventoryVisibleColumnKeys().map((key) => inventoryCellHtml(key, item)).join(""));
   return tr;
 }
 
@@ -8601,6 +8660,7 @@ function renderColumnPicker() {
 }
 
 function applyColumnVisibility() {
+  ensureInventoryColGroup();
   document.querySelectorAll("[data-col]").forEach((cell) => {
     cell.classList.toggle("hidden-column", state.visibleColumns[cell.dataset.col] === false);
   });

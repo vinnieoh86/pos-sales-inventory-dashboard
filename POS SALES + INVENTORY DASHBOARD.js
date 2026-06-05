@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "20260603-physical-count-modal-auto-undo-fix";
+  const VERSION = "20260605-inventory-sync-layout-fix";
 
   function makeSearchEditable() {
     const search = document.querySelector("#searchInput");
