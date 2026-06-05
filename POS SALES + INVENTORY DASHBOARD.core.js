@@ -150,7 +150,7 @@ let sharedImportLogsAvailable = true;
 let sharedCountSessionsAvailable = true;
 const SHARED_SYNC_POLL_MS = 2000;
 const SHARED_SYNC_INITIAL_DELAY_MS = 1200;
-const SHARED_PRODUCT_META_PULL_LIMIT = 500;
+const SHARED_PRODUCT_META_PULL_LIMIT = 5000;
 
 function performanceNow() {
   return typeof performance !== "undefined" && typeof performance.now === "function"
@@ -10390,6 +10390,18 @@ function hydrateSalesFromSupabase(row) {
   };
 }
 
+
+function refreshInventorySnapshotFromLatestInventory() {
+  const rows = [...state.latestInventory.values()];
+  if (!rows.length) return;
+  const snapshotDate = latestInventoryDate()
+    || rows.map((row) => row.date || "").filter(Boolean).sort().at(-1)
+    || new Date().toISOString().slice(0, 10);
+  state.inventories.set(snapshotDate, rows);
+  state._inventoryCache = null;
+  state._inventoryCacheStamp = "";
+}
+
 function applySharedProductRows(rows) {
   if (!rows?.length) return 0;
   const snapshotDate = rows.map((row) => row.updated_at ? String(row.updated_at).slice(0, 10) : "").filter(Boolean).sort().at(-1)
@@ -10516,6 +10528,8 @@ function applySharedProductMetaRowsLight(rows = []) {
     localStorage.setItem("posDashboardReorderOverrides:v1", JSON.stringify(state.reorderOverrides));
   } catch (_) {}
   saveItemMeta();
+  refreshInventorySnapshotFromLatestInventory();
+  bumpDataStamp();
   return [...changedCodes];
 }
 
@@ -10651,21 +10665,28 @@ async function restoreSharedProductsOnlyFromSupabase(options = {}) {
   if (!ENABLE_SHARED_SYNC) return false;
   const { silent = false } = options;
   try {
-    const productMetaRows = await supabaseSelectRowsSafe("product_meta", {
+    // Pull the shared product snapshot, not only the first few changed rows.
+    // Products can have 25k+ rows; limiting this to 500 made the Kindle miss
+    // many current-inventory / physical-count stock changes even though Scan Mode
+    // was reading the updated backend value.
+    let productMetaRows = await supabaseSelectRowsSafe("product_meta", {
       select: "*",
       order: "updated_at.desc",
-      limit: String(SHARED_PRODUCT_META_PULL_LIMIT),
     });
+    if (!productMetaRows.length && SHARED_PRODUCT_META_PULL_LIMIT) {
+      productMetaRows = await supabaseSelectRowsSafe("product_meta", {
+        select: "*",
+        order: "updated_at.desc",
+        limit: String(SHARED_PRODUCT_META_PULL_LIMIT),
+      });
+    }
     const changedCodes = applySharedProductMetaRowsLight(productMetaRows);
     if (!changedCodes.length) return false;
     if (!state.activeCountSession) {
       if (activeTabName() === "inventory") {
-        const visibleCodes = new Set([...(els.inventoryBody?.querySelectorAll("tr[data-item-code]") || [])]
-          .map((row) => row.dataset.itemCode)
-          .filter(Boolean)
-          .map(codeKey));
-        changedCodes.filter((code) => visibleCodes.has(codeKey(code))).forEach((code) => patchInventoryRowFromCache(code));
-        renderInventorySummary(state.inventoryRows || currentInventoryRows());
+        // Full Products rerender keeps header/body rows, summary chips, filtered rows,
+        // and stock cells from using an old local table snapshot.
+        renderInventory();
         refreshDetailDrawer();
       } else if (activeTabName() === "ordering") {
         renderOrders();
@@ -10967,7 +10988,8 @@ async function syncSharedInventoryFactsByCodes(codes = [], options = {}) {
     if (productMetaRows.length) await supabaseUpsertRows("product_meta", productMetaRows, "code");
     if (updateSyncState && productMetaRows.length) await updateSharedSyncState("product-meta");
     if (productRows.length) {
-      supabaseUpsertRows("products", productRows, "code").catch(() => {});
+      await supabaseUpsertRows("products", productRows, "code");
+      if (updateSyncState) await updateSharedSyncState("products");
     }
     if (!silent) showToast(`Shared ${uniqueCodes.length === 1 ? "item" : "items"} synced.`, 2200, "success");
     return true;
@@ -11392,7 +11414,7 @@ function restorePreviousCount(sessionId) {
   renderAdjustLog();
   void syncSharedCountSessionsToSupabase(true);
   void syncSharedProductsByCodes(Object.keys(session.preCountSnapshot || {}), { silent: true });
-  void syncSharedInventoryFactsByCodes(Object.keys(session.preCountSnapshot || {}), { silent: true, updateSyncState: false });
+  void syncSharedInventoryFactsByCodes(Object.keys(session.preCountSnapshot || {}), { silent: true, updateSyncState: true });
   showToast(`Restored - ${restored} stock values reverted`, 3200, "success");
 }
 
@@ -11452,7 +11474,7 @@ async function submitAndApplyCount() {
   generateFinalCountExport(session, candidates, latestByCode, snapshot);
   void syncSharedCountSessionsToSupabase(true);
   void syncSharedProductsByCodes([...scopeCodes], { silent: true });
-  void syncSharedInventoryFactsByCodes([...scopeCodes], { silent: true, updateSyncState: false });
+  void syncSharedInventoryFactsByCodes([...scopeCodes], { silent: true, updateSyncState: true });
   showToast(`Submitted - ${updated} stock values updated`, 3200, "success");
 }
 
