@@ -989,6 +989,19 @@ els.countSearchInput?.addEventListener("focus", () => {
   }
 });
 els.countSearchInput?.addEventListener("click", () => {
+  // If an item is waiting for qty and the operator clicks the barcode box,
+  // treat that as an intentional rescan/override. The next scanner burst
+  // replaces the field instead of appending to Entered Qty.
+  if (state.activeCountSession && state.countStage === "qty") {
+    state.countStage = "search";
+    state.selectedCountItemCode = "";
+    state.countQtyBuffer = "0";
+    state.pendingDuplicateMode = null;
+    els.countSearchInput.value = "";
+    hideCountDropdown();
+    renderSelectedCountItem();
+    renderCountQuantity();
+  }
   if (!scanPerformanceProfile.isMobile && !scanPerformanceProfile.isSilk) {
     els.countSearchInput.select?.();
   }
@@ -1140,7 +1153,7 @@ document.querySelector("#countContinueButton")?.addEventListener("click", (event
   event.preventDefault();
   event.stopPropagation();
   if (!event.isTrusted) return;
-  void continueCountFromReport();
+  void continueCountFromReport(event);
 });
 document.querySelector("#productPoCloseButton")?.addEventListener("click", closeProductPoReviewModal);
 document.querySelector("#productPoSendButton")?.addEventListener("click", () => sendProductPoSelection(false));
@@ -1430,18 +1443,24 @@ document.addEventListener("keydown", (event) => {
       }
       return;
     }
-    // Scanner-first logic: physical numeric bursts should wake the barcode input.
-    // Qty entry is handled by the visible keypad buttons, so scans do not get
-    // trapped in the Entered Qty buffer.
+    // Qty-first logic: after an item is found, digits go to Entered Qty.
+    // To rescan/override, click inside the barcode/search box first.
     if (/^\d$/.test(event.key)) {
       event.preventDefault();
       event.stopPropagation();
-      if (els.countSearchInput) {
-        els.countSearchInput.focus();
-        els.countSearchInput.value = event.key;
-        state.countStage = "search";
-        scheduleCountAutoCommit?.(90);
-      }
+      handleCountKey(event.key);
+      return;
+    }
+    if (event.key === "Backspace") {
+      event.preventDefault();
+      event.stopPropagation();
+      handleCountKey("back");
+      return;
+    }
+    if (event.key === ".") {
+      event.preventDefault();
+      event.stopPropagation();
+      handleCountKey(".");
       return;
     }
     if (event.key === "Enter") {
@@ -4693,10 +4712,11 @@ function handleCountLookup() {
   state._replaceCountInputOnNextKey = false;
   renderSelectedCountItem();
   renderCountQuantity();
-  // Keep scanner focus in the barcode field even while qty is being entered from
-  // the on-screen keypad. Scanner bursts should start the next lookup, not append
-  // into Entered Qty.
-  focusCountSearch();
+  // Normal count flow: after a successful scan, stay in QTY entry mode.
+  // Operators can use the keypad/keyboard for qty, then Done/Enter returns to scan.
+  // If the scan was wrong, clicking the barcode box intentionally switches back
+  // to search/rescan mode.
+  if (els.countSearchInput) els.countSearchInput.blur();
 }
 
 function clearCountLookup() {
@@ -4978,6 +4998,7 @@ function selectCountDropdownItem(code) {
   els.countSearchInput?.blur();
   renderSelectedCountItem();
   renderCountQuantity();
+  if (els.countSearchInput) els.countSearchInput.blur();
 }
 
 function findCountSessionById(sessionId) {
@@ -5013,7 +5034,7 @@ function openCountReport(sessionId = state.activeCountSession?.id, mode = state.
   }
   if (els.countReportHead) {
     els.countReportHead.innerHTML = mode === "comparison"
-      ? `<tr><th>Code</th><th>Item</th><th>Vendor</th><th>Category</th><th>Qty before</th><th>Qty after</th><th>Qty diff</th><th>Cost diff</th><th>Status</th></tr>`
+      ? `<tr><th>Code</th><th>Item</th><th>Vendor</th><th>Category</th><th>Qty before</th><th>Qty after</th><th>NULL</th><th>Qty diff</th><th>Cost diff</th><th>Status</th></tr>`
       : `<tr><th>Code</th><th>Item</th><th>Vendor</th><th>Category</th><th>Qty before</th><th>Qty after</th><th>Variance</th><th>Mode</th><th>Date/Time</th></tr>`;
   }
   if (els.countReportMeta) {
@@ -5056,19 +5077,21 @@ function exportCountReportPdf() {
     const latestByCode = new Map();
     entries.forEach((entry) => latestByCode.set(codeKey(entry.code), entry));
     tableHtml = `<table>
-      <thead><tr><th>Code</th><th>Item</th><th>Vendor</th><th>Category</th><th class="num">Qty Before</th><th class="num">Qty After</th><th class="num">Qty Diff</th><th class="num">Cost Diff</th><th>Status</th></tr></thead>
+      <thead><tr><th>Code</th><th>Item</th><th>Vendor</th><th>Category</th><th class="num">Qty Before</th><th class="num">Qty After</th><th>NULL</th><th class="num">Qty Diff</th><th class="num">Cost Diff</th><th>Status</th></tr></thead>
       <tbody>${allItems.map((item) => {
         const entry = latestByCode.get(codeKey(item.code));
         const orig = Number(item.stock || 0);
-        const final = entry ? Number(entry.countedQty || 0) : null;
-        const diff = entry ? final - orig : null;
-        const costDiff = entry ? diff * Number(item.unitCost || 0) : null;
-        const cls = diff == null ? "" : diff > 0 ? "var-up" : diff < 0 ? "var-down" : "";
+        const final = entry ? Number(entry.countedQty || 0) : 0;
+        const isNull = !entry;
+        const diff = final - orig;
+        const costDiff = diff * Number(item.unitCost || 0);
+        const cls = diff > 0 ? "var-up" : diff < 0 ? "var-down" : "";
         return `<tr class="${cls}"><td>${escapeHtml(item.code)}</td><td>${escapeHtml(item.product)}</td><td>${escapeHtml(item.vendor || "-")}</td><td>${escapeHtml(item.category || "-")}</td>
           <td class="num">${number.format(orig)}</td>
-          <td class="num">${entry ? number.format(final) : "NULL"}</td>
-          <td class="num">${entry ? (diff > 0 ? `+${number.format(diff)}` : number.format(diff)) : "NULL"}</td>
-          <td class="num">${entry ? currency.format(costDiff) : "NULL"}</td>
+          <td class="num">${number.format(final)}</td>
+          <td>${isNull ? "NULL" : ""}</td>
+          <td class="num">${diff > 0 ? `+${number.format(diff)}` : number.format(diff)}</td>
+          <td class="num">${currency.format(costDiff)}</td>
           <td>${entry ? "Scanned" : "Not scanned"}</td></tr>`;
       }).join("")}</tbody></table>`;
   } else {
@@ -5157,18 +5180,19 @@ async function exportCountReportExcel() {
   const compData = [
     ["Physical Count - Comparison", "", "", `Date: ${session.date || "-"}`, `Vendor: ${vendorLabel}`, `Category: ${session.category || "All"}`, syncNote],
     [],
-    ["Code", "Item", "Vendor", "Category", "Qty Before", "Qty After", "Qty Diff", "Cost Diff", "Status"],
+    ["Code", "Item", "Vendor", "Category", "Qty Before", "Qty After", "NULL", "Qty Diff", "Cost Diff", "Status"],
     ...allItems.map((item) => {
       const entry = latestByCode.get(codeKey(item.code));
       const orig = Number(item.stock || 0);
-      const final = entry ? Number(entry.countedQty || 0) : null;
-      const diff = entry != null ? final - orig : null;
-      const costDiff = entry != null ? diff * Number(item.unitCost || 0) : null;
-      return [item.code, item.product, item.vendor || "", item.category || "", orig, final ?? "NULL", diff ?? "NULL", costDiff ?? "NULL", entry ? "Scanned" : "Not scanned"];
+      const final = entry ? Number(entry.countedQty || 0) : 0;
+      const isNull = !entry;
+      const diff = final - orig;
+      const costDiff = diff * Number(item.unitCost || 0);
+      return [item.code, item.product, item.vendor || "", item.category || "", orig, final, isNull ? "NULL" : "", diff, costDiff, entry ? "Scanned" : "Not scanned"];
     }),
   ];
   const wsComp = xlsx.utils.aoa_to_sheet(compData);
-  wsComp["!cols"] = [12, 32, 14, 14, 10, 10, 10, 10, 12].map((w) => ({ wch: w }));
+  wsComp["!cols"] = [12, 32, 14, 14, 10, 10, 8, 10, 10, 12].map((w) => ({ wch: w }));
   xlsx.utils.book_append_sheet(wb, wsComp, "Comparison");
 
   xlsx.writeFile(wb, `PhysicalCount_${session.date || "report"}.xlsx`);
@@ -5181,7 +5205,7 @@ function renderCountReportRows(session, mode = state.countReportMode || "input")
   if (mode === "comparison") {
     const allItems = currentCountSessionCandidates(session);
     if (!allItems.length) {
-      els.countReportBody.innerHTML = `<tr><td colspan="9" class="empty-cell">No items matched this count criteria.</td></tr>`;
+      els.countReportBody.innerHTML = `<tr><td colspan="10" class="empty-cell">No items matched this count criteria.</td></tr>`;
       return;
     }
     const latestByCode = new Map();
@@ -5190,11 +5214,12 @@ function renderCountReportRows(session, mode = state.countReportMode || "input")
       .map((item) => {
         const entry = latestByCode.get(codeKey(item.code));
         const originalQty = Number(item.stock || 0);
-        const finalQty = entry ? Number(entry.countedQty || 0) : null;
-        const qtyDiff = entry ? finalQty - originalQty : null;
-        const costDiff = entry ? qtyDiff * Number(item.unitCost || 0) : null;
-        const qtyClass = qtyDiff == null ? "" : qtyDiff > 0 ? "variance-up" : qtyDiff < 0 ? "variance-down" : "variance-flat";
-        const costClass = costDiff == null ? "" : costDiff > 0 ? "variance-up" : costDiff < 0 ? "variance-down" : "variance-flat";
+        const finalQty = entry ? Number(entry.countedQty || 0) : 0;
+        const isNull = !entry;
+        const qtyDiff = finalQty - originalQty;
+        const costDiff = qtyDiff * Number(item.unitCost || 0);
+        const qtyClass = qtyDiff > 0 ? "variance-up" : qtyDiff < 0 ? "variance-down" : "variance-flat";
+        const costClass = costDiff > 0 ? "variance-up" : costDiff < 0 ? "variance-down" : "variance-flat";
         return `
           <tr>
             <td>${escapeHtml(item.code || "-")}</td>
@@ -5202,9 +5227,10 @@ function renderCountReportRows(session, mode = state.countReportMode || "input")
             <td>${escapeHtml(item.vendor || "-")}</td>
             <td>${escapeHtml(item.category || "-")}</td>
             <td class="num">${number.format(originalQty)}</td>
-            <td class="num">${entry ? number.format(finalQty) : `<span class="muted">NULL</span>`}</td>
-            <td class="num ${qtyClass}">${entry ? (qtyDiff > 0 ? `+${number.format(qtyDiff)}` : number.format(qtyDiff)) : `<span class="muted">NULL</span>`}</td>
-            <td class="${costClass}">${entry ? currency.format(costDiff) : `<span class="muted">NULL</span>`}</td>
+            <td class="num">${number.format(finalQty)}</td>
+            <td>${isNull ? `<span class="muted">NULL</span>` : ""}</td>
+            <td class="num ${qtyClass}">${qtyDiff > 0 ? `+${number.format(qtyDiff)}` : number.format(qtyDiff)}</td>
+            <td class="${costClass}">${currency.format(costDiff)}</td>
             <td>${entry ? escapeHtml(`Scanned ${new Date(entry.recordedAt).toLocaleString()}`) : `<span class="muted">Not scanned</span>`}</td>
           </tr>`;
       })
@@ -11303,7 +11329,7 @@ function confirmDeleteSavedSession() {
 }
 
 // -- Continue count from report (re-open the session as active) -------------
-async function continueCountFromReport() {
+async function continueCountFromReport(event = null) {
   // PERF-F: Try to find the session locally first — no need to block on remote fetch if
   // we already have it. Fall back to a timed remote pull only if it's not found locally.
   const sessionId = state.countReportOpenId;
@@ -11330,23 +11356,32 @@ async function continueCountFromReport() {
   state._ignoreNextCountBackdropCloseUntil = Date.now() + 2000;
   state._continuingCountId = sessionId;
   persistCountSessions();
-  closeCountReport();
-  if (document.querySelector("#reportCountModal")) document.querySelector("#reportCountModal").hidden = true;
-  if (document.querySelector("#sessionHistoryModal")) document.querySelector("#sessionHistoryModal").hidden = true;
-  if (els.countReportModal) els.countReportModal.hidden = true;
-  // Open on the next tick so the click that pressed Continue cannot land on the
-  // workspace backdrop and immediately close the count again.
-  setTimeout(() => {
+
+  const forceOpen = () => {
     state.activeCountSession = findCountSessionById(sessionId) || state.activeCountSession || liveSession;
     state._countSessionOpen = true;
-    state._ignoreNextCountBackdropCloseUntil = Date.now() + 3000;
+    state._continuingCountId = sessionId;
+    state._ignoreNextCountBackdropCloseUntil = Date.now() + 4000;
+    // The report/history overlays are only containers. Hide them after the active
+    // session is set so the workspace cannot be immediately closed by the same click.
+    if (els.countReportModal) els.countReportModal.hidden = true;
+    const reportCountModal = document.querySelector("#reportCountModal");
+    if (reportCountModal) reportCountModal.hidden = true;
+    const sessionHistoryModal = document.querySelector("#sessionHistoryModal");
+    if (sessionHistoryModal) sessionHistoryModal.hidden = true;
     renderCountsWorkspace();
     if (els.countSessionModal) {
       els.countSessionModal.hidden = false;
       els.countSessionModal.classList.add("count-session-forced-open");
     }
-    requestAnimationFrame(() => focusCountSearch());
-  }, 180);
+  };
+
+  event?.preventDefault?.();
+  event?.stopPropagation?.();
+  forceOpen();
+  // A second pass catches delayed renders/sync refreshes that were closing the workspace.
+  setTimeout(forceOpen, 120);
+  setTimeout(() => { forceOpen(); focusCountSearch(); }, 450);
   void syncSharedCountSessionsToSupabase(true);
   showToast(`Continuing count: ${countSessionLabel(session)}`, 2800, "success");
 }
@@ -11917,6 +11952,7 @@ function exportFinalCountReportPdf() {
       <td>${escapeHtml(item.vendor || "-")}</td><td>${escapeHtml(item.category || "-")}</td>
       <td class="num">${number.format(qtyStart)}</td>
       <td class="num">${number.format(qtyEnd)}</td>
+      <td>${entry ? "" : "NULL"}</td>
       <td class="num">${variance > 0 ? "+" : ""}${number.format(variance)}</td>
       <td class="num">${currency.format(costVar)}</td>
       <td>${entry ? "Scanned" : "Not scanned (-> 0)"}</td>
@@ -11944,7 +11980,7 @@ function exportFinalCountReportPdf() {
     <span><b>Sync</b> ${escapeHtml(syncWarning)}</span>
     <span><b>Generated</b> ${dateStr}</span>
   </div>
-  <table><thead><tr><th>Code</th><th>Item</th><th>Vendor</th><th>Category</th><th>Qty Start</th><th>Qty End</th><th>Variance</th><th>Cost Var</th><th>Status</th></tr></thead>
+  <table><thead><tr><th>Code</th><th>Item</th><th>Vendor</th><th>Category</th><th>Qty Start</th><th>Qty End</th><th>NULL</th><th>Variance</th><th>Cost Var</th><th>Status</th></tr></thead>
   <tbody>${rowsHtml}</tbody></table></body></html>`;
   const win = window.open("", "_blank", "width=1100,height=750");
   if (!win) { showToast("Pop-up blocked.", 3000, "warning"); return; }
@@ -11971,7 +12007,7 @@ async function exportFinalCountReportExcel() {
   const data = [
     ["Final Physical Count Report", "", `Date: ${session.date || "-"}`, `Vendor: ${session.vendor || "All"}`, `Submitted: ${new Date(session.submittedAt).toLocaleString()}`, syncNote],
     [],
-    ["Code", "Item", "Vendor", "Category", "Qty Start", "Qty End", "Variance", "Cost Variance", "Status"],
+    ["Code", "Item", "Vendor", "Category", "Qty Start", "Qty End", "NULL", "Variance", "Cost Variance", "Status"],
     ...candidates.map((item) => {
       const key = codeKey(item.code);
       const qtyStart = snapshot[key] ?? Number(item.stock ?? 0);
@@ -11979,11 +12015,11 @@ async function exportFinalCountReportExcel() {
       const qtyEnd = entry ? Number(entry.countedQty || 0) : 0;
       const variance = qtyEnd - qtyStart;
       const costVar = variance * Number(item.unitCost || 0);
-      return [item.code, item.product, item.vendor || "", item.category || "", qtyStart, qtyEnd, variance, costVar, entry ? "Scanned" : "Not scanned (-> 0)"];
+      return [item.code, item.product, item.vendor || "", item.category || "", qtyStart, qtyEnd, entry ? "" : "NULL", variance, costVar, entry ? "Scanned" : "Not scanned (-> 0)"];
     }),
   ];
   const ws = xlsx.utils.aoa_to_sheet(data);
-  ws["!cols"] = [14, 34, 14, 14, 10, 10, 10, 12, 18].map((w) => ({ wch: w }));
+  ws["!cols"] = [14, 34, 14, 14, 10, 10, 8, 10, 12, 18].map((w) => ({ wch: w }));
   applyXlsxTextToCodeColumns(ws, data, [0]); // code column = index 0
   xlsx.utils.book_append_sheet(wb, ws, "Final Count");
   xlsx.writeFile(wb, `FinalCount_${session.date || "report"}.xlsx`);
@@ -13002,11 +13038,11 @@ async function exportFinalCountToExcel(report) {
   const data = [
     ["Final Inventory Count - " + report.label, "", "", "", "", report.date, report.syncWarning || "Sync: all entries confirmed."],
     [],
-    ["Code", "Item", "Vendor", "Category", "Qty Before", "QTY", "Variance", "Scanned"],
-    ...report.entries.map((e) => [e.code, e.product, e.vendor, e.category, e.qtyStart, e.qty, e.variance, e.scanned ? "Yes" : "No (0)"]),
+    ["Code", "Item", "Vendor", "Category", "Qty Before", "QTY", "NULL", "Variance", "Scanned"],
+    ...report.entries.map((e) => [e.code, e.product, e.vendor, e.category, e.qtyStart, e.qty, e.scanned ? "" : "NULL", e.variance, e.scanned ? "Yes" : "No (0)"]),
   ];
   const ws = xlsx.utils.aoa_to_sheet(data);
-  ws["!cols"] = [16,32,14,14,10,10,10,10].map((w)=>({wch:w}));
+  ws["!cols"] = [16,32,14,14,10,10,8,10,10].map((w)=>({wch:w}));
   // Force code column as text
   data.forEach((row, r) => {
     if (r < 3) return;
