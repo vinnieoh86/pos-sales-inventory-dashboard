@@ -5403,8 +5403,8 @@ function openCountReport(sessionId = state.activeCountSession?.id, mode = state.
   }
   if (els.countReportHead) {
     els.countReportHead.innerHTML = mode === "comparison"
-      ? `<tr><th>Code</th><th>Item</th><th>Vendor</th><th>Category</th><th>Qty before</th><th>Qty after</th><th>NULL</th><th>Qty diff</th><th>Cost diff</th><th>Status</th></tr>`
-      : `<tr><th>Code</th><th>Item</th><th>Vendor</th><th>Category</th><th>Qty before</th><th>Qty after</th><th>Variance</th><th>Mode</th><th>Date/Time</th></tr>`;
+      ? `<tr><th>Code</th><th>PLU</th><th>Item</th><th>Vendor</th><th>Category</th><th>Qty before</th><th>Qty after</th><th>NULL</th><th>Qty diff</th><th>Cost diff</th><th>Status</th></tr>`
+      : `<tr><th>Code</th><th>PLU</th><th>Item</th><th>Vendor</th><th>Category</th><th>Qty before</th><th>Qty after</th><th>Variance</th><th>Mode</th><th>Date/Time</th></tr>`;
   }
   if (els.countReportMeta) {
     const vendorLabel = countSessionVendorLabel(session);
@@ -5446,7 +5446,7 @@ function exportCountReportPdf() {
     const latestByCode = new Map();
     entries.forEach((entry) => latestByCode.set(codeKey(entry.code), entry));
     tableHtml = `<table>
-      <thead><tr><th>Code</th><th>Item</th><th>Vendor</th><th>Category</th><th class="num">Qty Before</th><th class="num">Qty After</th><th>NULL</th><th class="num">Qty Diff</th><th class="num">Cost Diff</th><th>Status</th></tr></thead>
+      <thead><tr><th>Code</th><th>PLU</th><th>Item</th><th>Vendor</th><th>Category</th><th class="num">Qty Before</th><th class="num">Qty After</th><th>NULL</th><th class="num">Qty Diff</th><th class="num">Cost Diff</th><th>Status</th></tr></thead>
       <tbody>${allItems.map((item) => {
         const entry = latestByCode.get(codeKey(item.code));
         const orig = Number(item.stock || 0);
@@ -5455,7 +5455,7 @@ function exportCountReportPdf() {
         const diff = final - orig;
         const costDiff = diff * Number(item.unitCost || 0);
         const cls = diff > 0 ? "var-up" : diff < 0 ? "var-down" : "";
-        return `<tr class="${cls}"><td>${escapeHtml(item.code)}</td><td>${escapeHtml(item.product)}</td><td>${escapeHtml(item.vendor || "-")}</td><td>${escapeHtml(item.category || "-")}</td>
+        return `<tr class="${cls}"><td>${escapeHtml(item.code)}</td><td>${escapeHtml(item.plu || "-")}</td><td>${escapeHtml(item.product)}</td><td>${escapeHtml(item.vendor || "-")}</td><td>${escapeHtml(item.category || "-")}</td>
           <td class="num">${number.format(orig)}</td>
           <td class="num">${number.format(final)}</td>
           <td>${isNull ? "NULL" : ""}</td>
@@ -5465,11 +5465,11 @@ function exportCountReportPdf() {
       }).join("")}</tbody></table>`;
   } else {
     tableHtml = `<table>
-      <thead><tr><th>Code</th><th>Item</th><th>Vendor</th><th>Category</th><th class="num">Qty Before</th><th class="num">Counted</th><th class="num">Variance</th><th>Mode</th><th>Time</th></tr></thead>
+      <thead><tr><th>Code</th><th>PLU</th><th>Item</th><th>Vendor</th><th>Category</th><th class="num">Qty Before</th><th class="num">Counted</th><th class="num">Variance</th><th>Mode</th><th>Time</th></tr></thead>
       <tbody>${[...entries].reverse().map((entry) => {
         const variance = Number(entry.countedQty || 0) - Number(entry.originalQty || 0);
         const cls = variance > 0 ? "var-up" : variance < 0 ? "var-down" : "";
-        return `<tr class="${cls}"><td>${escapeHtml(entry.code)}</td><td>${escapeHtml(entry.product)}</td><td>${escapeHtml(entry.vendor || "-")}</td><td>${escapeHtml(entry.category || "-")}</td>
+        return `<tr class="${cls}"><td>${escapeHtml(entry.code)}</td><td>${escapeHtml(entry.plu || "-")}</td><td>${escapeHtml(entry.product)}</td><td>${escapeHtml(entry.vendor || "-")}</td><td>${escapeHtml(entry.category || "-")}</td>
           <td class="num">${number.format(entry.originalQty || 0)}</td>
           <td class="num">${number.format(entry.countedQty || 0)}</td>
           <td class="num">${variance > 0 ? `+${number.format(variance)}` : number.format(variance)}</td>
@@ -5532,14 +5532,14 @@ async function exportCountReportExcel() {
   const inputData = [
     ["Physical Count - Input Log", "", "", `Date: ${session.date || "-"}`, `Vendor: ${vendorLabel}`, `Category: ${countSessionCategoryLabel(session)}`, syncNote],
     [],
-    ["Code", "Item", "Vendor", "Category", "Qty Before", "Counted", "Variance", "Mode", "Time"],
+    ["Code", "PLU", "Item", "Vendor", "Category", "Qty Before", "Counted", "Variance", "Mode", "Time"],
     ...[...entries].reverse().map((entry) => {
       const variance = Number(entry.countedQty || 0) - Number(entry.originalQty || 0);
-      return [entry.code, entry.product, entry.vendor || "", entry.category || "", entry.originalQty || 0, entry.countedQty || 0, variance, entry.mode || "set", new Date(entry.recordedAt).toLocaleString()];
+      return [entry.code, entry.plu || "", entry.product, entry.vendor || "", entry.category || "", entry.originalQty || 0, entry.countedQty || 0, variance, entry.mode || "set", new Date(entry.recordedAt).toLocaleString()];
     }),
   ];
   const wsInput = xlsx.utils.aoa_to_sheet(inputData);
-  wsInput["!cols"] = [12, 32, 14, 14, 10, 10, 10, 8, 20].map((w) => ({ wch: w }));
+  wsInput["!cols"] = [12, 18, 32, 14, 14, 10, 10, 10, 8, 20].map((w) => ({ wch: w }));
   xlsx.utils.book_append_sheet(wb, wsInput, "Input Log");
 
   // Comparison sheet
@@ -5549,7 +5549,7 @@ async function exportCountReportExcel() {
   const compData = [
     ["Physical Count - Comparison", "", "", `Date: ${session.date || "-"}`, `Vendor: ${vendorLabel}`, `Category: ${countSessionCategoryLabel(session)}`, syncNote],
     [],
-    ["Code", "Item", "Vendor", "Category", "Qty Before", "Qty After", "NULL", "Qty Diff", "Cost Diff", "Status"],
+    ["Code", "PLU", "Item", "Vendor", "Category", "Qty Before", "Qty After", "NULL", "Qty Diff", "Cost Diff", "Status"],
     ...allItems.map((item) => {
       const entry = latestByCode.get(codeKey(item.code));
       const orig = Number(item.stock || 0);
@@ -5557,11 +5557,11 @@ async function exportCountReportExcel() {
       const isNull = !entry;
       const diff = final - orig;
       const costDiff = diff * Number(item.unitCost || 0);
-      return [item.code, item.product, item.vendor || "", item.category || "", orig, final, isNull ? "NULL" : "", diff, costDiff, entry ? "PASS" : "Not scanned"];
+      return [item.code, item.plu || "", item.product, item.vendor || "", item.category || "", orig, final, isNull ? "NULL" : "", diff, costDiff, entry ? "PASS" : "Not scanned"];
     }),
   ];
   const wsComp = xlsx.utils.aoa_to_sheet(compData);
-  wsComp["!cols"] = [12, 32, 14, 14, 10, 10, 8, 10, 10, 12].map((w) => ({ wch: w }));
+  wsComp["!cols"] = [12, 18, 32, 14, 14, 10, 10, 8, 10, 10, 12].map((w) => ({ wch: w }));
   xlsx.utils.book_append_sheet(wb, wsComp, "Comparison");
 
   xlsx.writeFile(wb, `PhysicalCount_${session.date || "report"}.xlsx`);
@@ -5574,7 +5574,7 @@ function renderCountReportRows(session, mode = state.countReportMode || "input")
   if (mode === "comparison") {
     const allItems = currentCountSessionCandidates(session);
     if (!allItems.length) {
-      els.countReportBody.innerHTML = `<tr><td colspan="10" class="empty-cell">No items matched this count criteria.</td></tr>`;
+      els.countReportBody.innerHTML = `<tr><td colspan="11" class="empty-cell">No items matched this count criteria.</td></tr>`;
       return;
     }
     const latestByCode = new Map();
@@ -5592,6 +5592,7 @@ function renderCountReportRows(session, mode = state.countReportMode || "input")
         return `
           <tr>
             <td>${escapeHtml(item.code || "-")}</td>
+            <td>${escapeHtml(item.plu || "-")}</td>
             <td>${escapeHtml(item.product || "-")}</td>
             <td>${escapeHtml(item.vendor || "-")}</td>
             <td>${escapeHtml(item.category || "-")}</td>
@@ -5607,7 +5608,7 @@ function renderCountReportRows(session, mode = state.countReportMode || "input")
     return;
   }
   if (!entries.length) {
-    els.countReportBody.innerHTML = `<tr><td colspan="9" class="empty-cell">No items counted yet.</td></tr>`;
+    els.countReportBody.innerHTML = `<tr><td colspan="10" class="empty-cell">No items counted yet.</td></tr>`;
     return;
   }
   els.countReportBody.innerHTML = entries
@@ -5620,6 +5621,7 @@ function renderCountReportRows(session, mode = state.countReportMode || "input")
       return `
         <tr>
           <td>${escapeHtml(entry.code || "-")}</td>
+          <td>${escapeHtml(entry.plu || "-")}</td>
           <td>${escapeHtml(entry.product || "-")}</td>
           <td>${escapeHtml(entry.vendor || "-")}</td>
           <td>${escapeHtml(entry.category || "-")}</td>
@@ -12328,7 +12330,7 @@ function renderFinalCountReportRows(session) {
   entries.forEach((e) => latestByCode.set(codeKey(e.code), e));
   const candidates = currentCountSessionCandidates(session);
   if (!candidates.length) {
-    els.finalReportBody.innerHTML = `<tr><td colspan="9" class="empty-cell">No items in scope.</td></tr>`;
+    els.finalReportBody.innerHTML = `<tr><td colspan="10" class="empty-cell">No items in scope.</td></tr>`;
     return;
   }
   els.finalReportBody.innerHTML = candidates.map((item) => {
@@ -12342,6 +12344,7 @@ function renderFinalCountReportRows(session) {
     const status = entry ? "Scanned" : "Not scanned (-> 0)";
     return `<tr>
       <td>${escapeHtml(item.code)}</td>
+      <td>${escapeHtml(item.plu || "-")}</td>
       <td>${escapeHtml(item.product)}</td>
       <td>${escapeHtml(item.vendor || "-")}</td>
       <td>${escapeHtml(item.category || "-")}</td>
@@ -12376,7 +12379,7 @@ function exportFinalCountReportPdf() {
     const costVar = variance * Number(item.unitCost || 0);
     const cls = variance > 0 ? "var-up" : variance < 0 ? "var-down" : "";
     return `<tr class="${cls}">
-      <td>${escapeHtml(item.code)}</td><td>${escapeHtml(item.product)}</td>
+      <td>${escapeHtml(item.code)}</td><td>${escapeHtml(item.plu || "-")}</td><td>${escapeHtml(item.product)}</td>
       <td>${escapeHtml(item.vendor || "-")}</td><td>${escapeHtml(item.category || "-")}</td>
       <td class="num">${number.format(qtyStart)}</td>
       <td class="num">${number.format(qtyEnd)}</td>
@@ -12408,7 +12411,7 @@ function exportFinalCountReportPdf() {
     <span><b>Sync</b> ${escapeHtml(syncWarning)}</span>
     <span><b>Generated</b> ${dateStr}</span>
   </div>
-  <table><thead><tr><th>Code</th><th>Item</th><th>Vendor</th><th>Category</th><th>Qty Start</th><th>Qty End</th><th>NULL</th><th>Variance</th><th>Cost Var</th><th>Status</th></tr></thead>
+  <table><thead><tr><th>Code</th><th>PLU</th><th>Item</th><th>Vendor</th><th>Category</th><th>Qty Start</th><th>Qty End</th><th>NULL</th><th>Variance</th><th>Cost Var</th><th>Status</th></tr></thead>
   <tbody>${rowsHtml}</tbody></table></body></html>`;
   const win = window.open("", "_blank", "width=1100,height=750");
   if (!win) { showToast("Pop-up blocked.", 3000, "warning"); return; }
@@ -12435,7 +12438,7 @@ async function exportFinalCountReportExcel() {
   const data = [
     ["Final Physical Count Report", "", `Date: ${session.date || "-"}`, `Vendor: ${session.vendor || "All"}`, `Submitted: ${new Date(session.submittedAt).toLocaleString()}`, syncNote],
     [],
-    ["Code", "Item", "Vendor", "Category", "Qty Start", "Qty End", "NULL", "Variance", "Cost Variance", "Status"],
+    ["Code", "PLU", "Item", "Vendor", "Category", "Qty Start", "Qty End", "NULL", "Variance", "Cost Variance", "Status"],
     ...candidates.map((item) => {
       const key = codeKey(item.code);
       const qtyStart = snapshot[key] ?? Number(item.stock ?? 0);
@@ -12443,11 +12446,11 @@ async function exportFinalCountReportExcel() {
       const qtyEnd = entry ? Number(entry.countedQty || 0) : 0;
       const variance = qtyEnd - qtyStart;
       const costVar = variance * Number(item.unitCost || 0);
-      return [item.code, item.product, item.vendor || "", item.category || "", qtyStart, qtyEnd, entry ? "" : "NULL", variance, costVar, entry ? "Scanned" : "Not scanned (-> 0)"];
+      return [item.code, item.plu || "", item.product, item.vendor || "", item.category || "", qtyStart, qtyEnd, entry ? "" : "NULL", variance, costVar, entry ? "Scanned" : "Not scanned (-> 0)"];
     }),
   ];
   const ws = xlsx.utils.aoa_to_sheet(data);
-  ws["!cols"] = [14, 34, 14, 14, 10, 10, 8, 10, 12, 18].map((w) => ({ wch: w }));
+  ws["!cols"] = [14, 18, 34, 14, 14, 10, 10, 8, 10, 12, 18].map((w) => ({ wch: w }));
   applyXlsxTextToCodeColumns(ws, data, [0]); // code column = index 0
   xlsx.utils.book_append_sheet(wb, ws, "Final Count");
   xlsx.writeFile(wb, `FinalCount_${session.date || "report"}.xlsx`);
@@ -13440,7 +13443,7 @@ function generateFinalCountExport(session, candidates, latestByCode, snapshot) {
     const entry = latestByCode.get(key);
     const qtyStart = snapshot ? (snapshot[key] ?? item.stock ?? 0) : (item.stock ?? 0);
     const qtyEnd = entry ? Number(entry.countedQty || 0) : 0;
-    return { code: item.code, product: item.product, vendor: item.vendor||"", category: item.category||"", qtyStart, qty: qtyEnd, variance: qtyEnd - qtyStart, scanned: !!entry };
+    return { code: item.code, plu: item.plu || "", product: item.product, vendor: item.vendor||"", category: item.category||"", qtyStart, qty: qtyEnd, variance: qtyEnd - qtyStart, scanned: !!entry };
   });
   const dateStr = new Date().toLocaleDateString("en-US",{year:"numeric",month:"2-digit",day:"2-digit"}).replace(/\//g,"-");
   // Store in state for Reports tab
@@ -13466,11 +13469,11 @@ async function exportFinalCountToExcel(report) {
   const data = [
     ["Final Inventory Count - " + report.label, "", "", "", "", report.date, report.syncWarning || "Sync: all entries confirmed."],
     [],
-    ["Code", "Item", "Vendor", "Category", "Qty Before", "QTY", "NULL", "Variance", "Scanned"],
-    ...report.entries.map((e) => [e.code, e.product, e.vendor, e.category, e.qtyStart, e.qty, e.scanned ? "" : "NULL", e.variance, e.scanned ? "Yes" : "No (0)"]),
+    ["Code", "PLU", "Item", "Vendor", "Category", "Qty Before", "QTY", "NULL", "Variance", "Scanned"],
+    ...report.entries.map((e) => [e.code, e.plu || "", e.product, e.vendor, e.category, e.qtyStart, e.qty, e.scanned ? "" : "NULL", e.variance, e.scanned ? "Yes" : "No (0)"]),
   ];
   const ws = xlsx.utils.aoa_to_sheet(data);
-  ws["!cols"] = [16,32,14,14,10,10,8,10,10].map((w)=>({wch:w}));
+  ws["!cols"] = [16,18,32,14,14,10,10,8,10,10].map((w)=>({wch:w}));
   // Force code column as text
   data.forEach((row, r) => {
     if (r < 3) return;
