@@ -7193,3 +7193,13 @@ body.scan-mode-active.scan-performance-medium .scan-mode-panel * {
     flex: 1 1 8.5rem !important;
   }
 }
+
+.count-pass-badge {
+  display: inline-block;
+  padding: 0.16rem 0.48rem;
+  border-radius: 999px;
+  background: rgba(22, 131, 91, 0.14);
+  color: #0f7a4d;
+  font-weight: 900;
+  letter-spacing: 0.03em;
+}

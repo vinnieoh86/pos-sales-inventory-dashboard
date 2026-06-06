@@ -1404,6 +1404,12 @@ document.addEventListener("keydown", (event) => {
   if (!els.countSessionModal.hidden) {
     if (event.key === "Escape") {
       event.preventDefault();
+      if (state._continuingCountId && state.activeCountSession?.id === state._continuingCountId) {
+        state._countSessionOpen = true;
+        focusCountSearch();
+        showToast("Continued count stays open until Save, Delete, or Submit.", 2400, "warning");
+        return;
+      }
       state._countSessionOpen = false;
       els.countSessionModal.hidden = true;
       return;
@@ -4382,6 +4388,14 @@ function startCountSessionFromModal() {
 
 function closeActiveCountSession() {
   if (!state.activeCountSession) return;
+  // Continued counts must stay open until Save/Delete/Submit.
+  // The top-right close/backdrop was causing the workspace to vanish mid-count.
+  if (state._continuingCountId && cleanCell(state.activeCountSession.id) === cleanCell(state._continuingCountId)) {
+    showToast("Continued count stays open until Save, Delete, or Submit.", 2600, "warning");
+    state._countSessionOpen = true;
+    renderCountsWorkspace();
+    return;
+  }
   state._countSessionOpen = false;
   state.selectedCountItemCode = "";
   state.countQtyBuffer = "0";
@@ -4394,6 +4408,7 @@ function closeActiveCountSession() {
 
 async function saveCountSession() {
   if (!state.activeCountSession) return;
+  clearContinuedCountLock();
   const syncCheckedSession = await ensureCountSessionReadyToApply(state.activeCountSession, "saving");
   if (!syncCheckedSession) return;
   state._countSessionOpen = false;
@@ -4475,6 +4490,7 @@ async function saveCountSession() {
 
 function deleteCountSession() {
   if (!state.activeCountSession) return;
+  clearContinuedCountLock();
   state._countSessionOpen = false;
   const label = countSessionLabel(state.activeCountSession);
   archiveCountSessionEntriesToAdjustmentLog(state.activeCountSession);
@@ -4512,6 +4528,48 @@ function restoreContinuedCountSession() {
   persistActiveCountSession();
   persistCountSessions({ scheduleSync: false });
   return true;
+}
+
+function stopContinueCountKeepOpenGuard() {
+  if (state._continueCountKeepOpenTimer) {
+    clearInterval(state._continueCountKeepOpenTimer);
+    state._continueCountKeepOpenTimer = null;
+  }
+}
+
+function startContinueCountKeepOpenGuard(sessionId) {
+  const id = cleanCell(sessionId || state._continuingCountId || "");
+  if (!id) return;
+  state._continuingCountId = id;
+  stopContinueCountKeepOpenGuard();
+  state._continueCountKeepOpenTimer = setInterval(() => {
+    const continuingId = cleanCell(state._continuingCountId || "");
+    if (!continuingId) { stopContinueCountKeepOpenGuard(); return; }
+    let active = state.activeCountSession && cleanCell(state.activeCountSession.id) === continuingId
+      ? state.activeCountSession
+      : findCountSessionById(continuingId);
+    if (!active || active.submittedAt) { stopContinueCountKeepOpenGuard(); return; }
+    active = markCountSessionDirty({ ...active, savedAt: "", submittedAt: "", isActiveLive: true });
+    state.activeCountSession = active;
+    state.countSessions = [
+      active,
+      ...(state.countSessions || []).filter((saved) => cleanCell(saved?.id) !== continuingId),
+    ];
+    state._countSessionOpen = true;
+    if (els.countReportModal && !els.countReportModal.hidden) els.countReportModal.hidden = true;
+    const historyModal = document.querySelector("#sessionHistoryModal");
+    if (historyModal && !historyModal.hidden) historyModal.hidden = true;
+    if (els.countSessionModal && els.countSessionModal.hidden) {
+      renderCountsWorkspace();
+      els.countSessionModal.hidden = false;
+      focusCountSearch();
+    }
+  }, 300);
+}
+
+function clearContinuedCountLock() {
+  state._continuingCountId = "";
+  stopContinueCountKeepOpenGuard();
 }
 
 function looksLikeBarcodeValue(value) {
@@ -5183,7 +5241,7 @@ function exportCountReportPdf() {
           <td>${isNull ? "NULL" : ""}</td>
           <td class="num">${diff > 0 ? `+${number.format(diff)}` : number.format(diff)}</td>
           <td class="num">${currency.format(costDiff)}</td>
-          <td>${entry ? "Scanned" : "Not scanned"}</td></tr>`;
+          <td>${entry ? "PASS" : "Not scanned"}</td></tr>`;
       }).join("")}</tbody></table>`;
   } else {
     tableHtml = `<table>
@@ -5279,7 +5337,7 @@ async function exportCountReportExcel() {
       const isNull = !entry;
       const diff = final - orig;
       const costDiff = diff * Number(item.unitCost || 0);
-      return [item.code, item.product, item.vendor || "", item.category || "", orig, final, isNull ? "NULL" : "", diff, costDiff, entry ? "Scanned" : "Not scanned"];
+      return [item.code, item.product, item.vendor || "", item.category || "", orig, final, isNull ? "NULL" : "", diff, costDiff, entry ? "PASS" : "Not scanned"];
     }),
   ];
   const wsComp = xlsx.utils.aoa_to_sheet(compData);
@@ -5322,7 +5380,7 @@ function renderCountReportRows(session, mode = state.countReportMode || "input")
             <td>${isNull ? `<span class="muted">NULL</span>` : ""}</td>
             <td class="num ${qtyClass}">${qtyDiff > 0 ? `+${number.format(qtyDiff)}` : number.format(qtyDiff)}</td>
             <td class="${costClass}">${currency.format(costDiff)}</td>
-            <td>${entry ? escapeHtml(`Scanned ${new Date(entry.recordedAt).toLocaleString()}`) : `<span class="muted">Not scanned</span>`}</td>
+            <td>${entry ? `<span class="count-pass-badge">PASS</span> <span class="muted">${escapeHtml(new Date(entry.recordedAt).toLocaleString())}</span>` : `<span class="muted">Not scanned</span>`}</td>
           </tr>`;
       })
       .join("");
@@ -11469,6 +11527,7 @@ async function continueCountFromReport(event = null) {
   state._ignoreNextCountBackdropCloseUntil = Date.now() + 2000;
   state._continuingCountId = sessionId;
   persistCountSessions();
+  startContinueCountKeepOpenGuard(sessionId);
 
   const forceOpen = () => {
     const current = state.activeCountSession?.id === sessionId ? state.activeCountSession : null;
@@ -11591,6 +11650,7 @@ function restorePreviousCount(sessionId) {
 }
 
 async function submitAndApplyCount() {
+  clearContinuedCountLock();
   const sessionId = state.pendingSubmitSessionId;
   state.pendingSubmitSessionId = null;
   document.querySelector("#confirmSubmitCountModal").hidden = true;
