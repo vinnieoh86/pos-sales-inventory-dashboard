@@ -1448,7 +1448,7 @@ document.addEventListener("keydown", (event) => {
     if (/^\d$/.test(event.key)) {
       event.preventDefault();
       event.stopPropagation();
-      noteQtyDigitForScannerGuard(event.key);
+      if (noteQtyDigitForScannerGuard(event.key)) return;
       handleCountKey(event.key);
       return;
     }
@@ -4547,11 +4547,24 @@ function redirectQtyBarcodeToSearch(barcode) {
 
 function noteQtyDigitForScannerGuard(digit) {
   const now = performanceNow();
-  if (!state._countQtyScannerLastAt || now - state._countQtyScannerLastAt > 120) {
+  if (!state._countQtyScannerLastAt || now - state._countQtyScannerLastAt > 150) {
     state._countQtyScannerBuffer = "";
   }
   state._countQtyScannerLastAt = now;
   state._countQtyScannerBuffer = `${state._countQtyScannerBuffer || ""}${digit}`;
+  const bufferedNow = state._countQtyScannerBuffer || "";
+  // Immediate catch: once a rapid numeric burst reaches barcode length, do not
+  // let more digits keep building in Entered Qty. A real hand-entered qty should
+  // almost never be 8+ digits, and human typing won't hit this rapid-burst path.
+  if (bufferedNow.length >= 8 && looksLikeBarcodeValue(bufferedNow)) {
+    if (state._countQtyScannerTimer) {
+      clearTimeout(state._countQtyScannerTimer);
+      state._countQtyScannerTimer = null;
+    }
+    redirectQtyBarcodeToSearch(bufferedNow);
+    showToast("Barcode scan caught in qty field — moved back to scan.", 2200, "warning");
+    return true;
+  }
   if (state._countQtyScannerTimer) clearTimeout(state._countQtyScannerTimer);
   state._countQtyScannerTimer = setTimeout(() => {
     const buffered = state._countQtyScannerBuffer || "";
@@ -4561,7 +4574,8 @@ function noteQtyDigitForScannerGuard(digit) {
       redirectQtyBarcodeToSearch(buffered);
       showToast("Barcode scan caught in qty field — moved back to scan.", 2200, "warning");
     }
-  }, 90);
+  }, 120);
+  return false;
 }
 
 function handleCountKey(key) {
@@ -5573,6 +5587,9 @@ async function refreshLatestCountSessions(options = {}) {
     }
   } finally {
     setCountSyncLoading(false);
+    if (state._continuingCountId && state.activeCountSession?.id === state._continuingCountId) {
+      state._countSessionOpen = true;
+    }
     if (activeTabName() === "counts") renderCountsWorkspace();
   }
 }
@@ -5613,10 +5630,17 @@ async function openLatestCountOrSetup() {
 
 function renderCountsWorkspace(options = {}) {
   if (options.loading || state._countSyncLoading) {
-    if (els.countSessionModal) els.countSessionModal.hidden = true;
+    // Do not blank/close a continued physical count during background sync.
+    // The prior behavior hid the count modal while refreshLatestCountSessions() was polling,
+    // which made Continue Count appear for a few seconds then disappear.
+    if (state._continuingCountId && state.activeCountSession?.id === state._continuingCountId) {
+      state._countSessionOpen = true;
+    } else {
+      if (els.countSessionModal) els.countSessionModal.hidden = true;
+    }
     if (els.countWorkspaceEmpty) els.countWorkspaceEmpty.hidden = true;
     if (els.countSummaryStrip) els.countSummaryStrip.hidden = true;
-    return;
+    if (!(state._continuingCountId && state.activeCountSession?.id === state._continuingCountId)) return;
   }
   // PERF-C: Only rebuild setup dropdowns when the setup modal is actually open or explicitly requested.
   // Previously this ran on every poll-triggered render, re-querying all vendors/categories
@@ -10685,8 +10709,12 @@ function applySharedCountSessionRows(rows = [], options = {}) {
     ? normalizeCountSession(state.activeCountSession, countSessionHasUnsyncedEdits(state.activeCountSession) ? "pending" : "synced")
     : null;
   if (!rows?.length) {
-    state.countSessions = [...localSavedById.values()].filter(countSessionHasUnsyncedEdits);
-    state.activeCountSession = countSessionHasUnsyncedEdits(localActive) ? localActive : null;
+    const keepContinuedActive = localActive && cleanCell(localActive.id) === cleanCell(state._continuingCountId || "");
+    state.countSessions = [...localSavedById.values()].filter((session) =>
+      countSessionHasUnsyncedEdits(session) || cleanCell(session?.id) === cleanCell(state._continuingCountId || "")
+    );
+    state.activeCountSession = (countSessionHasUnsyncedEdits(localActive) || keepContinuedActive) ? localActive : null;
+    if (state.activeCountSession) state._countSessionOpen = true;
     state._countRemoteLoaded = true;
     persistCountSessions({ scheduleSync: false });
     if (options.render !== false && activeTabName() === "counts") {
@@ -10755,9 +10783,17 @@ function applySharedCountSessionRows(rows = [], options = {}) {
       nextActive = null;
     }
   }
-  if (countSessionHasUnsyncedEdits(localActive) && (!nextActive || localActiveId !== remoteActiveId)) {
+  // Continue Count is an explicit operator action. While that session is being continued,
+  // keep the local active workspace open even if the remote pull only returns the saved
+  // history row and no active:${id} row yet. This prevents the modal from closing after
+  // a delayed background sync/poll.
+  const continuingId = cleanCell(state._continuingCountId || "");
+  const keepContinuedActive = localActive && continuingId && cleanCell(localActive.id) === continuingId
+    && !localActive.savedAt && !localActive.submittedAt;
+  if ((keepContinuedActive || countSessionHasUnsyncedEdits(localActive)) && (!nextActive || localActiveId !== remoteActiveId)) {
     if (nextActive?.id && nextActive.id !== localActive.id) mergedSavedById.set(nextActive.id, nextActive);
-    nextActive = localActive;
+    nextActive = { ...localActive, isActiveLive: true };
+    state._countSessionOpen = true;
   }
   // FIX-C: Do NOT remove nextActive from mergedSavedById.
   // Previously this deleted the active session from the sessions list entirely, making it
@@ -11421,7 +11457,7 @@ async function continueCountFromReport(event = null) {
   }
   if (!session) { showToast("Session not found.", 3000, "warning"); return; }
   // FIX-B: Keep in countSessions[] with isActiveLive:true — removing it hid it from history.
-  const liveSession = markCountSessionDirty({ ...session, isActiveLive: true });
+  const liveSession = markCountSessionDirty({ ...session, savedAt: "", submittedAt: "", isActiveLive: true });
   state.countSessions = [liveSession, ...state.countSessions.filter((s) => s.id !== sessionId)];
   state.activeCountSession = liveSession;
   state._countSessionOpen = true;
@@ -11435,7 +11471,8 @@ async function continueCountFromReport(event = null) {
   persistCountSessions();
 
   const forceOpen = () => {
-    state.activeCountSession = findCountSessionById(sessionId) || state.activeCountSession || liveSession;
+    const current = state.activeCountSession?.id === sessionId ? state.activeCountSession : null;
+    state.activeCountSession = markCountSessionDirty({ ...(current || liveSession), savedAt: "", submittedAt: "", isActiveLive: true });
     state._countSessionOpen = true;
     state._continuingCountId = sessionId;
     state._ignoreNextCountBackdropCloseUntil = Date.now() + 4000;
