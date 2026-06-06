@@ -10205,14 +10205,35 @@ async function supabaseSelectRowsSafe(tableName, query = {}) {
   }
 }
 
+function supabaseDeleteAllFilterColumn(tableName) {
+  // Different shared tables do not all have an id column. Using id=not.is.null
+  // made full imports fail silently/partially on products and daily_sales, which left
+  // other devices on old local snapshots. Delete against a known required column.
+  const filters = {
+    products: "code",
+    product_meta: "code",
+    daily_sales: "sales_date",
+    vendor_rules: "id",
+    import_logs: "id",
+    count_sessions: "id",
+    sync_state: "id",
+    app_users: "id",
+  };
+  return filters[tableName] || "id";
+}
+
 async function supabaseDeleteAllRows(tableName) {
   const url = new URL(supabaseRestUrl(tableName));
-  url.searchParams.set("id", "not.is.null");
+  url.searchParams.set(supabaseDeleteAllFilterColumn(tableName), "not.is.null");
   const response = await fetch(url.toString(), {
     method: "DELETE",
     headers: supabaseHeaders(),
   });
-  if (!response.ok) throw new Error(`${tableName} delete failed (${response.status})`);
+  if (!response.ok) {
+    let details = "";
+    try { details = await response.text(); } catch (_) {}
+    throw new Error(`${tableName} delete failed (${response.status}) ${details}`.trim());
+  }
 }
 
 async function supabaseDeleteRowsByValues(tableName, columnName, values) {
@@ -11344,13 +11365,17 @@ async function syncSharedDataToSupabase(options = {}) {
     const productRows = [...productRowMap.values()].filter((row) => cleanCell(row.code));
     const productMetaRows = buildProductMetaRowsSnapshot();
     if (!productsOnly) {
+      // Full import = one authoritative master snapshot for every device.
+      // Clear the shared snapshot tables first, then write the current laptop data,
+      // and only then bump sync_state so tablets/personal laptops pull a complete set.
       await supabaseDeleteAllRows("products");
+      await supabaseDeleteAllRows("product_meta");
+      await supabaseDeleteAllRows("daily_sales");
       if (productRows.length) await supabaseInsertRows("products", productRows);
-    } else if (productRows.length) {
-      await supabaseUpsertRows("products", productRows, "code");
-    }
-    if (productMetaRows.length) {
-      await supabaseUpsertRows("product_meta", productMetaRows, "code");
+      if (productMetaRows.length) await supabaseInsertRows("product_meta", productMetaRows);
+    } else {
+      if (productRows.length) await supabaseUpsertRows("products", productRows, "code");
+      if (productMetaRows.length) await supabaseUpsertRows("product_meta", productMetaRows, "code");
     }
     await syncSharedVendorRulesToSupabase(true);
 
@@ -11358,17 +11383,17 @@ async function syncSharedDataToSupabase(options = {}) {
       const salesRows = state.rawSales
         .filter((row) => row.code || row.product)
         .map(salesRowForSupabase);
-      await supabaseDeleteAllRows("daily_sales");
       if (salesRows.length) await supabaseInsertRows("daily_sales", salesRows);
     }
     await syncSharedImportLogsToSupabase(true);
     await syncSharedCountSessionsToSupabase(true);
-    await updateSharedSyncState(productsOnly ? "product-meta" : "full");
+    await updateSharedSyncState(productsOnly ? "product-meta" : "full-snapshot");
     if (!productsOnly) await savePersistedState();
     if (!silent) showToast("Shared Supabase data updated.", 2800, "success");
     return true;
   } catch (error) {
-    if (!silent) showToast("Supabase shared data sync failed. Add write policies first.", 4200, "warning");
+    console.warn("Supabase shared data sync failed", error);
+    if (!silent) showToast("Supabase shared data sync failed. Check table columns/policies.", 4200, "warning");
     return false;
   }
 }
@@ -11420,14 +11445,13 @@ async function initApp() {
           state._deferredSharedSync = true;
           return;
         }
-        const restoredShared = hasLocalDataset
-          ? (await Promise.all([
-              restoreSharedProductsOnlyFromSupabase({ silent: true }),
-              restoreSharedVendorRulesOnlyFromSupabase({ silent: true }),
-              restoreSharedImportLogsOnlyFromSupabase({ silent: true }),
-              restoreSharedCountSessionsOnlyFromSupabase({ silent: true }),
-            ])).some(Boolean)
-          : await restoreSharedDataFromSupabase({ silent: true, preferCurrentState: window.location.protocol === "file:" });
+        // Shared master snapshot wins on normal devices. Previously, any device that
+        // already had local data only pulled product deltas, so daily_sales/data-file
+        // fields like case size, disabled/discontinued, etc. could stay stale.
+        const restoredShared = await restoreSharedDataFromSupabase({
+          silent: true,
+          preferCurrentState: window.location.protocol === "file:",
+        });
         if (restoredShared === "kept-local") {
           await syncSharedMetaSnapshotToSupabase({ silent: true, includeVendorRules: true });
         } else if (restoredShared) {
