@@ -7226,3 +7226,78 @@ body.scan-mode-active.scan-performance-medium .scan-mode-panel * {
   100% { box-shadow: 0 0 0 10px rgba(35,179,105,0); }
 }
 .count-col-plu { width: 9rem; }
+
+/* Count scope add-on UI: keep old simple dropdown, add optional + chips */
+.count-scope-picker-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.45rem;
+  align-items: center;
+}
+.count-scope-add-button {
+  width: 2.6rem;
+  min-height: 2.6rem;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: #17231f;
+  color: #fff;
+  font-size: 1.35rem;
+  font-weight: 900;
+  line-height: 1;
+}
+.count-scope-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.4rem;
+}
+.count-scope-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  border-radius: 999px;
+  background: rgba(22, 131, 91, 0.12);
+  border: 1px solid rgba(22, 131, 91, 0.25);
+  color: #0f6f4c;
+  padding: 0.25rem 0.45rem 0.25rem 0.65rem;
+  font-size: 0.78rem;
+  font-weight: 900;
+}
+.count-scope-chip button {
+  width: 1.25rem;
+  height: 1.25rem;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(15, 111, 76, 0.16);
+  color: #0f6f4c;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+/* Centered quantity keypad popup after an item scan */
+.count-panel--keypad {
+  position: fixed;
+  inset: 0;
+  z-index: 10050;
+  display: grid;
+  place-items: center;
+  background: rgba(15, 24, 21, 0.36);
+  border: 0 !important;
+  padding: 1rem !important;
+}
+.count-panel--keypad[hidden] { display: none !important; }
+.count-panel--keypad .count-display,
+.count-panel--keypad .count-keypad {
+  width: min(94vw, 560px);
+}
+.count-panel--keypad .count-display {
+  border-radius: 16px 16px 0 0;
+  margin: 0;
+}
+.count-panel--keypad .count-keypad {
+  border-radius: 0 0 16px 16px;
+  background: #fff;
+  padding: 0.75rem;
+  box-shadow: 0 18px 50px rgba(0,0,0,0.28);
+}
+.count-workspace__grid:has(.count-panel--keypad[hidden]) { grid-template-columns: minmax(0, 1fr); }

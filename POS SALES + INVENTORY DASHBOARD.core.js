@@ -82,6 +82,8 @@
   countStage: "search",
   pendingDuplicateCount: null,
   pendingDuplicateMode: null,
+  countSetupExtraVendors: [],
+  countSetupExtraCategories: [],
   countReportMode: "input",
   metricsPinned: JSON.parse(localStorage.getItem("posDashboardMetricsPinned:v1") || "false"),
   orderVendorQuickFilter: "",
@@ -497,6 +499,10 @@ const els = {
   countDateInput: document.querySelector("#countDateInput"),
   countVendorInput: document.querySelector("#countVendorInput"),
   countCategoryInput: document.querySelector("#countCategoryInput"),
+  countAddVendorButton: document.querySelector("#countAddVendorButton"),
+  countAddCategoryButton: document.querySelector("#countAddCategoryButton"),
+  countVendorChips: document.querySelector("#countVendorChips"),
+  countCategoryChips: document.querySelector("#countCategoryChips"),
   countAllowOutOfScopeInput: document.querySelector("#countAllowOutOfScopeInput"),
   countStartButton: document.querySelector("#countStartButton"),
   countCancelButton: document.querySelector("#countCancelButton"),
@@ -880,6 +886,8 @@ els.countDeleteSessionButton?.addEventListener("click", deleteCountSession);
 els.countInputReportButton?.addEventListener("click", () => openCountReport(state.activeCountSession?.id, "input"));
 els.countComparisonReportButton?.addEventListener("click", () => openCountReport(state.activeCountSession?.id, "comparison"));
 els.countStartButton?.addEventListener("click", startCountSessionFromModal);
+els.countAddVendorButton?.addEventListener("click", () => addCountScopeExtra("vendor"));
+els.countAddCategoryButton?.addEventListener("click", () => addCountScopeExtra("category"));
 els.countCancelButton?.addEventListener("click", closeCountSetupModal);
 els.countSetupModal?.addEventListener("click", (event) => {
   if (event.target === els.countSetupModal) closeCountSetupModal();
@@ -1454,23 +1462,25 @@ document.addEventListener("keydown", (event) => {
     if (/^\d$/.test(event.key)) {
       event.preventDefault();
       event.stopPropagation();
-      if (noteQtyDigitForScannerGuard(event.key)) return;
-      handleCountKey(event.key);
+      handleCountQtyKeyboardDigit(event.key);
       return;
     }
     if (event.key === "Backspace") {
       event.preventDefault();
       event.stopPropagation();
+      flushPendingCountQtyDigits();
       handleCountKey("back");
       return;
     }
     if (event.key === ".") {
       event.preventDefault();
       event.stopPropagation();
+      flushPendingCountQtyDigits();
       handleCountKey(".");
       return;
     }
     if (event.key === "Enter") {
+      flushPendingCountQtyDigits();
       event.preventDefault();
       event.stopPropagation();
       const bufferedScan = state._countQtyScannerBuffer || "";
@@ -4298,8 +4308,12 @@ function openCountSetupModal() {
   els.countDateInput.value = new Date().toISOString().slice(0, 10);
   populateCountSetupOptions();
   // Always reset to "All" for a fresh count
-  [...(els.countVendorInput?.options || [])].forEach((option) => option.selected = false);
-  [...(els.countCategoryInput?.options || [])].forEach((option) => option.selected = false);
+  if (els.countVendorInput) els.countVendorInput.value = "";
+  if (els.countCategoryInput) els.countCategoryInput.value = "";
+  state.countSetupExtraVendors = [];
+  state.countSetupExtraCategories = [];
+  renderCountScopeChips("vendor");
+  renderCountScopeChips("category");
   const statusEl = document.querySelector("#countStatusInput");
   if (statusEl) statusEl.value = "";
   if (els.countScopeSearchInput) els.countScopeSearchInput.value = "";
@@ -4339,13 +4353,15 @@ function populateCountSetupOptions() {
 function startCountSessionFromModal() {
   const statusEl = document.querySelector("#countStatusInput");
   const deviceId = countDeviceId();
+  const vendorValues = countSetupSelectedValues("vendor");
+  const categoryValues = countSetupSelectedValues("category");
   const session = {
     id: makeCountIdentifier("count"),
     date: els.countDateInput.value || new Date().toISOString().slice(0, 10),
-    vendors: getSelectedOptionValues(els.countVendorInput),
-    categories: getSelectedOptionValues(els.countCategoryInput),
-    vendor: countScopeLabelFromValues(getSelectedOptionValues(els.countVendorInput), ""),
-    category: countScopeLabelFromValues(getSelectedOptionValues(els.countCategoryInput), ""),
+    vendors: vendorValues,
+    categories: categoryValues,
+    vendor: countScopeLabelFromValues(vendorValues, ""),
+    category: countScopeLabelFromValues(categoryValues, ""),
     status: statusEl ? (statusEl.value || "") : "",
     searchFilter: cleanCell(els.countScopeSearchInput?.value || ""),
     startedAt: new Date().toISOString(),
@@ -4585,7 +4601,51 @@ const COUNT_QTY_SOFT_MAX = 99;
 
 function getSelectedOptionValues(select) {
   if (!select) return [];
-  return [...select.selectedOptions].map((option) => cleanCell(option.value)).filter(Boolean);
+  if (select.multiple) return [...select.selectedOptions].map((option) => cleanCell(option.value)).filter(Boolean);
+  const value = cleanCell(select.value || "");
+  return value ? [value] : [];
+}
+
+function countSetupSelectedValues(type) {
+  const select = type === "vendor" ? els.countVendorInput : els.countCategoryInput;
+  const extras = type === "vendor" ? state.countSetupExtraVendors : state.countSetupExtraCategories;
+  return [...new Set([...getSelectedOptionValues(select), ...((extras || []).map(cleanCell))].filter(Boolean))];
+}
+
+function addCountScopeExtra(type) {
+  const select = type === "vendor" ? els.countVendorInput : els.countCategoryInput;
+  const key = type === "vendor" ? "countSetupExtraVendors" : "countSetupExtraCategories";
+  const value = cleanCell(select?.value || "");
+  if (!value) {
+    showToast(`Choose a ${type} first, then press +.`, 2200, "warning");
+    return;
+  }
+  const list = [...new Set([...(state[key] || []), value])];
+  state[key] = list;
+  renderCountScopeChips(type);
+}
+
+function removeCountScopeExtra(type, value) {
+  const key = type === "vendor" ? "countSetupExtraVendors" : "countSetupExtraCategories";
+  const removeKey = cleanCell(value);
+  state[key] = (state[key] || []).filter((item) => cleanCell(item) !== removeKey);
+  renderCountScopeChips(type);
+}
+
+function renderCountScopeChips(type) {
+  const chips = type === "vendor" ? els.countVendorChips : els.countCategoryChips;
+  const list = type === "vendor" ? state.countSetupExtraVendors : state.countSetupExtraCategories;
+  if (!chips) return;
+  const clean = [...new Set((list || []).map(cleanCell).filter(Boolean))];
+  chips.hidden = !clean.length;
+  chips.innerHTML = clean.map((value) => `
+    <span class="count-scope-chip">
+      ${escapeHtml(value)}
+      <button type="button" aria-label="Remove ${escapeHtml(value)}" data-count-scope-remove="${type}" data-value="${escapeHtml(value)}">×</button>
+    </span>`).join("");
+  chips.querySelectorAll("[data-count-scope-remove]").forEach((button) => {
+    button.addEventListener("click", () => removeCountScopeExtra(button.dataset.countScopeRemove, button.dataset.value));
+  });
 }
 
 function countScopeValues(session, key, legacyKey = key) {
@@ -4710,6 +4770,70 @@ function noteQtyDigitForScannerGuard(digit) {
     }
   }, 120);
   return false;
+}
+
+function appendCountQtyDigitImmediate(digit) {
+  state.countQtyBuffer = state.countQtyBuffer === "0" ? digit : `${state.countQtyBuffer}${digit}`;
+  renderCountQuantity();
+}
+
+function flushPendingCountQtyDigits() {
+  if (state._countQtyKeyboardTimer) {
+    clearTimeout(state._countQtyKeyboardTimer);
+    state._countQtyKeyboardTimer = null;
+  }
+  const pending = state._countQtyKeyboardPending || "";
+  if (pending) {
+    state._countQtyKeyboardPending = "";
+    [...pending].forEach((digit) => appendCountQtyDigitImmediate(digit));
+  }
+  state._countQtyKeyboardScanner = "";
+}
+
+function handleCountQtyKeyboardDigit(digit) {
+  const now = performanceNow();
+  const last = Number(state._countQtyKeyboardLastAt || 0);
+  const rapid = last && now - last < 55;
+  state._countQtyKeyboardLastAt = now;
+
+  if (!rapid) {
+    flushPendingCountQtyDigits();
+    state._countQtyKeyboardPending = digit;
+    state._countQtyKeyboardTimer = setTimeout(() => {
+      state._countQtyKeyboardTimer = null;
+      const pending = state._countQtyKeyboardPending || "";
+      state._countQtyKeyboardPending = "";
+      [...pending].forEach((d) => appendCountQtyDigitImmediate(d));
+    }, 85);
+    return;
+  }
+
+  const pending = state._countQtyKeyboardPending || "";
+  state._countQtyKeyboardPending = "";
+  if (state._countQtyKeyboardTimer) {
+    clearTimeout(state._countQtyKeyboardTimer);
+    state._countQtyKeyboardTimer = null;
+  }
+  state._countQtyKeyboardScanner = `${state._countQtyKeyboardScanner || ""}${pending}${digit}`;
+  const buffered = state._countQtyKeyboardScanner || "";
+  if (looksLikeBarcodeValue(buffered)) {
+    state._countQtyKeyboardScanner = "";
+    redirectQtyBarcodeToSearch(buffered);
+    showToast("Barcode scan caught in qty field — moved back to scan.", 2200, "warning");
+    return;
+  }
+  if (state._countQtyKeyboardScannerTimer) clearTimeout(state._countQtyKeyboardScannerTimer);
+  state._countQtyKeyboardScannerTimer = setTimeout(() => {
+    const maybeQty = state._countQtyKeyboardScanner || "";
+    state._countQtyKeyboardScanner = "";
+    state._countQtyKeyboardScannerTimer = null;
+    if (looksLikeBarcodeValue(maybeQty)) {
+      redirectQtyBarcodeToSearch(maybeQty);
+      showToast("Barcode scan caught in qty field — moved back to scan.", 2200, "warning");
+      return;
+    }
+    [...maybeQty].forEach((d) => appendCountQtyDigitImmediate(d));
+  }, 130);
 }
 
 function handleCountKey(key) {
@@ -5072,6 +5196,7 @@ function resolveDuplicateCount(mode) {
 }
 
 function applyCountEntry() {
+  flushPendingCountQtyDigits();
   if (!state.activeCountSession && !restoreContinuedCountSession()) {
     showToast("Start a physical count first.", 3000, "warning");
     return;

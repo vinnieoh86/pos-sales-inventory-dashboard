@@ -678,8 +678,22 @@
         </div>
         <div class="count-modal__form">
           <label>Date <input id="countDateInput" type="date" /></label>
-          <label>Vendor <select id="countVendorInput" multiple size="6" aria-label="Vendor selection"></select><small class="count-multi-hint">Select one or more vendors. Leave blank for All.</small></label>
-          <label>Category <select id="countCategoryInput" multiple size="6" aria-label="Category selection"></select><small class="count-multi-hint">Select one or more categories. Leave blank for All.</small></label>
+          <label>Vendor
+            <div class="count-scope-picker-row">
+              <select id="countVendorInput" aria-label="Vendor selection"></select>
+              <button id="countAddVendorButton" type="button" class="count-scope-add-button" title="Add another vendor">+</button>
+            </div>
+            <div id="countVendorChips" class="count-scope-chips" hidden></div>
+            <small class="count-multi-hint">Pick one vendor, or use + to add more. Leave as All for all vendors.</small>
+          </label>
+          <label>Category
+            <div class="count-scope-picker-row">
+              <select id="countCategoryInput" aria-label="Category selection"></select>
+              <button id="countAddCategoryButton" type="button" class="count-scope-add-button" title="Add another category">+</button>
+            </div>
+            <div id="countCategoryChips" class="count-scope-chips" hidden></div>
+            <small class="count-multi-hint">Pick one category, or use + to add more. Leave as All for all categories.</small>
+          </label>
           <label>Item Status <select id="countStatusInput"></select></label>
           <label class="count-refine-label">Refine by Name / PLU / Item #
             <input id="countScopeSearchInput" type="search" placeholder="Optional: Adore, SH006, 113866..." autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" />
