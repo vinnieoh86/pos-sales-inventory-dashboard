@@ -7203,3 +7203,26 @@ body.scan-mode-active.scan-performance-medium .scan-mode-panel * {
   font-weight: 900;
   letter-spacing: 0.03em;
 }
+
+
+/* Count UX polish: multi-scope setup + keypad only after item scan */
+.count-modal__form select[multiple] {
+  min-height: 9rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.4rem;
+  background: #fff;
+  font-weight: 700;
+}
+.count-modal__form select[multiple] option { padding: 0.35rem 0.45rem; }
+.count-multi-hint { color: var(--muted); font-weight: 700; font-size: 0.72rem; }
+.count-panel--keypad[hidden] { display: none !important; }
+.count-workspace__grid:has(.count-panel--keypad[hidden]) { grid-template-columns: minmax(0, 1fr); }
+.count-scan-ready-card { min-height: 8rem; display: grid; place-items: center; text-align: center; color: var(--muted); }
+.count-scan-ready-card strong { display: block; color: var(--ink); font-size: 1.15rem; margin-bottom: 0.3rem; }
+.count-selected-item.count-flash-success { animation: countFlashSuccess 0.45s ease-out; }
+@keyframes countFlashSuccess {
+  0% { box-shadow: 0 0 0 0 rgba(35,179,105,0.55); background: #e8fff3; }
+  100% { box-shadow: 0 0 0 10px rgba(35,179,105,0); }
+}
+.count-col-plu { width: 9rem; }

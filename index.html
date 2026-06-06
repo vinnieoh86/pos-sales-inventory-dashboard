@@ -678,8 +678,8 @@
         </div>
         <div class="count-modal__form">
           <label>Date <input id="countDateInput" type="date" /></label>
-          <label>Vendor <select id="countVendorInput"></select></label>
-          <label>Category <select id="countCategoryInput"></select></label>
+          <label>Vendor <select id="countVendorInput" multiple size="6" aria-label="Vendor selection"></select><small class="count-multi-hint">Select one or more vendors. Leave blank for All.</small></label>
+          <label>Category <select id="countCategoryInput" multiple size="6" aria-label="Category selection"></select><small class="count-multi-hint">Select one or more categories. Leave blank for All.</small></label>
           <label>Item Status <select id="countStatusInput"></select></label>
           <label class="count-refine-label">Refine by Name / PLU / Item #
             <input id="countScopeSearchInput" type="search" placeholder="Optional: Adore, SH006, 113866..." autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" />
@@ -760,14 +760,14 @@
             </div>
             <div class="table-wrap count-stable-scroll">
               <table id="countEntryTable" class="count-report-table count-stable-table">
-                <colgroup><col class="count-col-code" /><col class="count-col-item" /><col class="count-col-vendor" /><col class="count-col-category" /><col class="count-col-entry" /><col class="count-col-entry" /><col class="count-col-physical" /><col class="count-col-mode" /><col class="count-col-variance" /></colgroup>
+                <colgroup><col class="count-col-code" /><col class="count-col-plu" /><col class="count-col-item" /><col class="count-col-vendor" /><col class="count-col-category" /><col class="count-col-entry" /><col class="count-col-entry" /><col class="count-col-physical" /><col class="count-col-mode" /><col class="count-col-variance" /></colgroup>
                 <thead>
                   <tr>
-                    <th>Code</th><th>Item</th><th>Vendor</th><th>Category</th><th>POS Stock</th><th>Entered Qty</th><th>Physical Count</th><th>Mode</th><th>Variance</th>
+                    <th>Code</th><th>PLU</th><th>Item</th><th>Vendor</th><th>Category</th><th>POS Stock</th><th>Entered Qty</th><th>Physical Count</th><th>Mode</th><th>Variance</th>
                   </tr>
                 </thead>
                 <tbody id="countEntryBody">
-                  <tr><td colspan="9" class="empty-cell">No items counted yet.</td></tr>
+                  <tr><td colspan="10" class="empty-cell">No items counted yet.</td></tr>
                 </tbody>
               </table>
             </div>
@@ -815,7 +815,7 @@
               </tr>
             </thead>
             <tbody id="countReportBody">
-              <tr><td colspan="9" class="empty-cell">No items counted yet.</td></tr>
+              <tr><td colspan="10" class="empty-cell">No items counted yet.</td></tr>
             </tbody>
           </table>
         </div>

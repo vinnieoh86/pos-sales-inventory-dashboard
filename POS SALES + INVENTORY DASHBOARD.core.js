@@ -4234,17 +4234,17 @@ function allCountCandidateRows() {
 
 function filteredCountCandidateRows(session = state.activeCountSession) {
   if (!session) return allCountCandidateRows();
-  const cacheKey = [session.id, session.vendor, session.department, session.category, session.status, session.searchFilter, state._dataCacheStamp].join("|");
+  const vendorValues = countSessionVendorValues(session).map((v) => v.trim().toUpperCase());
+  const categoryValues = countSessionCategoryValues(session).map((v) => v.trim().toUpperCase());
+  const cacheKey = [session.id, vendorValues.join("~"), categoryValues.join("~"), session.status, session.searchFilter, state._dataCacheStamp].join("|");
   if (state._filteredCountCache && state._filteredCountCacheKey === cacheKey) {
     return state._filteredCountCache;
   }
   const statusFilter = (session.status || "").trim().toLowerCase();
   const sourceRows = allCountCandidateRows();
   const rows = sourceRows.filter((item) => {
-    const vendorFilter = (session.vendor || session.department || "").trim().toUpperCase();
-    if (vendorFilter && (item.vendor || "").trim().toUpperCase() !== vendorFilter) return false;
-    const catFilter = (session.category || "").trim().toUpperCase();
-    if (catFilter && (item.category || "").trim().toUpperCase() !== catFilter) return false;
+    if (vendorValues.length && !vendorValues.includes((item.vendor || "").trim().toUpperCase())) return false;
+    if (categoryValues.length && !categoryValues.includes((item.category || "").trim().toUpperCase())) return false;
     if (statusFilter && (item.state || "").trim().toLowerCase() !== statusFilter) return false;
     const scopeNeedle = cleanCell(session.searchFilter || "").toLowerCase();
     if (scopeNeedle) {
@@ -4263,8 +4263,9 @@ function filteredCountCandidateRows(session = state.activeCountSession) {
 
 function countSessionLabel(session) {
   if (!session) return "Physical count";
-  const vendorLabel = session.vendor || session.department || "All vendors";
-  const parts = [session.date || "No date", vendorLabel, session.category || "All categories"];
+  const vendorLabel = countSessionVendorLabel(session);
+  const categoryLabel = countSessionCategoryLabel(session);
+  const parts = [session.date || "No date", vendorLabel, categoryLabel];
   if (session.searchFilter) parts.push(`Filter: ${session.searchFilter}`);
   return parts.join("  -  ");
 }
@@ -4297,8 +4298,8 @@ function openCountSetupModal() {
   els.countDateInput.value = new Date().toISOString().slice(0, 10);
   populateCountSetupOptions();
   // Always reset to "All" for a fresh count
-  els.countVendorInput.value = "";
-  els.countCategoryInput.value = "";
+  [...(els.countVendorInput?.options || [])].forEach((option) => option.selected = false);
+  [...(els.countCategoryInput?.options || [])].forEach((option) => option.selected = false);
   const statusEl = document.querySelector("#countStatusInput");
   if (statusEl) statusEl.value = "";
   if (els.countScopeSearchInput) els.countScopeSearchInput.value = "";
@@ -4341,8 +4342,10 @@ function startCountSessionFromModal() {
   const session = {
     id: makeCountIdentifier("count"),
     date: els.countDateInput.value || new Date().toISOString().slice(0, 10),
-    vendor: els.countVendorInput.value || "",
-    category: els.countCategoryInput.value || "",
+    vendors: getSelectedOptionValues(els.countVendorInput),
+    categories: getSelectedOptionValues(els.countCategoryInput),
+    vendor: countScopeLabelFromValues(getSelectedOptionValues(els.countVendorInput), ""),
+    category: countScopeLabelFromValues(getSelectedOptionValues(els.countCategoryInput), ""),
     status: statusEl ? (statusEl.value || "") : "",
     searchFilter: cleanCell(els.countScopeSearchInput?.value || ""),
     startedAt: new Date().toISOString(),
@@ -4577,6 +4580,78 @@ function looksLikeBarcodeValue(value) {
   return digits.length >= 8 && digits.length <= 18;
 }
 
+
+const COUNT_QTY_SOFT_MAX = 99;
+
+function getSelectedOptionValues(select) {
+  if (!select) return [];
+  return [...select.selectedOptions].map((option) => cleanCell(option.value)).filter(Boolean);
+}
+
+function countScopeValues(session, key, legacyKey = key) {
+  const list = Array.isArray(session?.[key]) ? session[key].map(cleanCell).filter(Boolean) : [];
+  const legacy = cleanCell(session?.[legacyKey] || "");
+  return list.length ? list : (legacy ? [legacy] : []);
+}
+
+function countScopeLabelFromValues(values, allLabel) {
+  const clean = [...new Set((values || []).map(cleanCell).filter(Boolean))];
+  if (!clean.length) return allLabel;
+  if (clean.length <= 3) return clean.join(" + ");
+  return `${clean.slice(0, 3).join(" + ")} +${clean.length - 3}`;
+}
+
+function countSessionVendorValues(session) {
+  return countScopeValues(session, "vendors", "vendor");
+}
+
+function countSessionCategoryValues(session) {
+  return countScopeValues(session, "categories", "category");
+}
+
+function countSessionVendorLabel(session) {
+  return countScopeLabelFromValues(countSessionVendorValues(session), "All vendors");
+}
+
+function countSessionCategoryLabel(session) {
+  return countScopeLabelFromValues(countSessionCategoryValues(session), "All categories");
+}
+
+function playCountFeedback(type = "success") {
+  try {
+    const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextCtor) return;
+    const ctx = state._countAudioContext || new AudioContextCtor();
+    state._countAudioContext = ctx;
+    if (ctx.state === "suspended") ctx.resume?.();
+    const beep = (frequency, start, duration, gainValue = 0.055) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(frequency, ctx.currentTime + start);
+      gain.gain.setValueAtTime(0.0001, ctx.currentTime + start);
+      gain.gain.exponentialRampToValueAtTime(gainValue, ctx.currentTime + start + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + start + duration);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(ctx.currentTime + start);
+      osc.stop(ctx.currentTime + start + duration + 0.02);
+    };
+    if (type === "error") beep(180, 0, 0.18, 0.07);
+    else if (type === "warning") { beep(420, 0, 0.07, 0.055); beep(420, 0.12, 0.07, 0.055); }
+    else beep(880, 0, 0.08, 0.05);
+  } catch (_) {}
+}
+
+function flashCountSuccess() {
+  const el = els.countSelectedItem;
+  if (!el) return;
+  el.classList.remove("count-flash-success");
+  void el.offsetWidth;
+  el.classList.add("count-flash-success");
+  setTimeout(() => el.classList.remove("count-flash-success"), 520);
+}
+
 function redirectQtyBarcodeToSearch(barcode) {
   const code = cleanCell(barcode).replace(/\D/g, "");
   if (!looksLikeBarcodeValue(code)) return false;
@@ -4599,6 +4674,7 @@ function redirectQtyBarcodeToSearch(barcode) {
     els.countSearchInput.select?.();
   }
   hideCountDropdown();
+  playCountFeedback("warning");
   setTimeout(() => handleCountLookup(), 0);
   return true;
 }
@@ -4654,6 +4730,11 @@ function handleCountKey(key) {
 
 function renderCountQuantity() {
   if (els.countQuantityDisplay) els.countQuantityDisplay.textContent = state.countQtyBuffer || "0";
+  const keypadPanel = document.querySelector(".count-panel--keypad");
+  if (keypadPanel) {
+    const showKeypad = !!state.activeCountSession && state.countStage === "qty" && !!currentSelectedCountItem() && !state.countAutoPlusMode;
+    keypadPanel.hidden = !showKeypad;
+  }
   renderCountAutoControls();
 }
 
@@ -4783,7 +4864,7 @@ function renderSelectedCountItem() {
   if (!els.countSelectedItem) return;
   if (!item) {
     els.countSelectedItem.classList.remove("is-ready");
-    els.countSelectedItem.innerHTML = `<p class="muted">Scan or search an item to begin counting.</p>`;
+    els.countSelectedItem.innerHTML = `<div class="count-scan-ready-card"><div><strong>Ready to scan</strong><span>Scan or search an item to begin counting.</span></div></div>`;
     return;
   }
   els.countSelectedItem.classList.add("is-ready");
@@ -4826,6 +4907,7 @@ function handleCountLookup() {
       setTimeout(() => els.countSearchInput && els.countSearchInput.classList.remove("count-search-error"), 1200);
     }
     const existsOutsideScope = !!findAnyCountMatch(query);
+    playCountFeedback("error");
     showToast(
       existsOutsideScope
         ? "Item is outside this count scope. A manager must enable the override to count it."
@@ -4964,6 +5046,10 @@ function commitCountEntry(item, qty, mode, options = {}) {
   state._replaceCountInputOnNextKey = false;
   hideCountDropdown();
   focusCountSearch();
+  if (options.autoPlus) {
+    playCountFeedback("success");
+    flashCountSuccess();
+  }
   if (mode === "add") {
     requestAnimationFrame(() => showToast(
       `${options.autoPlus ? "+1 Auto" : "Added " + number.format(qty)} to ${item.code}`,
@@ -5000,6 +5086,15 @@ function applyCountEntry() {
     return;
   }
   const qty = Math.max(0, Number(state.countQtyBuffer || "0"));
+  if (qty > COUNT_QTY_SOFT_MAX) {
+    const ok = window.confirm(`Large Quantity Alert\n\nYou entered ${number.format(qty)} units. Counts above ${COUNT_QTY_SOFT_MAX} are uncommon and may be an accidental barcode scan.\n\nContinue with this quantity?`);
+    if (!ok) {
+      state.countQtyBuffer = "0";
+      renderCountQuantity();
+      playCountFeedback("warning");
+      return;
+    }
+  }
   const existing = state.activeCountSession.entries?.filter((entry) => codeKey(entry.code) === codeKey(item.code)).at(-1);
   if (existing) {
     // In +1 Auto mode, repeated scans are continuous additions.
@@ -5092,7 +5187,7 @@ function renderCountDropdown(query) {
   const inScopeMatches = matches.filter((e) => inScopeCodes.has(e.codeKey));
   const outScopeMatches = matches.filter((e) => !inScopeCodes.has(e.codeKey));
   const session = state.activeCountSession;
-  const scopeLabel = [session?.vendor, session?.category, session?.status].filter(Boolean).join("  -  ") || "All items";
+  const scopeLabel = [countSessionVendorLabel(session), countSessionCategoryLabel(session), session?.status].filter(Boolean).join("  -  ") || "All items";
   const counted = new Set((session?.entries || []).map((e) => codeKey(e.code)));
 
   let html = "";
@@ -5187,13 +5282,13 @@ function openCountReport(sessionId = state.activeCountSession?.id, mode = state.
       : `<tr><th>Code</th><th>Item</th><th>Vendor</th><th>Category</th><th>Qty before</th><th>Qty after</th><th>Variance</th><th>Mode</th><th>Date/Time</th></tr>`;
   }
   if (els.countReportMeta) {
-    const vendorLabel = session.vendor || session.department || "All vendors";
+    const vendorLabel = countSessionVendorLabel(session);
     const totalCandidates = currentCountSessionCandidates(session).length;
     const syncStats = countSessionSyncStats(session);
     els.countReportMeta.innerHTML = `
       <span><b>Date</b> ${escapeHtml(session.date || "-")}</span>
       <span><b>Vendor</b> ${escapeHtml(vendorLabel)}</span>
-      <span><b>Category</b> ${escapeHtml(session.category || "All")}</span>
+      <span><b>Category</b> ${escapeHtml(countSessionCategoryLabel(session))}</span>
       <span><b>Entries</b> ${number.format((session.entries || []).length)}</span>
       <span><b>Items in scope</b> ${number.format(totalCandidates)}</span>
       <span><b>Started</b> ${escapeHtml(new Date(session.startedAt).toLocaleString())}</span>
@@ -5213,7 +5308,7 @@ function exportCountReportPdf() {
   if (!session) { showToast("No count report to export.", 3000, "warning"); return; }
   const mode = state.countReportMode || "input";
   const dateStr = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
-  const vendorLabel = session.vendor || session.department || "All vendors";
+  const vendorLabel = countSessionVendorLabel(session);
   const entries = session.entries || [];
   const syncStats = countSessionSyncStats(session);
   const syncWarning = syncStats.pending || syncStats.failed || session.localSyncPending
@@ -5276,7 +5371,7 @@ function exportCountReportPdf() {
   <div class="meta">
     <span><b>Date</b> ${escapeHtml(session.date || "-")}</span>
     <span><b>Vendor</b> ${escapeHtml(vendorLabel)}</span>
-    <span><b>Category</b> ${escapeHtml(session.category || "All")}</span>
+    <span><b>Category</b> ${escapeHtml(countSessionCategoryLabel(session))}</span>
     <span><b>Entries</b> ${number.format(entries.length)}</span>
     <span><b>Mode</b> ${mode === "comparison" ? "Comparison" : "Input Log"}</span>
     <span><b>Sync</b> ${escapeHtml(syncWarning)}</span>
@@ -5300,7 +5395,7 @@ async function exportCountReportExcel() {
   const xlsx = await ensureXlsxReader();
   if (!xlsx) { showToast("Excel library not available.", 3000, "warning"); return; }
 
-  const vendorLabel = session.vendor || session.department || "All vendors";
+  const vendorLabel = countSessionVendorLabel(session);
   const entries = session.entries || [];
   const syncStats = countSessionSyncStats(session);
   const syncNote = syncStats.pending || syncStats.failed || session.localSyncPending
@@ -5310,7 +5405,7 @@ async function exportCountReportExcel() {
 
   // Input log sheet
   const inputData = [
-    ["Physical Count - Input Log", "", "", `Date: ${session.date || "-"}`, `Vendor: ${vendorLabel}`, `Category: ${session.category || "All"}`, syncNote],
+    ["Physical Count - Input Log", "", "", `Date: ${session.date || "-"}`, `Vendor: ${vendorLabel}`, `Category: ${countSessionCategoryLabel(session)}`, syncNote],
     [],
     ["Code", "Item", "Vendor", "Category", "Qty Before", "Counted", "Variance", "Mode", "Time"],
     ...[...entries].reverse().map((entry) => {
@@ -5327,7 +5422,7 @@ async function exportCountReportExcel() {
   const latestByCode = new Map();
   entries.forEach((entry) => latestByCode.set(codeKey(entry.code), entry));
   const compData = [
-    ["Physical Count - Comparison", "", "", `Date: ${session.date || "-"}`, `Vendor: ${vendorLabel}`, `Category: ${session.category || "All"}`, syncNote],
+    ["Physical Count - Comparison", "", "", `Date: ${session.date || "-"}`, `Vendor: ${vendorLabel}`, `Category: ${countSessionCategoryLabel(session)}`, syncNote],
     [],
     ["Code", "Item", "Vendor", "Category", "Qty Before", "Qty After", "NULL", "Qty Diff", "Cost Diff", "Status"],
     ...allItems.map((item) => {
@@ -5420,7 +5515,7 @@ async function openSessionHistoryModal() {
     await restoreSharedCountSessionsOnlyFromSupabase({ silent: true, history: true });
   }
   // Populate vendor filter
-  const vendors = [...new Set(state.countSessions.map((s) => s.vendor || s.department || "").filter(Boolean))];
+  const vendors = [...new Set(state.countSessions.flatMap((s) => countSessionVendorValues(s)).filter(Boolean))];
   if (els.sessionHistoryVendorFilter) {
     const cur = els.sessionHistoryVendorFilter.value;
     els.sessionHistoryVendorFilter.innerHTML = `<option value="">All vendors</option>` +
@@ -5497,7 +5592,7 @@ function renderCountSessionRows() {
       // completed work. Only hide sessions that are still actively being counted with no
       // entries yet (i.e. just opened, nothing scanned, not yet saved).
       if (employeeMode && !s.submittedAt && !s.savedAt && !(s.entries || []).length) return false;
-      if (vendorFilter && (s.vendor || s.department || "") !== vendorFilter) return false;
+      if (vendorFilter && !countSessionVendorValues(s).includes(vendorFilter)) return false;
       if (!sessionMatchesPeriodFilter(s, periodFilter)) return false;
       return true;
     });
@@ -5543,7 +5638,7 @@ function renderCountEntryRows(prependOnly = false) {
   if (!els.countEntryBody) return;
   const entries = filterUndoneCountEntries(state.activeCountSession?.entries || [], state.activeCountSession);
   if (!entries.length) {
-    els.countEntryBody.innerHTML = `<tr><td colspan="8" class="empty-cell">No items counted yet.</td></tr>`;
+    els.countEntryBody.innerHTML = `<tr><td colspan="10" class="empty-cell">No items counted yet.</td></tr>`;
     return;
   }
   // Fast path: just prepend the newest entry row
@@ -5555,9 +5650,11 @@ function renderCountEntryRows(prependOnly = false) {
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>${escapeHtml(entry.code || "-")}</td>
+      <td>${escapeHtml(entry.plu || "-")}</td>
       <td>${escapeHtml(entry.product || "-")}</td>
       <td>${escapeHtml(entry.vendor || "-")}</td>
       <td>${escapeHtml(entry.category || "-")}</td>
+      <td class="num">${number.format(entry.originalQty || 0)}</td>
       <td class="num">${entry.mode === "add" ? `+${number.format(entry.inputQty || 0)}` : number.format(entry.inputQty || 0)}</td>
       <td class="num">${number.format(entry.countedQty || 0)}</td>
       <td>${escapeHtml(entry.mode || "set")}</td>
@@ -5579,9 +5676,11 @@ function renderCountEntryRows(prependOnly = false) {
       return `
       <tr>
         <td>${escapeHtml(entry.code || "-")}</td>
+        <td>${escapeHtml(entry.plu || "-")}</td>
         <td>${escapeHtml(entry.product || "-")}</td>
         <td>${escapeHtml(entry.vendor || "-")}</td>
         <td>${escapeHtml(entry.category || "-")}</td>
+        <td class="num">${number.format(entry.originalQty || 0)}</td>
         <td class="num">${entry.mode === "add" ? `+${number.format(entry.inputQty || 0)}` : number.format(entry.inputQty || 0)}</td>
         <td class="num">${number.format(entry.countedQty || 0)}</td>
         <td>${escapeHtml(entry.mode || "set")}</td>
@@ -5599,8 +5698,8 @@ function updateCountSummaryStrip() {
   if (!state.activeCountSession || !els.countSummaryStrip) return;
   const entries = state.activeCountSession.entries || [];
   const date = state.activeCountSession.date || "-";
-  const vendor = state.activeCountSession.vendor || "All vendors";
-  const category = state.activeCountSession.category || "All categories";
+  const vendor = countSessionVendorLabel(state.activeCountSession);
+  const category = countSessionCategoryLabel(state.activeCountSession);
   const refine = state.activeCountSession.searchFilter || "No extra filter";
   els.countSummaryStrip.innerHTML = `
     <span><b>${escapeHtml(date)}</b></span>
@@ -5737,7 +5836,8 @@ function renderCountsWorkspace(options = {}) {
   if (els.countReviewButton) els.countReviewButton.hidden = true;
   if (active) {
     els.activeCountTitle.textContent = countSessionLabel(active);
-    const vendorLabel = active.vendor || active.department || "All vendors";
+    const vendorLabel = countSessionVendorLabel(active);
+    const categoryLabel = countSessionCategoryLabel(active);
     // PATCH E: Show active count criteria clearly, including whether disabled items are excluded.
     const statusLabel = active.status
       ? escapeHtml(active.status)
@@ -5745,7 +5845,7 @@ function renderCountsWorkspace(options = {}) {
     els.activeCountMeta.innerHTML = `
       <span>${escapeHtml(active.date || "-")}</span>
       <span>${escapeHtml(vendorLabel)}</span>
-      <span>${escapeHtml(active.category || "All categories")}</span>
+      <span>${escapeHtml(categoryLabel)}</span>
       <span>Status: ${statusLabel}</span>
       <span>${number.format((active.entries || []).length)} entries</span>
       <span>${active.allowOutOfScope && !isUserRole() ? "Manager scope override enabled" : "Scope locked"}</span>`;
@@ -11955,6 +12055,7 @@ function renderAdjustLog() {
     return `<tr>
       <td>${escapeHtml(new Date(entry.recordedAt).toLocaleString())}</td>
       <td>${escapeHtml(entry.code || "-")}</td>
+      <td>${escapeHtml(entry.plu || "-")}</td>
       <td>${escapeHtml(entry.product || "-")}</td>
       <td>${escapeHtml(entry.vendor || "-")}</td>
       <td>${escapeHtml(entry.category || "-")}</td>
@@ -12013,6 +12114,7 @@ async function exportAdjustLogPdf() {
     return `<tr class="${cls}">
       <td>${escapeHtml(new Date(entry.recordedAt).toLocaleString())}</td>
       <td>${escapeHtml(entry.code || "-")}</td>
+      <td>${escapeHtml(entry.plu || "-")}</td>
       <td>${escapeHtml(entry.product || "-")}</td>
       <td>${escapeHtml(entry.vendor || "-")}</td>
       <td>${escapeHtml(entry.category || "-")}</td>
@@ -12083,7 +12185,7 @@ function openFinalCountReport(sessionId) {
     els.finalReportMeta.innerHTML = `
       <span><b>Date</b> ${escapeHtml(session.date || "-")}</span>
       <span><b>Vendor</b> ${escapeHtml(session.vendor || "All")}</span>
-      <span><b>Category</b> ${escapeHtml(session.category || "All")}</span>
+      <span><b>Category</b> ${escapeHtml(countSessionCategoryLabel(session))}</span>
       <span><b>Status filter</b> ${escapeHtml(session.status || "All")}</span>
       <span><b>Submitted</b> ${escapeHtml(new Date(session.submittedAt).toLocaleString())}</span>
       <span><b>Entries</b> ${number.format((session.entries || []).length)}</span>
@@ -12176,7 +12278,7 @@ function exportFinalCountReportPdf() {
   <div class="meta">
     <span><b>Count date</b> ${escapeHtml(session.date || "-")}</span>
     <span><b>Vendor</b> ${escapeHtml(session.vendor || "All")}</span>
-    <span><b>Category</b> ${escapeHtml(session.category || "All")}</span>
+    <span><b>Category</b> ${escapeHtml(countSessionCategoryLabel(session))}</span>
     <span><b>Submitted</b> ${escapeHtml(new Date(session.submittedAt).toLocaleString())}</span>
     <span><b>Sync</b> ${escapeHtml(syncWarning)}</span>
     <span><b>Generated</b> ${dateStr}</span>
