@@ -1117,8 +1117,9 @@ els.countSessionModal?.addEventListener("click", (event) => {
     return;
   }
   if (event.target === els.countSessionModal) {
-    state._countSessionOpen = false;
-    els.countSessionModal.hidden = true;
+    // Keep physical count open on accidental backdrop taps/clicks. This prevents
+    // report-history Continue from opening and immediately closing the workspace.
+    focusCountSearch();
     return;
   }
   const interactive = event.target.closest("button, input, select, textarea, a, label, [data-count-key], .count-keypad");
@@ -1418,22 +1419,29 @@ document.addEventListener("keydown", (event) => {
   if (!els.countSessionModal.hidden && event.target === els.countSearchInput && event.key === "Enter") return;
   if (!els.countReportModal.hidden) return;
   if (!els.countSessionModal.hidden && state.activeCountSession && state.countStage === "qty") {
+    const target = event.target;
+    const isTypingInSearch = target === els.countSearchInput;
+    if (isTypingInSearch) {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        event.stopPropagation();
+        handleCountLookup();
+        return;
+      }
+      return;
+    }
+    // Scanner-first logic: physical numeric bursts should wake the barcode input.
+    // Qty entry is handled by the visible keypad buttons, so scans do not get
+    // trapped in the Entered Qty buffer.
     if (/^\d$/.test(event.key)) {
       event.preventDefault();
       event.stopPropagation();
-      handleCountKey(event.key);
-      return;
-    }
-    if (event.key === "Backspace") {
-      event.preventDefault();
-      event.stopPropagation();
-      handleCountKey("back");
-      return;
-    }
-    if (event.key === ".") {
-      event.preventDefault();
-      event.stopPropagation();
-      handleCountKey(".");
+      if (els.countSearchInput) {
+        els.countSearchInput.focus();
+        els.countSearchInput.value = event.key;
+        state.countStage = "search";
+        scheduleCountAutoCommit?.(90);
+      }
       return;
     }
     if (event.key === "Enter") {
@@ -4681,11 +4689,14 @@ function handleCountLookup() {
   state.countQtyBuffer = "0";
   state.pendingDuplicateMode = null;
   hideCountDropdown();
-  els.countSearchInput.value = "";
+  if (els.countSearchInput) els.countSearchInput.value = "";
   state._replaceCountInputOnNextKey = false;
-  els.countSearchInput?.blur();
   renderSelectedCountItem();
   renderCountQuantity();
+  // Keep scanner focus in the barcode field even while qty is being entered from
+  // the on-screen keypad. Scanner bursts should start the next lookup, not append
+  // into Entered Qty.
+  focusCountSearch();
 }
 
 function clearCountLookup() {
@@ -5229,7 +5240,7 @@ function renderCountReportRows(session, mode = state.countReportMode || "input")
 
 async function openSessionHistoryModal() {
   if (els.sessionHistoryModal) els.sessionHistoryModal.hidden = false;
-  if (els.countSessionBody) els.countSessionBody.innerHTML = `<tr><td colspan="12" class="empty-cell">Loading report history...</td></tr>`;
+  if (els.countSessionBody) els.countSessionBody.innerHTML = `<tr><td colspan="13" class="empty-cell">Loading report history...</td></tr>`;
   if (ENABLE_SHARED_SYNC && sharedCountSessionsAvailable) {
     await restoreSharedCountSessionsOnlyFromSupabase({ silent: true, history: true });
   }
@@ -5317,7 +5328,7 @@ function renderCountSessionRows() {
     });
 
   if (!filtered.length) {
-    els.countSessionBody.innerHTML = `<tr><td colspan="12" class="empty-cell">${state.countSessions.length ? "No sessions match filters." : "No physical count sessions saved yet."}</td></tr>`;
+    els.countSessionBody.innerHTML = `<tr><td colspan="13" class="empty-cell">${state.countSessions.length ? "No sessions match filters." : "No physical count sessions saved yet."}</td></tr>`;
     return;
   }
   els.countSessionBody.innerHTML = filtered
@@ -5327,6 +5338,7 @@ function renderCountSessionRows() {
         <td>${escapeHtml(session.vendor || session.department || "All")}</td>
         <td>${escapeHtml(session.category || "All")}</td>
         <td>${escapeHtml(session.status || "All")}</td>
+        <td>${escapeHtml(session.searchFilter || "-")}</td>
         <td>${escapeHtml(new Date(session.startedAt).toLocaleString())}</td>
         <td class="num">${number.format((session.entries || []).length)}</td>
         <td>${escapeHtml(new Date(session.updatedAt || session.startedAt).toLocaleString())}${session.remoteActive ? ` <span class="muted">(Live)</span>` : ""}</td>
@@ -5635,8 +5647,7 @@ function applyRoleRestrictions(force = false) {
     "#exportPoExcel", "#exportPoPdf", "#downloadOrder",
     "#exportAdjustPdfButton", "#exportAdjustExcelButton",
     "#clearAdjustLogButton", ".arrange-columns-btn", "#arrangeColumnsButton",
-    ".column-picker", "#downloadInventory", "#createPoShortcut",
-    "#countContinueButton", "#countSubmitButton", "#countPdfReportButton", "#countExcelReportButton", "#countComparisonViewButton"
+    ".column-picker", "#downloadInventory", "#createPoShortcut"
   ];
   adminOnly.forEach((sel) => {
     document.querySelectorAll(sel).forEach((el) => { el.style.display = userMode ? "none" : ""; });
@@ -11328,11 +11339,14 @@ async function continueCountFromReport() {
   setTimeout(() => {
     state.activeCountSession = findCountSessionById(sessionId) || state.activeCountSession || liveSession;
     state._countSessionOpen = true;
-    state._ignoreNextCountBackdropCloseUntil = Date.now() + 2000;
+    state._ignoreNextCountBackdropCloseUntil = Date.now() + 3000;
     renderCountsWorkspace();
-    if (els.countSessionModal) els.countSessionModal.hidden = false;
+    if (els.countSessionModal) {
+      els.countSessionModal.hidden = false;
+      els.countSessionModal.classList.add("count-session-forced-open");
+    }
     requestAnimationFrame(() => focusCountSearch());
-  }, 75);
+  }, 180);
   void syncSharedCountSessionsToSupabase(true);
   showToast(`Continuing count: ${countSessionLabel(session)}`, 2800, "success");
 }

@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "20260605-inventory-sync-layout-fix";
+  const VERSION = "20260606-count-continue-scan-history-fix";
 
   function makeSearchEditable() {
     const search = document.querySelector("#searchInput");
