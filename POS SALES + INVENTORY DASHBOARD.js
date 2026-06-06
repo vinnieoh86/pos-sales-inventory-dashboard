@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "20260606-count-continue-scan-history-fix";
+  const VERSION = "20260606-continue-barcode-safety-fix";
 
   function makeSearchEditable() {
     const search = document.querySelector("#searchInput");

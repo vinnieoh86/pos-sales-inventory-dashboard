@@ -1448,6 +1448,7 @@ document.addEventListener("keydown", (event) => {
     if (/^\d$/.test(event.key)) {
       event.preventDefault();
       event.stopPropagation();
+      noteQtyDigitForScannerGuard(event.key);
       handleCountKey(event.key);
       return;
     }
@@ -1466,6 +1467,11 @@ document.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
       event.preventDefault();
       event.stopPropagation();
+      const bufferedScan = state._countQtyScannerBuffer || "";
+      if (looksLikeBarcodeValue(bufferedScan) && redirectQtyBarcodeToSearch(bufferedScan)) {
+        showToast("Barcode scan caught in qty field — moved back to scan.", 2200, "warning");
+        return;
+      }
       applyCountEntry();
       return;
     }
@@ -4491,6 +4497,73 @@ function deleteCountSession() {
   showToast(`Deleted unsaved count: ${label}`, 3200, "warning");
 }
 
+
+function restoreContinuedCountSession() {
+  const id = cleanCell(state._continuingCountId || state.countReportOpenId || "");
+  if (!id) return false;
+  const session = findCountSessionById(id) || state.countSessions.find((s) => cleanCell(s?.id) === id);
+  if (!session) return false;
+  state.activeCountSession = markCountSessionDirty({ ...session, isActiveLive: true });
+  state.countSessions = [
+    state.activeCountSession,
+    ...(state.countSessions || []).filter((saved) => cleanCell(saved?.id) !== id),
+  ];
+  state._countSessionOpen = true;
+  persistActiveCountSession();
+  persistCountSessions({ scheduleSync: false });
+  return true;
+}
+
+function looksLikeBarcodeValue(value) {
+  const digits = cleanCell(value).replace(/\D/g, "");
+  return digits.length >= 8 && digits.length <= 18;
+}
+
+function redirectQtyBarcodeToSearch(barcode) {
+  const code = cleanCell(barcode).replace(/\D/g, "");
+  if (!looksLikeBarcodeValue(code)) return false;
+  // Scanner safety: a long scanner burst should never become quantity.
+  // Treat it as an accidental second scan/rescan instead.
+  state.countQtyBuffer = "0";
+  state.countStage = "search";
+  state.selectedCountItemCode = "";
+  state.pendingDuplicateMode = null;
+  state._countQtyScannerBuffer = "";
+  if (state._countQtyScannerTimer) {
+    clearTimeout(state._countQtyScannerTimer);
+    state._countQtyScannerTimer = null;
+  }
+  renderSelectedCountItem();
+  renderCountQuantity();
+  if (els.countSearchInput) {
+    els.countSearchInput.value = code;
+    els.countSearchInput.focus();
+    els.countSearchInput.select?.();
+  }
+  hideCountDropdown();
+  setTimeout(() => handleCountLookup(), 0);
+  return true;
+}
+
+function noteQtyDigitForScannerGuard(digit) {
+  const now = performanceNow();
+  if (!state._countQtyScannerLastAt || now - state._countQtyScannerLastAt > 120) {
+    state._countQtyScannerBuffer = "";
+  }
+  state._countQtyScannerLastAt = now;
+  state._countQtyScannerBuffer = `${state._countQtyScannerBuffer || ""}${digit}`;
+  if (state._countQtyScannerTimer) clearTimeout(state._countQtyScannerTimer);
+  state._countQtyScannerTimer = setTimeout(() => {
+    const buffered = state._countQtyScannerBuffer || "";
+    state._countQtyScannerBuffer = "";
+    state._countQtyScannerTimer = null;
+    if (state.countStage === "qty" && looksLikeBarcodeValue(buffered)) {
+      redirectQtyBarcodeToSearch(buffered);
+      showToast("Barcode scan caught in qty field — moved back to scan.", 2200, "warning");
+    }
+  }, 90);
+}
+
 function handleCountKey(key) {
   if (key === "clear") {
     state.countQtyBuffer = "0";
@@ -4658,7 +4731,7 @@ function renderSelectedCountItem() {
 }
 
 function handleCountLookup() {
-  if (!state.activeCountSession) {
+  if (!state.activeCountSession && !restoreContinuedCountSession()) {
     showToast("Start a physical count first.", 3000, "warning");
     return;
   }
@@ -4841,8 +4914,12 @@ function resolveDuplicateCount(mode) {
 }
 
 function applyCountEntry() {
-  if (!state.activeCountSession) {
+  if (!state.activeCountSession && !restoreContinuedCountSession()) {
     showToast("Start a physical count first.", 3000, "warning");
+    return;
+  }
+  if (looksLikeBarcodeValue(state.countQtyBuffer || "") && redirectQtyBarcodeToSearch(state.countQtyBuffer)) {
+    showToast("That looks like a barcode, not a quantity.", 2200, "warning");
     return;
   }
   const item = currentSelectedCountItem();
@@ -11362,6 +11439,8 @@ async function continueCountFromReport(event = null) {
     state._countSessionOpen = true;
     state._continuingCountId = sessionId;
     state._ignoreNextCountBackdropCloseUntil = Date.now() + 4000;
+    persistActiveCountSession();
+    persistCountSessions({ scheduleSync: false });
     // The report/history overlays are only containers. Hide them after the active
     // session is set so the workspace cannot be immediately closed by the same click.
     if (els.countReportModal) els.countReportModal.hidden = true;
@@ -11382,7 +11461,8 @@ async function continueCountFromReport(event = null) {
   // A second pass catches delayed renders/sync refreshes that were closing the workspace.
   setTimeout(forceOpen, 120);
   setTimeout(() => { forceOpen(); focusCountSearch(); }, 450);
-  void syncSharedCountSessionsToSupabase(true);
+  // Do not block the reopened workspace on sync. Queue it after the UI is stable.
+  setTimeout(() => syncSharedCountSessionsToSupabase(true).catch(() => scheduleSharedCountSessionsSync()), 800);
   showToast(`Continuing count: ${countSessionLabel(session)}`, 2800, "success");
 }
 
