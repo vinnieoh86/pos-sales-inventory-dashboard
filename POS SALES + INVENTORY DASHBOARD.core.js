@@ -4185,14 +4185,10 @@ function allCountCandidateRows() {
   if (state._countCandidateCache && state._countCandidateStamp === state._dataCacheStamp) {
     return state._countCandidateCache;
   }
-  // PATCH D: ignoreStateFilter:true bypasses the inventory tab's UI dropdown (correct),
-  // but we still exclude Disabled and Discontinued items — they should never appear in a
-  // count search unless the session was explicitly set up targeting those states.
-  const all = buildInventoryRows({ ignoreQuery: true, ignoreFilters: true, ignoreStateFilter: true });
-  state._countCandidateCache = all.filter((item) => {
-    const st = (item.state || "").toLowerCase();
-    return st !== "disabled" && st !== "discontinued";
-  });
+  // Physical count scanner must be able to find the full item master, including
+  // Disabled/Discontinued items. Those items are filtered out of comparison/null-zero
+  // scope later unless they were actually scanned.
+  state._countCandidateCache = buildInventoryRows({ ignoreQuery: true, ignoreFilters: true, ignoreStateFilter: true });
   state._countCandidateStamp = state._dataCacheStamp;
   return state._countCandidateCache;
 }
@@ -4204,11 +4200,7 @@ function filteredCountCandidateRows(session = state.activeCountSession) {
     return state._filteredCountCache;
   }
   const statusFilter = (session.status || "").trim().toLowerCase();
-  // If this count was explicitly set up to target disabled/discontinued items, use the full
-  // unfiltered pool so those items are reachable. Otherwise use the active-items-only pool.
-  const sourceRows = (statusFilter === "disabled" || statusFilter === "discontinued")
-    ? buildInventoryRows({ ignoreQuery: true, ignoreFilters: true, ignoreStateFilter: true })
-    : allCountCandidateRows();
+  const sourceRows = allCountCandidateRows();
   const rows = sourceRows.filter((item) => {
     const vendorFilter = (session.vendor || session.department || "").trim().toUpperCase();
     if (vendorFilter && (item.vendor || "").trim().toUpperCase() !== vendorFilter) return false;
@@ -4648,10 +4640,17 @@ function handleCountLookup() {
   const match = findCountMatch(query);
   if (!match) {
     state.selectedCountItemCode = "";
+    state.countStage = "search";
+    state.countQtyBuffer = "0";
+    hideCountDropdown();
     renderSelectedCountItem();
-    // Immediately flash red - don't wait for qty entry
+    renderCountQuantity();
+    // Immediately reset the scan field so the next barcode replaces the failed one
+    // instead of appending to it (ex: 1234 + next scan should not become 12341234).
     if (els.countSearchInput) {
       els.countSearchInput.classList.add("count-search-error");
+      els.countSearchInput.value = "";
+      state._replaceCountInputOnNextKey = false;
       setTimeout(() => els.countSearchInput && els.countSearchInput.classList.remove("count-search-error"), 1200);
     }
     const existsOutsideScope = !!findAnyCountMatch(query);
@@ -4662,6 +4661,7 @@ function handleCountLookup() {
       4200,
       "warning",
     );
+    focusCountSearch();
     return;
   }
   const inScope = filteredCountCandidateRows().some((item) => codeKey(item.code) === codeKey(match.code));
@@ -4977,7 +4977,13 @@ function findCountSessionById(sessionId) {
 }
 
 function currentCountSessionCandidates(session) {
-  return filteredCountCandidateRows(session);
+  const rows = filteredCountCandidateRows(session);
+  const scannedCodes = new Set((session?.entries || []).map((entry) => codeKey(entry.code)));
+  return rows.filter((item) => {
+    const st = (item.state || "").trim().toLowerCase();
+    if ((st === "disabled" || st === "discontinued") && !scannedCodes.has(codeKey(item.code))) return false;
+    return true;
+  });
 }
 
 function openCountReport(sessionId = state.activeCountSession?.id, mode = state.countReportMode || "input") {
