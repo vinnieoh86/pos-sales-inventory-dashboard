@@ -4585,7 +4585,30 @@ function startContinueCountKeepOpenGuard(sessionId) {
       els.countSessionModal.hidden = false;
       focusCountSearch();
     }
-  }, 300);
+  }, 150);
+}
+
+function extendContinueCountKeepOpenGuard(sessionId, ms = 12000) {
+  const id = cleanCell(sessionId || state._continuingCountId || "");
+  if (!id) return;
+  const until = Date.now() + ms;
+  const tick = () => {
+    if (Date.now() > until || cleanCell(state._continuingCountId || "") !== id) return;
+    const active = state.activeCountSession && cleanCell(state.activeCountSession.id) === id
+      ? state.activeCountSession
+      : findCountSessionById(id);
+    if (active && !active.submittedAt) {
+      state.activeCountSession = markCountSessionDirty({ ...active, savedAt: "", submittedAt: "", isActiveLive: true });
+      state._countSessionOpen = true;
+      if (els.countReportModal) els.countReportModal.hidden = true;
+      const historyModal = document.querySelector("#sessionHistoryModal");
+      if (historyModal) historyModal.hidden = true;
+      renderCountsWorkspace();
+      if (els.countSessionModal) els.countSessionModal.hidden = false;
+    }
+    setTimeout(tick, 250);
+  };
+  setTimeout(tick, 250);
 }
 
 function clearContinuedCountLock() {
@@ -5405,9 +5428,18 @@ function openCountReport(sessionId = state.activeCountSession?.id, mode = state.
       : `${countSessionLabel(session)}  -  Input log`;
   }
   if (els.countReportHead) {
+    const th = (label, key) => `<th><button type="button" class="count-report-sort" data-sort-key="${key}">${label} ↕</button></th>`;
     els.countReportHead.innerHTML = mode === "comparison"
-      ? `<tr><th>Code</th><th>PLU</th><th>Item</th><th>Vendor</th><th>Category</th><th>Qty before</th><th>Qty after</th><th>NULL</th><th>Qty diff</th><th>Cost diff</th><th>Status</th></tr>`
-      : `<tr><th>Code</th><th>PLU</th><th>Item</th><th>Vendor</th><th>Category</th><th>Qty before</th><th>Qty after</th><th>Variance</th><th>Mode</th><th>Date/Time</th></tr>`;
+      ? `<tr>${th("Code", "code")}${th("PLU", "plu")}${th("Item", "item")}${th("Vendor", "vendor")}${th("Category", "category")}${th("Qty before", "before")}${th("Qty after", "after")}${th("NULL", "null")}${th("Qty diff", "diff")}${th("Cost diff", "cost")}${th("Status", "status")}</tr>`
+      : `<tr>${th("Code", "code")}${th("PLU", "plu")}${th("Item", "item")}${th("Vendor", "vendor")}${th("Category", "category")}${th("Qty before", "before")}${th("Qty after", "after")}${th("Variance", "diff")}${th("Mode", "mode")}${th("Date/Time", "time")}</tr>`;
+    els.countReportHead.querySelectorAll("[data-sort-key]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const key = btn.dataset.sortKey || "item";
+        const prev = state.countReportSort || {};
+        state.countReportSort = { key, dir: prev.key === key && prev.dir === "asc" ? "desc" : "asc" };
+        renderCountReportRows(session, mode);
+      });
+    });
   }
   if (els.countReportMeta) {
     const vendorLabel = countSessionVendorLabel(session);
@@ -5446,24 +5478,16 @@ function exportCountReportPdf() {
 
   let tableHtml = "";
   if (mode === "comparison") {
-    const allItems = currentCountSessionCandidates(session);
-    const latestByCode = new Map();
-    entries.forEach((entry) => latestByCode.set(codeKey(entry.code), entry));
+    const rows = filteredSortedCountComparisonRows(session);
     tableHtml = `<table>
       <thead><tr><th>Code</th><th>PLU</th><th>Item</th><th>Vendor</th><th>Category</th><th class="num">Qty Before</th><th class="num">Qty After</th><th>NULL</th><th class="num">Qty Diff</th><th class="num">Cost Diff</th><th>Status</th></tr></thead>
-      <tbody>${allItems.map((item) => {
-        const entry = latestByCode.get(codeKey(item.code));
-        const orig = Number(item.stock || 0);
-        const final = entry ? Number(entry.countedQty || 0) : 0;
-        const isNull = !entry;
-        const diff = final - orig;
-        const costDiff = diff * Number(item.unitCost || 0);
-        const cls = diff > 0 ? "var-up" : diff < 0 ? "var-down" : "";
+      <tbody>${rows.map(({ item, entry, originalQty, finalQty, isNull, qtyDiff, costDiff }) => {
+        const cls = qtyDiff > 0 ? "var-up" : qtyDiff < 0 ? "var-down" : "";
         return `<tr class="${cls}"><td>${escapeHtml(item.code)}</td><td>${escapeHtml(item.plu || "-")}</td><td>${escapeHtml(item.product)}</td><td>${escapeHtml(item.vendor || "-")}</td><td>${escapeHtml(item.category || "-")}</td>
-          <td class="num">${number.format(orig)}</td>
-          <td class="num">${number.format(final)}</td>
+          <td class="num">${number.format(originalQty)}</td>
+          <td class="num">${number.format(finalQty)}</td>
           <td>${isNull ? "NULL" : ""}</td>
-          <td class="num">${diff > 0 ? `+${number.format(diff)}` : number.format(diff)}</td>
+          <td class="num">${qtyDiff > 0 ? `+${number.format(qtyDiff)}` : number.format(qtyDiff)}</td>
           <td class="num">${currency.format(costDiff)}</td>
           <td>${entry ? "PASS" : "Not scanned"}</td></tr>`;
       }).join("")}</tbody></table>`;
@@ -5546,22 +5570,14 @@ async function exportCountReportExcel() {
   wsInput["!cols"] = [12, 18, 32, 14, 14, 10, 10, 10, 8, 20].map((w) => ({ wch: w }));
   xlsx.utils.book_append_sheet(wb, wsInput, "Input Log");
 
-  // Comparison sheet
-  const allItems = currentCountSessionCandidates(session);
-  const latestByCode = new Map();
-  entries.forEach((entry) => latestByCode.set(codeKey(entry.code), entry));
+  // Comparison sheet - export exactly what the current comparison filters/sort show.
+  const compRows = filteredSortedCountComparisonRows(session);
   const compData = [
     ["Physical Count - Comparison", "", "", `Date: ${session.date || "-"}`, `Vendor: ${vendorLabel}`, `Category: ${countSessionCategoryLabel(session)}`, syncNote],
     [],
     ["Code", "PLU", "Item", "Vendor", "Category", "Qty Before", "Qty After", "NULL", "Qty Diff", "Cost Diff", "Status"],
-    ...allItems.map((item) => {
-      const entry = latestByCode.get(codeKey(item.code));
-      const orig = Number(item.stock || 0);
-      const final = entry ? Number(entry.countedQty || 0) : 0;
-      const isNull = !entry;
-      const diff = final - orig;
-      const costDiff = diff * Number(item.unitCost || 0);
-      return [item.code, item.plu || "", item.product, item.vendor || "", item.category || "", orig, final, isNull ? "NULL" : "", diff, costDiff, entry ? "PASS" : "Not scanned"];
+    ...compRows.map(({ item, entry, originalQty, finalQty, isNull, qtyDiff, costDiff }) => {
+      return [item.code, item.plu || "", item.product, item.vendor || "", item.category || "", originalQty, finalQty, isNull ? "NULL" : "", qtyDiff, costDiff, entry ? "PASS" : "Not scanned"];
     }),
   ];
   const wsComp = xlsx.utils.aoa_to_sheet(compData);
@@ -5569,7 +5585,7 @@ async function exportCountReportExcel() {
   xlsx.utils.book_append_sheet(wb, wsComp, "Comparison");
 
   xlsx.writeFile(wb, `PhysicalCount_${session.date || "report"}.xlsx`);
-  showToast(`Count report exported - ${entries.length} entries, ${allItems.length} items in scope`, 3200, "success");
+  showToast(`Count report exported - ${entries.length} entries, ${mode === "comparison" ? filteredSortedCountComparisonRows(session).length : currentCountSessionCandidates(session).length} report rows`, 3200, "success");
 }
 
 
@@ -5599,6 +5615,32 @@ function filteredSortedCountComparisonRows(session) {
   if (filters.diff === "positive") rows = rows.filter((r) => r.qtyDiff > 0);
   if (filters.diff === "negative") rows = rows.filter((r) => r.qtyDiff < 0);
   if (filters.diff === "zero") rows = rows.filter((r) => r.qtyDiff === 0);
+
+  const sort = state.countReportSort || {};
+  if (sort.key) {
+    const dir = sort.dir === "desc" ? -1 : 1;
+    const value = (r) => {
+      switch (sort.key) {
+        case "code": return cleanCell(r.item.code);
+        case "plu": return cleanCell(r.item.plu);
+        case "item": return cleanCell(r.item.product);
+        case "vendor": return cleanCell(r.item.vendor);
+        case "category": return cleanCell(r.item.category);
+        case "before": return Number(r.originalQty || 0);
+        case "after": return Number(r.finalQty || 0);
+        case "null": return r.isNull ? 0 : 1;
+        case "diff": return Number(r.qtyDiff || 0);
+        case "cost": return Number(r.costDiff || 0);
+        case "status": return r.entry ? "PASS" : "Not scanned";
+        default: return cleanCell(r.item.product);
+      }
+    };
+    return rows.sort((a, b) => {
+      const av = value(a), bv = value(b);
+      if (typeof av === "number" && typeof bv === "number") return (av - bv) * dir;
+      return String(av).localeCompare(String(bv), undefined, { numeric: true, sensitivity: "base" }) * dir;
+    });
+  }
   return rows.sort((a, b) => {
     const group = (r) => r.isNull ? 0 : (r.qtyDiff !== 0 ? 1 : 2);
     const g = group(a) - group(b);
@@ -11621,7 +11663,7 @@ async function syncSharedInventoryFactsByCodes(codes = [], options = {}) {
 
 async function restoreSharedDataFromSupabase(options = {}) {
   if (!ENABLE_SHARED_SYNC) return false;
-  const { silent = false, preferCurrentState = false } = options;
+  const { silent = false, preferCurrentState = false, expectedProductCount = 0 } = options;
   try {
     const [productRows, productMetaRows, salesRows, vendorRuleRows, importLogRows, countSessionRows] = await Promise.all([
       supabaseSelectRows("products", { select: "*" }),
@@ -11632,6 +11674,16 @@ async function restoreSharedDataFromSupabase(options = {}) {
       supabaseSelectRowsSafe("count_sessions", { select: "*" }),
     ]);
     let mergedProductRows = mergeSharedProductRows(productRows, productMetaRows);
+    const expectedProducts = Math.max(Number(expectedProductCount || 0), 0);
+    const incomingProducts = mergedProductRows.filter((row) => cleanCell(row?.code)).length;
+    if (expectedProducts >= 1000 && incomingProducts < Math.floor(expectedProducts * 0.90)) {
+      if (vendorRuleRows.length) applySharedVendorRuleRows(vendorRuleRows);
+      if (importLogRows.length) applySharedImportLogRows(importLogRows);
+      if (countSessionRows.length) applySharedCountSessionRows(countSessionRows);
+      console.warn(`[SharedSyncGuard] Blocked snapshot below expected shared count: incoming ${incomingProducts}, expected ${expectedProducts}.`);
+      if (!silent) showToast("Shared product snapshot is still incomplete; kept current inventory.", 3200, "warning");
+      return "kept-local-products";
+    }
     if (sharedProductSnapshotLooksUnsafe(mergedProductRows, "full restore")) {
       if (vendorRuleRows.length) applySharedVendorRuleRows(vendorRuleRows);
       if (importLogRows.length) applySharedImportLogRows(importLogRows);
@@ -11973,6 +12025,7 @@ async function continueCountFromReport(event = null, options = {}) {
   // A second pass catches delayed renders/sync refreshes that were closing the workspace.
   setTimeout(forceOpen, 120);
   setTimeout(() => { forceOpen(); focusCountSearch(); }, 450);
+  extendContinueCountKeepOpenGuard(sessionId, 12000);
   // Do not block the reopened workspace on sync. Queue it after the UI is stable.
   setTimeout(() => syncSharedCountSessionsToSupabase(true).catch(() => scheduleSharedCountSessionsSync()), 800);
   showToast(`Continuing count: ${countSessionLabel(session)}`, 2800, "success");
@@ -14628,12 +14681,12 @@ if (!state.authRequired || !loadUsers().length) {
       const restored = isVendorRulesOnly
         ? await restoreSharedVendorRulesOnlyFromSupabase({ silent: true })
         : isImportsOnly
-          ? await restoreSharedDataFromSupabase({ silent: true, preferCurrentState: false })
+          ? await restoreSharedDataFromSupabase({ silent: true, preferCurrentState: false, expectedProductCount: Number(syncRow.product_count || 0) })
           : isCountsOnly
             ? await restoreSharedCountSessionsOnlyFromSupabase({ silent: true })
         : isProductsOnly
           ? await restoreSharedProductsOnlyFromSupabase({ silent: true })
-          : await restoreSharedDataFromSupabase({ silent: true, preferCurrentState: false });
+          : await restoreSharedDataFromSupabase({ silent: true, preferCurrentState: false, expectedProductCount: Number(syncRow.product_count || 0) });
       if (restored) {
         if (!scanModeIsActive() && !isProductsOnly && !isCountsOnly && !state.activeCountSession) {
           showToast(
