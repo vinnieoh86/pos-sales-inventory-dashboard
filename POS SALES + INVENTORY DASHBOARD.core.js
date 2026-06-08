@@ -2121,6 +2121,7 @@ async function loadFiles(fileList) {
     }
     state.dates = [...new Set(state.rawSales.map((row) => row.date))].sort();
     buildLatestInventory();
+    markStableProductSnapshot("local-import");
     ensureVendorRulesFromData();
     bumpDataStamp();
     updateFilterOptions();
@@ -10454,6 +10455,7 @@ async function restorePersistedState() {
       state.inventories.set(saved.inventoryDate, saved.inventoryRows);
     }
     buildLatestInventory();
+    markStableProductSnapshot("local-persisted");
     state.excelItems = new Map();
     (saved.excelRows || []).forEach((item) => addExcelIndex(item));
     rebuildExcelIndexes();
@@ -10500,6 +10502,27 @@ async function restorePersistedState() {
       sales: state.rawSales.length,
     });
   }
+}
+
+
+function sharedProductSnapshotLooksUnsafe(productRows = [], context = "") {
+  const incomingCount = Array.isArray(productRows) ? productRows.filter((row) => cleanCell(row?.code)).length : 0;
+  const currentCount = Math.max(state.latestInventory?.size || 0, state.excelItems?.size || 0, state.inventoryRows?.length || 0);
+  if (currentCount >= 1000 && incomingCount === 0) {
+    console.warn(`[SharedSyncGuard] Blocked empty product snapshot during ${context}; keeping ${currentCount} local products.`);
+    return true;
+  }
+  if (currentCount >= 5000 && incomingCount > 0 && incomingCount < Math.floor(currentCount * 0.75)) {
+    console.warn(`[SharedSyncGuard] Blocked partial product snapshot during ${context}; incoming ${incomingCount}, local ${currentCount}.`);
+    return true;
+  }
+  return false;
+}
+
+function markStableProductSnapshot(source = "") {
+  state._stableProductSnapshotAt = Date.now();
+  state._stableProductSnapshotCount = Math.max(state.latestInventory?.size || 0, state.excelItems?.size || 0, state.inventoryRows?.length || 0);
+  state._stableProductSnapshotSource = source;
 }
 
 function sharedSnapshotIsOlderThanCurrent(productRows = [], salesRows = []) {
@@ -11027,6 +11050,7 @@ function applySharedProductRows(rows) {
   state.inventories.set(snapshotDate, [...mergedInventory.values()]);
   rebuildExcelIndexes();
   bumpDataStamp();
+  markStableProductSnapshot("shared-product-rows");
   return rows.length;
 }
 
@@ -11274,6 +11298,7 @@ async function restoreSharedProductsOnlyFromSupabase(options = {}) {
         limit: String(SHARED_PRODUCT_META_PULL_LIMIT),
       });
     }
+    if (sharedProductSnapshotLooksUnsafe(productMetaRows, "products-only meta restore")) return false;
     const changedCodes = applySharedProductMetaRowsLight(productMetaRows);
     if (!changedCodes.length) return false;
     if (!state.activeCountSession) {
@@ -11607,6 +11632,13 @@ async function restoreSharedDataFromSupabase(options = {}) {
       supabaseSelectRowsSafe("count_sessions", { select: "*" }),
     ]);
     let mergedProductRows = mergeSharedProductRows(productRows, productMetaRows);
+    if (sharedProductSnapshotLooksUnsafe(mergedProductRows, "full restore")) {
+      if (vendorRuleRows.length) applySharedVendorRuleRows(vendorRuleRows);
+      if (importLogRows.length) applySharedImportLogRows(importLogRows);
+      if (countSessionRows.length) applySharedCountSessionRows(countSessionRows);
+      if (!silent) showToast("Shared product snapshot looked incomplete; kept current product list.", 3200, "warning");
+      return "kept-local-products";
+    }
     if (!mergedProductRows.length && !salesRows.length && !vendorRuleRows.length && !importLogRows.length && !countSessionRows.length) return false;
     const localImportProtected = Date.now() < (state._localImportHoldUntil || 0);
     const shouldKeepLocalData = (preferCurrentState || localImportProtected) && sharedSnapshotIsOlderThanCurrent(mergedProductRows, salesRows);
@@ -11671,6 +11703,7 @@ async function restoreSharedDataFromSupabase(options = {}) {
       state.inventories.set(inventoryDate, inventoryRows);
     }
     buildLatestInventory();
+    markStableProductSnapshot("shared-full-restore");
       if (vendorRuleRows.length) {
         applySharedVendorRuleRows(vendorRuleRows);
       } else {
