@@ -41,7 +41,6 @@
   _countLastSyncAt: "",
   _countSyncInFlight: null,
   _countSessionOpen: false,
-  _openingCountSessionId: "",
   _deletedCountSessionIds: new Set(JSON.parse(localStorage.getItem("posDashboardDeletedCountSessionIds:v1") || "[]")),
   _priceCheckExactIndex: null,
   _priceCheckExactIndexStamp: 0,
@@ -471,7 +470,6 @@ const els = {
   countLaunchTitle: document.querySelector("#countLaunchTitle"),
   countLaunchDescription: document.querySelector("#countLaunchDescription"),
   countLaunchState: document.querySelector("#countLaunchState"),
-  countStartNewCard: document.querySelector("#countStartNewCard"),
   countSyncStatus: document.querySelector("#countSyncStatus"),
   countSummaryStrip: document.querySelector("#countSummaryStrip"),
   activeCountTitle: document.querySelector("#activeCountTitle"),
@@ -875,26 +873,13 @@ document.querySelector("#orderArrangeColumnsButton")?.addEventListener("click", 
 });
 els.createPoShortcut?.addEventListener("click", openProductPoReviewModal);
 els.countLaunchCard?.addEventListener("click", () => openLatestCountOrSetup());
-els.countStartNewCard?.addEventListener("click", (event) => {
-  event.preventDefault();
-  event.stopPropagation();
-  openFreshCountSetupModal();
-});
 els.closeCountSessionButton?.addEventListener("click", closeActiveCountSession);
 els.countReviewButton?.addEventListener("click", () => openCountReport(state.activeCountSession?.id, "input"));
-els.countSaveSessionButton?.addEventListener("click", (event) => saveCountSession(event));
-// Safety net: if a stale overlay is sitting above the workspace, route Save clicks anyway.
-document.addEventListener("click", (event) => {
-  const saveBtn = event.target?.closest?.("#countSaveSessionButton");
-  if (!saveBtn) return;
-  event.preventDefault();
-  event.stopPropagation();
-  void saveCountSession(event);
-}, true);
+els.countSaveSessionButton?.addEventListener("click", saveCountSession);
 els.countDeleteSessionButton?.addEventListener("click", deleteCountSession);
 els.countInputReportButton?.addEventListener("click", () => openCountReport(state.activeCountSession?.id, "input"));
 els.countComparisonReportButton?.addEventListener("click", () => openCountReport(state.activeCountSession?.id, "comparison"));
-els.countStartButton?.addEventListener("click", (event) => startCountSessionFromModal(event));
+els.countStartButton?.addEventListener("click", startCountSessionFromModal);
 els.countCancelButton?.addEventListener("click", closeCountSetupModal);
 els.countSetupModal?.addEventListener("click", (event) => {
   if (event.target === els.countSetupModal) closeCountSetupModal();
@@ -4308,54 +4293,7 @@ function countSessionCanDelete(session) {
   return !!(userOwnsSession || deviceOwnsSession);
 }
 
-function cleanupCountOverlays({ keepSession = false, keepSetup = false, keepReport = false } = {}) {
-  const hideNode = (node) => { if (node) { node.hidden = true; node.style.pointerEvents = "none"; node.classList?.remove("count-session-forced-open"); } };
-  if (!keepReport) hideNode(els.countReportModal);
-  const reportCountModal = document.querySelector("#reportCountModal");
-  if (!keepReport) hideNode(reportCountModal);
-  const sessionHistoryModal = document.querySelector("#sessionHistoryModal");
-  hideNode(sessionHistoryModal);
-  if (!keepSetup) hideNode(els.countSetupModal);
-  if (!keepSession) hideNode(els.countSessionModal);
-}
-
-function forceShowActiveCountWorkspace({ closeReports = true, focus = true } = {}) {
-  if (!state.activeCountSession) return false;
-  if (activeTabName() !== "counts") switchTab("counts");
-  state._countSessionOpen = true;
-  if (closeReports) cleanupCountOverlays({ keepSession: true });
-  renderCountsWorkspace();
-  if (els.countSessionModal) {
-    els.countSessionModal.hidden = false;
-    els.countSessionModal.style.pointerEvents = "auto";
-    els.countSessionModal.style.zIndex = "12000";
-    els.countSessionModal.classList.add("count-session-forced-open");
-  }
-  if (els.countSetupModal) { els.countSetupModal.hidden = true; els.countSetupModal.style.pointerEvents = "none"; }
-  if (focus) setTimeout(() => focusCountSearch(), 0);
-  return true;
-}
-
-function openFreshCountSetupModal() {
-  // Explicit Start New Count must never resume a ghost/active session.
-  // It is a separate operator intent from Report History -> Continue.
-  state._openingCountSessionId = "";
-  state._continuingCountId = "";
-  stopContinueCountKeepOpenGuard();
-  state._countSessionOpen = false;
-  state.selectedCountItemCode = "";
-  state.countQtyBuffer = "0";
-  state.countStage = "search";
-  state.pendingDuplicateCount = null;
-  state.pendingDuplicateMode = null;
-  // Do not destroy activeCountSession data here; just make sure no old session workspace is visible.
-  if (els.countSessionModal) els.countSessionModal.hidden = true;
-  cleanupCountOverlays({ keepSetup: true });
-  openCountSetupModal();
-}
-
 function openCountSetupModal() {
-  cleanupCountOverlays({ keepSetup: true });
   els.countDateInput.value = new Date().toISOString().slice(0, 10);
   populateCountSetupOptions();
   // Always reset to "All" for a fresh count
@@ -4366,7 +4304,6 @@ function openCountSetupModal() {
   if (els.countScopeSearchInput) els.countScopeSearchInput.value = "";
   if (els.countAllowOutOfScopeInput) els.countAllowOutOfScopeInput.checked = false;
   els.countSetupModal.hidden = false;
-  els.countSetupModal.style.pointerEvents = "auto";
   els.countDateInput.focus();
 }
 
@@ -4398,18 +4335,7 @@ function populateCountSetupOptions() {
 
 
 
-function startCountSessionFromModal(event = null) {
-  event?.preventDefault?.();
-  event?.stopPropagation?.();
-  // New Count wizard always creates a fresh session and clears previous active workspace state.
-  // Guard against double taps/clicks creating multiple 0-entry sessions.
-  if (state._startingCountSession) return;
-  state._startingCountSession = true;
-  if (els.countStartButton) els.countStartButton.disabled = true;
-  clearContinuedCountLock();
-  state.activeCountSession = null;
-  state._countSessionOpen = false;
-  state._openingCountSessionId = "";
+function startCountSessionFromModal() {
   const statusEl = document.querySelector("#countStatusInput");
   const deviceId = countDeviceId();
   const session = {
@@ -4448,13 +4374,9 @@ function startCountSessionFromModal(event = null) {
   closeCountSetupModal();
   // FIX-D: Build the search index lazily — defer until after the UI paints.
   // On Kindle this was a synchronous ~400ms block before the count screen appeared.
-  // findCountMatch()/findAnyCountMatch() also auto-build on first use.
+  // findCountMatch()/findAnyCountMatch() also auto-build on first use (lines 4307/4323).
   setTimeout(() => buildCountSearchIndex(), 80);
-  forceShowActiveCountWorkspace({ closeReports: true, focus: true });
-  setTimeout(() => {
-    state._startingCountSession = false;
-    if (els.countStartButton) els.countStartButton.disabled = false;
-  }, 650);
+  renderCountsWorkspace();
   showToast(
     state._countSyncUnavailable
       ? `Started local count: ${countSessionLabel(session)}. Sync will retry when available.`
@@ -4484,22 +4406,12 @@ function closeActiveCountSession() {
   renderCountsWorkspace();
 }
 
-async function saveCountSession(event = null) {
-  event?.preventDefault?.();
-  event?.stopPropagation?.();
-  // Save should always win over hidden report/history overlays.
-  cleanupCountOverlays({ keepSession: true });
-  ["#countReportModal", "#reportCountModal", "#sessionHistoryModal"].forEach((sel) => {
-    const node = document.querySelector(sel);
-    if (node) { node.hidden = true; node.style.pointerEvents = "none"; }
-  });
+async function saveCountSession() {
   if (!state.activeCountSession) return;
   clearContinuedCountLock();
-  // Save is a pause/close action, not final Submit & Apply. Do not block it on cloud sync.
-  // Entries stay local and queue for sync if Supabase is slow/unavailable.
-  const syncCheckedSession = state.activeCountSession;
+  const syncCheckedSession = await ensureCountSessionReadyToApply(state.activeCountSession, "saving");
+  if (!syncCheckedSession) return;
   state._countSessionOpen = false;
-  if (els.countSessionModal) { els.countSessionModal.hidden = true; els.countSessionModal.style.pointerEvents = "none"; }
   const session = markCountSessionDirty({
     ...syncCheckedSession,
     savedAt: new Date().toISOString(),
@@ -5288,17 +5200,11 @@ function openCountReport(sessionId = state.activeCountSession?.id, mode = state.
       <span><b>Sync</b> ${syncStats.failed ? `${number.format(syncStats.failed)} failed` : syncStats.pending || session.localSyncPending ? `${number.format(syncStats.pending)} pending` : "Synced"}</span>`;
   }
   renderCountReportRows(session, mode);
-  els.countReportModal.style.pointerEvents = "auto";
   els.countReportModal.hidden = false;
-  els.countReportModal.style.pointerEvents = "auto";
 }
 
 function closeCountReport() {
-  if (els.countReportModal) {
-    els.countReportModal.hidden = true;
-    els.countReportModal.style.pointerEvents = "none";
-    setTimeout(() => { if (els.countReportModal?.hidden) els.countReportModal.style.pointerEvents = ""; }, 80);
-  }
+  els.countReportModal.hidden = true;
 }
 
 function exportCountReportPdf() {
@@ -5508,7 +5414,7 @@ function renderCountReportRows(session, mode = state.countReportMode || "input")
 }
 
 async function openSessionHistoryModal() {
-  if (els.sessionHistoryModal) { els.sessionHistoryModal.hidden = false; els.sessionHistoryModal.style.pointerEvents = "auto"; }
+  if (els.sessionHistoryModal) els.sessionHistoryModal.hidden = false;
   if (els.countSessionBody) els.countSessionBody.innerHTML = `<tr><td colspan="13" class="empty-cell">Loading report history...</td></tr>`;
   if (ENABLE_SHARED_SYNC && sharedCountSessionsAvailable) {
     await restoreSharedCountSessionsOnlyFromSupabase({ silent: true, history: true });
@@ -5809,19 +5715,24 @@ function renderCountsWorkspace(options = {}) {
   const active = state.activeCountSession;
   if (state._continuingCountId && active?.id === state._continuingCountId) state._countSessionOpen = true;
   if (els.countSummaryStrip) els.countSummaryStrip.hidden = false;
-  if (els.countSessionModal) {
-    els.countSessionModal.hidden = !active || !state._countSessionOpen;
-    els.countSessionModal.style.pointerEvents = (!active || !state._countSessionOpen) ? "none" : "auto";
-  }
+  if (els.countSessionModal) els.countSessionModal.hidden = !active || !state._countSessionOpen;
   els.countWorkspaceEmpty.hidden = false;
-  // Session manager: keep the workspace choices clean.
-  // If an active/continued session exists, show ONE resume card.
-  // If no active session exists, hide the resume/local-warning card and show ONLY New Physical Count.
-  if (els.countLaunchCard) els.countLaunchCard.hidden = !active;
-  if (els.countStartNewCard) els.countStartNewCard.hidden = false;
-  if (els.countLaunchTitle) els.countLaunchTitle.textContent = "Continue Count";
-  if (els.countLaunchDescription) els.countLaunchDescription.textContent = "Resume the active inventory count.";
-  if (els.countLaunchState) els.countLaunchState.textContent = "Active count found - Continue Count";
+  if (els.countLaunchCard) els.countLaunchCard.hidden = false;
+  if (els.countLaunchTitle) els.countLaunchTitle.textContent = active ? "Continue Count" : "Start New Count";
+  if (els.countLaunchDescription) {
+    els.countLaunchDescription.textContent = active
+      ? "Resume the latest active synced count."
+      : state._countSyncUnavailable
+        ? "Sync is unavailable. Start locally; entries stay on this device and retry automatically."
+        : "No active count exists. Choose the scope and begin a new physical count.";
+  }
+  if (els.countLaunchState) {
+    els.countLaunchState.textContent = active
+      ? "Active count found - Continue Count"
+      : state._countSyncUnavailable
+        ? "Sync unavailable - Start local count with warning"
+        : "No active count - Start New Count";
+  }
   if (els.closeCountSessionButton) els.closeCountSessionButton.hidden = true;
   if (els.countReviewButton) els.countReviewButton.hidden = true;
   if (active) {
@@ -11602,7 +11513,6 @@ function confirmDeleteSavedSession() {
   }
   persistCountSessions();
   renderCountsWorkspace();
-  renderCountSessionRows();
   void (async () => {
     if (ENABLE_SHARED_SYNC && sharedCountSessionsAvailable) {
       await supabaseDeleteRowsByValues("count_sessions", "id", [id, `active:${id}`]);
@@ -11615,69 +11525,65 @@ function confirmDeleteSavedSession() {
 
 // -- Continue count from report (re-open the session as active) -------------
 async function continueCountFromReport(event = null) {
-  event?.preventDefault?.();
-  event?.stopPropagation?.();
-
-  const sessionId = cleanCell(state.countReportOpenId || event?.currentTarget?.dataset?.sessionId || "");
-  if (!sessionId) { showToast("No count session selected.", 3000, "warning"); return; }
-
-  // Hide report/history overlays FIRST so the continued workspace cannot open behind them.
-  cleanupCountOverlays({ keepSession: true });
-
+  // PERF-F: Try to find the session locally first — no need to block on remote fetch if
+  // we already have it. Fall back to a timed remote pull only if it's not found locally.
+  const sessionId = state.countReportOpenId;
   let session = findCountSessionById(sessionId);
   if (!session && ENABLE_SHARED_SYNC && sharedCountSessionsAvailable) {
-    const timeout = scanPerformanceProfile.tier === "low" ? 3500 : 1800;
+    const timeout = scanPerformanceProfile.tier === "low" ? 4000 : 2000;
     await Promise.race([
-      restoreSharedCountSessionsOnlyFromSupabase({ silent: true, history: true, render: false }),
+      refreshLatestCountSessions({ history: true }),
       new Promise((resolve) => setTimeout(resolve, timeout)),
-    ]).catch(() => {});
+    ]);
     session = findCountSessionById(sessionId);
   }
   if (!session) { showToast("Session not found.", 3000, "warning"); return; }
-
-  const liveSession = markCountSessionDirty({
-    ...session,
-    savedAt: "",
-    submittedAt: "",
-    isActiveLive: true,
-    localSyncPending: true,
-    updatedAt: new Date().toISOString(),
-  });
-
+  // FIX-B: Keep in countSessions[] with isActiveLive:true — removing it hid it from history.
+  const liveSession = markCountSessionDirty({ ...session, savedAt: "", submittedAt: "", isActiveLive: true });
+  state.countSessions = [liveSession, ...state.countSessions.filter((s) => s.id !== sessionId)];
   state.activeCountSession = liveSession;
-  state.countSessions = [liveSession, ...(state.countSessions || []).filter((s) => cleanCell(s?.id) !== sessionId)];
   state._countSessionOpen = true;
-  state._openingCountSessionId = sessionId;
-  state._continuingCountId = sessionId;
-  state._ignoreNextCountBackdropCloseUntil = Date.now() + 5000;
   state.countQtyBuffer = "0";
   state.selectedCountItemCode = "";
   state.countStage = "search";
   state.pendingDuplicateCount = null;
   state.pendingDuplicateMode = null;
-
-  persistActiveCountSession();
-  persistCountSessions({ scheduleSync: false });
+  state._ignoreNextCountBackdropCloseUntil = Date.now() + 2000;
+  state._continuingCountId = sessionId;
+  persistCountSessions();
   startContinueCountKeepOpenGuard(sessionId);
 
   const forceOpen = () => {
-    // Report History -> Continue must not merely mark the session active.
-    // It must close report/history overlays, switch to the Inventory/Counts view,
-    // and put the count workspace physically in front ready to scan.
-    if (cleanCell(state.activeCountSession?.id) !== sessionId) {
-      state.activeCountSession = markCountSessionDirty({ ...liveSession, isActiveLive: true, savedAt: "", submittedAt: "" });
-      state.countSessions = [state.activeCountSession, ...(state.countSessions || []).filter((s) => cleanCell(s?.id) !== sessionId)];
-    }
+    const current = state.activeCountSession?.id === sessionId ? state.activeCountSession : null;
+    state.activeCountSession = markCountSessionDirty({ ...(current || liveSession), savedAt: "", submittedAt: "", isActiveLive: true });
     state._countSessionOpen = true;
     state._continuingCountId = sessionId;
-    forceShowActiveCountWorkspace({ closeReports: true, focus: true });
+    state._ignoreNextCountBackdropCloseUntil = Date.now() + 4000;
+    persistActiveCountSession();
+    persistCountSessions({ scheduleSync: false });
+    // The report/history overlays are only containers. Hide them after the active
+    // session is set so the workspace cannot be immediately closed by the same click.
+    if (els.countReportModal) els.countReportModal.hidden = true;
+    const reportCountModal = document.querySelector("#reportCountModal");
+    if (reportCountModal) reportCountModal.hidden = true;
+    const sessionHistoryModal = document.querySelector("#sessionHistoryModal");
+    if (sessionHistoryModal) sessionHistoryModal.hidden = true;
+    renderCountsWorkspace();
+    if (els.countSessionModal) {
+      els.countSessionModal.hidden = false;
+      els.countSessionModal.classList.add("count-session-forced-open");
+    }
   };
 
+  event?.preventDefault?.();
+  event?.stopPropagation?.();
   forceOpen();
-  setTimeout(forceOpen, 100);
-  setTimeout(forceOpen, 450);
-  setTimeout(() => syncSharedCountSessionsToSupabase(true).catch(() => scheduleSharedCountSessionsSync()), 900);
-  showToast(`Continuing count: ${countSessionLabel(liveSession)}`, 2800, "success");
+  // A second pass catches delayed renders/sync refreshes that were closing the workspace.
+  setTimeout(forceOpen, 120);
+  setTimeout(() => { forceOpen(); focusCountSearch(); }, 450);
+  // Do not block the reopened workspace on sync. Queue it after the UI is stable.
+  setTimeout(() => syncSharedCountSessionsToSupabase(true).catch(() => scheduleSharedCountSessionsSync()), 800);
+  showToast(`Continuing count: ${countSessionLabel(session)}`, 2800, "success");
 }
 
 async function ensureCountSessionReadyToApply(session, action = "submitting") {
@@ -14367,169 +14273,3 @@ if (!state.authRequired || !loadUsers().length) {
 })();
 
 
-
-/* SESSION FLOW HARD LOCK PATCH 20260609
-   Purpose: keep New / Continue / Save as three separate, deterministic flows.
-   Scope only: physical-count modal navigation and hidden-overlay cleanup. Sync untouched. */
-(function sessionFlowHardLockPatch(){
-  if (window.__SESSION_FLOW_HARD_LOCK_20260609__) return;
-  window.__SESSION_FLOW_HARD_LOCK_20260609__ = true;
-
-  const qs = (sel) => document.querySelector(sel);
-  const hideModal = (node) => {
-    if (!node) return;
-    node.hidden = true;
-    node.style.pointerEvents = 'none';
-    node.classList?.remove('count-session-forced-open');
-  };
-  const hideNonCountModals = () => {
-    ['#countReportModal', '#reportCountModal', '#sessionHistoryModal', '#countSetupModal'].forEach((sel) => hideModal(qs(sel)));
-  };
-  const putCountOnTop = () => {
-    const modal = qs('#countSessionModal');
-    if (!modal || !state.activeCountSession) return false;
-    if (activeTabName() !== 'counts') switchTab('counts');
-    state._countSessionOpen = true;
-    hideNonCountModals();
-    renderCountsWorkspace({ populateSetup: false });
-    modal.hidden = false;
-    modal.style.pointerEvents = 'auto';
-    modal.style.zIndex = '13000';
-    modal.classList.add('count-session-forced-open');
-    setTimeout(() => { try { focusCountSearch(); } catch (_) {} }, 0);
-    return true;
-  };
-
-  function findSessionByIdSafe(id) {
-    const cleanId = cleanCell(id || '');
-    if (!cleanId) return null;
-    return findCountSessionById(cleanId) || (state.countSessions || []).find((s) => cleanCell(s?.id) === cleanId) || null;
-  }
-
-  function stableContinueSession(sessionId) {
-    const cleanId = cleanCell(sessionId || state.countReportOpenId || state._continuingCountId || '');
-    const session = findSessionByIdSafe(cleanId);
-    if (!session) { showToast('Session not found. Close/reopen report history and try again.', 3200, 'warning'); return false; }
-    const live = markCountSessionDirty({
-      ...session,
-      savedAt: '',
-      submittedAt: '',
-      isActiveLive: true,
-      localSyncPending: true,
-      updatedAt: new Date().toISOString(),
-    });
-    state.activeCountSession = live;
-    state.countSessions = [live, ...(state.countSessions || []).filter((s) => cleanCell(s?.id) !== cleanId)];
-    state._countSessionOpen = true;
-    state._continuingCountId = cleanId;
-    state._openingCountSessionId = cleanId;
-    state._ignoreNextCountBackdropCloseUntil = Date.now() + 5000;
-    state.selectedCountItemCode = '';
-    state.countQtyBuffer = '0';
-    state.countStage = 'search';
-    state.pendingDuplicateCount = null;
-    state.pendingDuplicateMode = null;
-    persistActiveCountSession();
-    persistCountSessions({ scheduleSync: false });
-    try { startContinueCountKeepOpenGuard(cleanId); } catch (_) {}
-    putCountOnTop();
-    setTimeout(putCountOnTop, 80);
-    setTimeout(putCountOnTop, 350);
-    return true;
-  }
-
-  function stableOpenFreshSetup() {
-    state._startingCountSession = false;
-    state._openingCountSessionId = '';
-    state._continuingCountId = '';
-    state._countSessionOpen = false;
-    state.selectedCountItemCode = '';
-    state.countQtyBuffer = '0';
-    state.countStage = 'search';
-    state.pendingDuplicateCount = null;
-    state.pendingDuplicateMode = null;
-    hideModal(qs('#countSessionModal'));
-    hideModal(qs('#countReportModal'));
-    hideModal(qs('#reportCountModal'));
-    hideModal(qs('#sessionHistoryModal'));
-    openCountSetupModal();
-  }
-
-  let stableStartLockUntil = 0;
-  function stableStartFromSetup(event) {
-    const now = Date.now();
-    if (now < stableStartLockUntil || state._startingCountSession) return;
-    stableStartLockUntil = now + 1800;
-    try { startCountSessionFromModal(event); } catch (err) { console.error(err); }
-    // The original creates/registers the session. Force the physical count screen to the front immediately.
-    setTimeout(putCountOnTop, 30);
-    setTimeout(putCountOnTop, 180);
-    setTimeout(putCountOnTop, 600);
-  }
-
-  async function stableSave(event) {
-    if (!state.activeCountSession) return;
-    try { await saveCountSession(event); } catch (err) { console.error(err); }
-    // Save is a close/pause action. Do not leave invisible overlays intercepting clicks.
-    state._countSessionOpen = false;
-    state._continuingCountId = '';
-    hideModal(qs('#countSessionModal'));
-    hideNonCountModals();
-    try { renderCountsWorkspace({ populateSetup: false }); } catch (_) {}
-  }
-
-  document.addEventListener('click', (event) => {
-    const target = event.target;
-    const saveBtn = target?.closest?.('#countSaveSessionButton');
-    if (saveBtn) {
-      event.preventDefault(); event.stopPropagation(); event.stopImmediatePropagation();
-      void stableSave(event);
-      return;
-    }
-
-    const startBtn = target?.closest?.('#countStartButton');
-    if (startBtn) {
-      event.preventDefault(); event.stopPropagation(); event.stopImmediatePropagation();
-      stableStartFromSetup(event);
-      return;
-    }
-
-    const newCard = target?.closest?.('#countStartNewCard');
-    if (newCard) {
-      event.preventDefault(); event.stopPropagation(); event.stopImmediatePropagation();
-      stableOpenFreshSetup();
-      return;
-    }
-
-    const resumeCard = target?.closest?.('#countLaunchCard');
-    if (resumeCard) {
-      event.preventDefault(); event.stopPropagation(); event.stopImmediatePropagation();
-      if (state.activeCountSession?.id) {
-        stableContinueSession(state.activeCountSession.id);
-      } else {
-        stableOpenFreshSetup();
-      }
-      return;
-    }
-
-    const continueBtn = target?.closest?.('#countContinueButton');
-    if (continueBtn) {
-      event.preventDefault(); event.stopPropagation(); event.stopImmediatePropagation();
-      stableContinueSession(state.countReportOpenId || continueBtn.dataset.sessionId || state._continuingCountId);
-      return;
-    }
-  }, true);
-
-  // Keep hidden modals from ever blocking the count screen.
-  document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') {
-      ['#countReportModal', '#reportCountModal', '#sessionHistoryModal'].forEach((sel) => {
-        const node = qs(sel);
-        if (node?.hidden) hideModal(node);
-      });
-    }
-  }, true);
-
-  // Expose tiny diagnostics without changing UI.
-  window.__posCountFlow = { putCountOnTop, stableContinueSession, stableOpenFreshSetup };
-})();
