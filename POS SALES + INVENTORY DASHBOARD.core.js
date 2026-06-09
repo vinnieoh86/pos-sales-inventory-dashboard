@@ -14167,36 +14167,138 @@ if (!state.authRequired || !loadUsers().length) {
 
 
 // ---------------------------------------------------------------------------
-// BASELINE SESSION FLOW + REVIEW MODE PATCH 2026-06-09
-// Focus only: one New Count path, report Continue opens that session directly,
-// and Review Mode lists NULL/not-scanned + quantity differences for rescanning.
+// SESSION FLOW HARDENING + REVIEW MODE PATCH 2026-06-09B
+// Baseline-focused: one New Count button, Report Continue opens directly,
+// Start Inventory never creates a ghost history row without opening, and
+// Review Mode shows NULL/qty-diff items for scan-from-list.
 // ---------------------------------------------------------------------------
-(function sessionFlowReviewPatch(){
-  const PATCH = "20260609-session-flow-review-baseline";
+(function sessionFlowHardeningPatch(){
+  const PATCH = "20260609B-session-flow-hardening";
 
   function safeId(value){ return cleanCell(value || ""); }
+  function modalById(id){ return document.querySelector(`#${id}`); }
 
-  function bringCountToFront() {
-    [els.countSetupModal, els.countReportModal, els.sessionHistoryModal].forEach((modal) => {
-      if (modal) modal.hidden = true;
-    });
-    if (els.countSessionModal) {
-      els.countSessionModal.hidden = false;
-      els.countSessionModal.style.zIndex = "12050";
-      els.countSessionModal.classList.add("count-session-forced-open");
-    }
+  function disableHiddenModalPointers() {
     document.querySelectorAll(".count-modal[hidden], .modal[hidden]").forEach((modal) => {
       modal.style.pointerEvents = "none";
     });
-    if (els.countSessionModal && !els.countSessionModal.hidden) els.countSessionModal.style.pointerEvents = "auto";
-    setTimeout(() => focusCountSearch(), 0);
+    document.querySelectorAll(".count-modal:not([hidden]), .modal:not([hidden])").forEach((modal) => {
+      modal.style.pointerEvents = "auto";
+    });
   }
+
+  function closeCountContainersExceptSession() {
+    [els.countSetupModal, els.countReportModal, els.sessionHistoryModal, modalById("reportCountModal")].forEach((modal) => {
+      if (modal) {
+        modal.hidden = true;
+        modal.style.pointerEvents = "none";
+      }
+    });
+  }
+
+  function forceCountScreenOpen(options = {}) {
+    if (!state.activeCountSession) return false;
+    state._countSessionOpen = true;
+    state._countHardOpenUntil = Date.now() + Number(options.ms || 5000);
+    if (options.closeOtherModals !== false) closeCountContainersExceptSession();
+    renderCountsWorkspace({ suppressLoadingClose: true });
+    if (els.countSessionModal) {
+      els.countSessionModal.hidden = false;
+      els.countSessionModal.style.display = "";
+      els.countSessionModal.style.pointerEvents = "auto";
+      els.countSessionModal.style.zIndex = "13000";
+      els.countSessionModal.classList.add("count-session-forced-open");
+    }
+    disableHiddenModalPointers();
+    setTimeout(() => focusCountSearch(), 0);
+    return true;
+  }
+
+  function resetCountEntryState() {
+    state.countQtyBuffer = "0";
+    state.selectedCountItemCode = "";
+    state.countStage = "search";
+    state.pendingDuplicateCount = null;
+    state.pendingDuplicateMode = null;
+    state.countAutoPlusMode = false;
+    state.countAutoUndoStack = [];
+  }
+
+  function forceNewCountSetup() {
+    state._countReviewMode = false;
+    state._countReviewSessionId = "";
+    state._continuingCountId = "";
+    stopContinueCountKeepOpenGuard?.();
+    closeCountContainersExceptSession();
+    if (typeof openCountSetupModal === "function") openCountSetupModal();
+    if (els.countSetupModal) {
+      els.countSetupModal.hidden = false;
+      els.countSetupModal.style.pointerEvents = "auto";
+      els.countSetupModal.style.zIndex = "13010";
+    }
+    disableHiddenModalPointers();
+  }
+  window.forceNewCountSetup = forceNewCountSetup;
+
+  function countSessionKey(session = {}) {
+    return [session.date || "", session.vendor || session.department || "", session.category || "", session.status || "", session.searchFilter || ""].join("|").toLowerCase();
+  }
+
+  function removeFreshGhostDuplicates(keepId) {
+    const keep = safeId(keepId);
+    const seen = new Set();
+    state.countSessions = (state.countSessions || []).filter((s) => {
+      if (!s) return false;
+      if (safeId(s.id) === keep) return true;
+      const zero = !(s.entries || []).length;
+      const recent = Date.now() - Date.parse(s.startedAt || s.updatedAt || 0) < 2 * 60 * 1000;
+      const key = countSessionKey(s);
+      if (zero && recent && seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  const originalOpenLatest = typeof openLatestCountOrSetup === "function" ? openLatestCountOrSetup : null;
+  openLatestCountOrSetup = async function patchedOpenLatestCountOrSetup() {
+    // The dashboard card is now a true NEW count path only.
+    forceNewCountSetup();
+  };
+
+  const originalStart = typeof startCountSessionFromModal === "function" ? startCountSessionFromModal : null;
+  startCountSessionFromModal = function patchedStartCountSessionFromModal() {
+    if (state._countStartInFlight) return;
+    state._countStartInFlight = true;
+    const beforeIds = new Set((state.countSessions || []).map((s) => safeId(s.id)));
+    try {
+      if (originalStart) originalStart();
+      const active = state.activeCountSession;
+      if (!active) {
+        showToast("Count did not start. Try again.", 3000, "warning");
+        return;
+      }
+      active.isActiveLive = true;
+      active.savedAt = "";
+      active.submittedAt = "";
+      active.updatedAt = new Date().toISOString();
+      state.activeCountSession = markCountSessionDirty(active);
+      state.countSessions = [state.activeCountSession, ...(state.countSessions || []).filter((s) => safeId(s.id) !== safeId(active.id))];
+      removeFreshGhostDuplicates(active.id);
+      resetCountEntryState();
+      persistActiveCountSession();
+      persistCountSessions({ scheduleSync: false });
+      forceCountScreenOpen({ ms: 6000 });
+      showToast(`Started count: ${countSessionLabel(state.activeCountSession)}`, 2200, "success");
+    } finally {
+      setTimeout(() => { state._countStartInFlight = false; }, 900);
+    }
+  };
 
   function openCountSessionDirect(sessionId, opts = {}) {
     const id = safeId(sessionId || state.countReportOpenId || state._continuingCountId);
-    const source = findCountSessionById(id) || state.countSessions.find((s) => safeId(s?.id) === id);
+    const source = findCountSessionById(id) || (state.countSessions || []).find((s) => safeId(s?.id) === id);
     if (!source) {
-      showToast("Session not found. Close history and try again.", 2800, "warning");
+      showToast("Session not found. Close report history and try again.", 3000, "warning");
       return false;
     }
     const live = markCountSessionDirty({
@@ -14210,91 +14312,79 @@ if (!state.authRequired || !loadUsers().length) {
     state.countSessions = [live, ...(state.countSessions || []).filter((s) => safeId(s?.id) !== id)];
     state._countSessionOpen = true;
     state._continuingCountId = id;
-    state.countQtyBuffer = "0";
-    state.selectedCountItemCode = "";
-    state.countStage = "search";
-    state.pendingDuplicateCount = null;
-    state.pendingDuplicateMode = null;
+    state._ignoreNextCountBackdropCloseUntil = Date.now() + 4000;
+    resetCountEntryState();
     state._countReviewMode = !!opts.review;
     state._countReviewSessionId = opts.review ? id : "";
     persistActiveCountSession();
     persistCountSessions({ scheduleSync: false });
-    renderCountsWorkspace();
-    bringCountToFront();
-    if (state._countReviewMode) renderCountReviewPanel();
+    startContinueCountKeepOpenGuard?.(id);
+    forceCountScreenOpen({ ms: 8000 });
+    if (state._countReviewMode) setTimeout(renderCountReviewPanel, 80);
     return true;
   }
   window.openCountSessionDirect = openCountSessionDirect;
 
-  function forceNewCountSetup() {
-    state._countReviewMode = false;
-    state._countReviewSessionId = "";
-    openCountSetupModal();
-    if (els.countSetupModal) {
-      els.countSetupModal.hidden = false;
-      els.countSetupModal.style.zIndex = "12060";
-      els.countSetupModal.style.pointerEvents = "auto";
+  const originalContinue = typeof continueCountFromReport === "function" ? continueCountFromReport : null;
+  continueCountFromReport = async function patchedContinueCountFromReport(event = null) {
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+    const id = safeId(state.countReportOpenId || event?.target?.dataset?.sessionId || "");
+    if (openCountSessionDirect(id, { review: false })) {
+      showToast("Continuing count.", 1600, "success");
+      return;
     }
-  }
-
-  function dedupeFreshZeroEntrySessions() {
-    const seen = new Set();
-    state.countSessions = (state.countSessions || []).filter((s) => {
-      if (!s) return false;
-      const key = [s.date || "", s.vendor || "", s.category || "", s.status || "", s.searchFilter || "", s.startedAt || ""].join("|");
-      if (!(s.entries || []).length && seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-  }
-
-  const originalStart = typeof startCountSessionFromModal === "function" ? startCountSessionFromModal : null;
-  if (originalStart) {
-    startCountSessionFromModal = function patchedStartCountSessionFromModal() {
-      if (state._countStartInFlight) return;
-      state._countStartInFlight = true;
-      try {
-        originalStart();
-        dedupeFreshZeroEntrySessions();
-        persistCountSessions({ scheduleSync: false });
-        state._countSessionOpen = true;
-        renderCountsWorkspace();
-        bringCountToFront();
-      } finally {
-        setTimeout(() => { state._countStartInFlight = false; }, 700);
-      }
-    };
-  }
+    if (originalContinue) return originalContinue(event);
+  };
 
   const originalSave = typeof saveCountSession === "function" ? saveCountSession : null;
-  if (originalSave) {
-    saveCountSession = async function patchedSaveCountSession() {
-      await originalSave();
+  saveCountSession = async function patchedSaveCountSession() {
+    if (state._countSaveInFlight) return;
+    state._countSaveInFlight = true;
+    try {
+      if (originalSave) await originalSave();
+    } finally {
+      clearContinuedCountLock?.();
       state._countSessionOpen = false;
       state._countReviewMode = false;
       state._countReviewSessionId = "";
+      state._countHardOpenUntil = 0;
       if (els.countSessionModal) {
         els.countSessionModal.hidden = true;
+        els.countSessionModal.classList.remove("count-session-forced-open");
         els.countSessionModal.style.pointerEvents = "none";
       }
+      disableHiddenModalPointers();
       renderCountsWorkspace();
-    };
-  }
+      setTimeout(() => { state._countSaveInFlight = false; }, 400);
+    }
+  };
 
   const originalRenderWorkspace = typeof renderCountsWorkspace === "function" ? renderCountsWorkspace : null;
-  if (originalRenderWorkspace) {
-    renderCountsWorkspace = function patchedRenderCountsWorkspace(options = {}) {
-      originalRenderWorkspace(options);
-      if (els.countLaunchCard) {
-        els.countLaunchCard.hidden = false;
-        els.countLaunchCard.querySelector("strong") && (els.countLaunchCard.querySelector("strong").textContent = "Start New Count");
-        if (els.countLaunchTitle) els.countLaunchTitle.textContent = "Start New Count";
-        if (els.countLaunchDescription) els.countLaunchDescription.textContent = "Open a fresh vendor/category/name setup wizard.";
-        if (els.countLaunchState) els.countLaunchState.textContent = "New physical count";
+  renderCountsWorkspace = function patchedRenderCountsWorkspace(options = {}) {
+    originalRenderWorkspace?.(options);
+    // One visible dashboard action: always start a NEW count.
+    if (els.countLaunchCard) {
+      els.countLaunchCard.hidden = false;
+      els.countLaunchCard.classList.add("count-new-only-card");
+      const strong = els.countLaunchCard.querySelector("strong");
+      if (strong) strong.textContent = "Start New Count";
+      if (els.countLaunchTitle) els.countLaunchTitle.textContent = "Start New Count";
+      if (els.countLaunchDescription) els.countLaunchDescription.textContent = "Open a fresh vendor/category/name setup wizard.";
+      if (els.countLaunchState) els.countLaunchState.textContent = "New physical count";
+    }
+    if (state.activeCountSession && state._countSessionOpen && Date.now() < Number(state._countHardOpenUntil || 0)) {
+      if (els.countSessionModal) {
+        els.countSessionModal.hidden = false;
+        els.countSessionModal.style.pointerEvents = "auto";
+        els.countSessionModal.style.zIndex = "13000";
       }
-      if (state._countReviewMode && state.activeCountSession) renderCountReviewPanel();
-    };
-  }
+    }
+    if (state._countReviewMode && state.activeCountSession && els.countSessionModal && !els.countSessionModal.hidden) {
+      renderCountReviewPanel();
+    }
+    disableHiddenModalPointers();
+  };
 
   function reviewRowsForSession(session) {
     if (!session) return [];
@@ -14318,7 +14408,7 @@ if (!state.authRequired || !loadUsers().length) {
   function renderCountReviewPanel() {
     const session = state.activeCountSession;
     if (!session || !els.countSessionModal || els.countSessionModal.hidden) return;
-    const workspace = els.countSessionModal.querySelector(".count-workspace") || els.countSessionModal.querySelector("section");
+    const workspace = els.countSessionModal.querySelector("#countWorkspace") || els.countSessionModal.querySelector(".count-workspace");
     if (!workspace) return;
     let panel = workspace.querySelector("#countReviewPanel");
     if (!panel) {
@@ -14429,7 +14519,9 @@ if (!state.authRequired || !loadUsers().length) {
     openCountReport = function patchedOpenCountReport(sessionId = state.activeCountSession?.id, mode = state.countReportMode || "input") {
       originalOpenReport(sessionId, mode);
       const session = findCountSessionById(sessionId);
-      if (mode === "comparison" && session && els.countReportHead) {
+      const toolsOld = document.querySelector("#countReviewTools");
+      if (mode !== "comparison") { toolsOld?.remove(); return; }
+      if (session && els.countReportHead) {
         els.countReportHead.innerHTML = `<tr><th>Code</th><th>PLU</th><th>Item</th><th>Vendor</th><th>Category</th><th>Qty before</th><th>Qty after</th><th>NULL</th><th>Qty diff</th><th>Cost diff</th><th>Status</th></tr>`;
         renderCountReportRows(session, mode);
         const rows = reviewRowsForSession(session);
@@ -14448,27 +14540,14 @@ if (!state.authRequired || !loadUsers().length) {
           event.stopPropagation();
           openCountSessionDirect(session.id, { review: true });
         });
-      } else {
-        document.querySelector("#countReviewTools")?.remove();
       }
     };
   }
 
-  const originalContinue = typeof continueCountFromReport === "function" ? continueCountFromReport : null;
-  continueCountFromReport = async function patchedContinueCountFromReport(event = null) {
-    event?.preventDefault?.();
-    event?.stopPropagation?.();
-    const id = state.countReportOpenId;
-    if (openCountSessionDirect(id, { review: false })) {
-      showToast("Continuing count.", 1600, "success");
-      return;
-    }
-    if (originalContinue) return originalContinue(event);
-  };
-
+  // Capture clicks before older listeners. These are the authoritative session-flow paths.
   document.addEventListener("click", (event) => {
-    const start = event.target.closest("#countLaunchCard");
-    if (start) {
+    const startCard = event.target.closest("#countLaunchCard");
+    if (startCard) {
       event.preventDefault();
       event.stopImmediatePropagation();
       forceNewCountSetup();
@@ -14495,13 +14574,28 @@ if (!state.authRequired || !loadUsers().length) {
       void continueCountFromReport(event);
       return;
     }
+    const review = event.target.closest("#countContinueReviewButton");
+    if (review) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      const id = safeId(state.countReportOpenId || "");
+      openCountSessionDirect(id, { review: true });
+      return;
+    }
   }, true);
 
-  // Keep hidden modals from eating clicks after report/history close.
   setInterval(() => {
-    document.querySelectorAll(".count-modal[hidden]").forEach((modal) => { modal.style.pointerEvents = "none"; });
-    document.querySelectorAll(".count-modal:not([hidden])").forEach((modal) => { modal.style.pointerEvents = "auto"; });
-  }, 1500);
+    if (state.activeCountSession && state._countSessionOpen && Date.now() < Number(state._countHardOpenUntil || 0)) {
+      if (els.countSessionModal) {
+        els.countSessionModal.hidden = false;
+        els.countSessionModal.style.pointerEvents = "auto";
+        els.countSessionModal.style.zIndex = "13000";
+      }
+    }
+    disableHiddenModalPointers();
+  }, 700);
+
+  console.info(`[${PATCH}] loaded`);
 })();
 
 // Multi-device sync: poll a tiny shared sync_state row so devices can refresh

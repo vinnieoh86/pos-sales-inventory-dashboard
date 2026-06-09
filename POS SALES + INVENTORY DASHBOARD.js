@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "20260609-baseline-session-review-flow";
+  const VERSION = "20260609B-session-flow-success-pass";
 
   function makeSearchEditable() {
     const search = document.querySelector("#searchInput");
