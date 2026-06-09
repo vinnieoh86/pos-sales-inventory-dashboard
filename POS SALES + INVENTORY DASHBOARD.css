@@ -7381,3 +7381,33 @@ body.scan-mode-active.scan-performance-medium .scan-mode-panel * {
 /* Continue Count must sit above report/history overlays when reopened from report. */
 #countSessionModal.count-session-forced-open.count-modal:not([hidden]) { z-index: 12000 !important; }
 #countSessionModal.count-session-forced-open .count-modal__dialog { z-index: 12001 !important; }
+
+/* Review mode refinement: split NULL vs qty-diff review flow */
+.count-review-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: 10px 0 12px;
+}
+.count-review-filter-btn {
+  border: 1px solid #cfe1d9;
+  background: #fff;
+  border-radius: 12px;
+  padding: 9px 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.count-review-filter-btn.active {
+  background: #1f9b67;
+  color: #fff;
+  border-color: #1f9b67;
+}
+.tiny-button {
+  padding: 5px 8px !important;
+  font-size: 12px !important;
+  border-radius: 8px !important;
+}
+.count-review-panel-heading {
+  align-items: flex-end;
+}

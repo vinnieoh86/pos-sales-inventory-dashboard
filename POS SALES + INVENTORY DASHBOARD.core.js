@@ -86,6 +86,7 @@
   countSetupExtraCategories: [],
   countReportMode: "input",
   countReportFilters: { status: "exceptions", vendor: "", category: "", diff: "any" },
+  countReviewTargetFilter: "all",
   metricsPinned: JSON.parse(localStorage.getItem("posDashboardMetricsPinned:v1") || "false"),
   orderVendorQuickFilter: "",
   orderSubmissionVendors: [],
@@ -5165,6 +5166,8 @@ function commitCountEntry(item, qty, mode, options = {}) {
     countedQty,
     mode,
     unitCost: item.unitCost || 0,
+    reviewReviewed: !!session.reviewMode || !!options.reviewReviewed || !!options.reviewZeroConfirmed,
+    reviewZeroConfirmed: !!options.reviewZeroConfirmed,
     recordedAt: new Date().toISOString(),
     timestamp: new Date().toISOString(),
     syncStatus: "pending",
@@ -5603,6 +5606,70 @@ function countComparisonRows(session) {
   });
 }
 
+function countReviewNeedsReview(row) {
+  if (!row) return false;
+  const entry = row.entry;
+  if (!entry) return true;
+  if (entry.reviewReviewed || entry.reviewZeroConfirmed) return false;
+  return Number(row.qtyDiff || 0) !== 0;
+}
+
+function countReviewRowStatusLabel(row) {
+  if (!row?.entry) return "Not scanned";
+  if (row.entry.reviewZeroConfirmed) return "Confirmed 0";
+  if (row.entry.reviewReviewed && Number(row.qtyDiff || 0) !== 0) return "Reviewed diff";
+  if (Number(row.qtyDiff || 0) === 0) return "PASS";
+  return "Qty diff";
+}
+
+function countReviewPanelRows(session = state.activeCountSession) {
+  const filters = session?.reviewFilters || state.countReportFilters || {};
+  let rows = countComparisonRows(session);
+  if (filters.vendor) rows = rows.filter((r) => cleanCell(r.item.vendor) === filters.vendor);
+  if (filters.category) rows = rows.filter((r) => cleanCell(r.item.category) === filters.category);
+  const target = state.countReviewTargetFilter || "all";
+  if (target === "null") rows = rows.filter((r) => !r.entry);
+  else if (target === "diff") rows = rows.filter((r) => r.entry && Number(r.qtyDiff || 0) !== 0 && countReviewNeedsReview(r));
+  else if (target === "done") rows = rows.filter((r) => !countReviewNeedsReview(r));
+  else rows = rows.filter((r) => countReviewNeedsReview(r) || !countReviewNeedsReview(r));
+  return rows.sort((a, b) => {
+    const group = (r) => {
+      if (!r.entry) return 0;
+      if (countReviewNeedsReview(r) && Number(r.qtyDiff || 0) !== 0) return 1;
+      return 2;
+    };
+    const g = group(a) - group(b);
+    if (g) return g;
+    const diff = Math.abs(Number(b.qtyDiff || 0)) - Math.abs(Number(a.qtyDiff || 0));
+    if (diff) return diff;
+    return String(a.item.product || "").localeCompare(String(b.item.product || ""));
+  });
+}
+
+function commitReviewZero(itemOrCode) {
+  const session = state.activeCountSession;
+  if (!session) return;
+  const key = codeKey(typeof itemOrCode === "string" ? itemOrCode : itemOrCode?.code);
+  const item = typeof itemOrCode === "string"
+    ? currentCountSessionCandidates(session).find((r) => codeKey(r.code) === key)
+    : itemOrCode;
+  if (!item) return;
+  commitCountEntry(item, 0, "reset", { reviewReviewed: true, reviewZeroConfirmed: true });
+  showToast(`Confirmed 0 for ${item.plu || item.code}`, 1800, "success");
+}
+
+function confirmVisibleReviewNullsAsZero() {
+  const session = state.activeCountSession;
+  if (!session) return;
+  const rows = countReviewPanelRows(session).filter((r) => !r.entry).slice(0, 250);
+  if (!rows.length) { showToast("No visible NULL items to confirm.", 1800, "warning"); return; }
+  const ok = window.confirm(`Confirm ${rows.length} visible NULL item(s) as 0?\n\nThis records an intentional physical count of 0 for each visible item.`);
+  if (!ok) return;
+  rows.forEach((r) => commitCountEntry(r.item, 0, "reset", { reviewReviewed: true, reviewZeroConfirmed: true, suppressToast: true }));
+  renderCountReviewTargets(state.activeCountSession);
+  showToast(`Confirmed ${rows.length} NULL item(s) as 0.`, 2400, "success");
+}
+
 function filteredSortedCountComparisonRows(session) {
   const filters = (session?.reviewMode && session.reviewFilters)
     ? session.reviewFilters
@@ -5711,6 +5778,7 @@ function renderCountReportReviewControls(session, mode = state.countReportMode |
       status: document.querySelector("#countReportStatusFilter")?.value || "exceptions",
       diff: document.querySelector("#countReportDiffFilter")?.value || "any",
     };
+    state.countReviewTargetFilter = "all";
     void continueCountFromReport(event, { reviewMode: true });
   });
 }
@@ -6068,22 +6136,50 @@ function renderCountReviewTargets(session = state.activeCountSession) {
     const entrySection = document.querySelector("#countEntryTable")?.closest("section");
     (entrySection || workspace).insertAdjacentElement(entrySection ? "beforebegin" : "beforeend", panel);
   }
-  const rows = filteredSortedCountComparisonRows(session);
-  const remaining = rows.filter((r) => r.isNull || r.qtyDiff !== 0).length;
+  const allRows = countComparisonRows(session);
+  const scopeFilters = session?.reviewFilters || state.countReportFilters || {};
+  const scopedRows = allRows.filter((r) => {
+    if (scopeFilters.vendor && cleanCell(r.item.vendor) !== scopeFilters.vendor) return false;
+    if (scopeFilters.category && cleanCell(r.item.category) !== scopeFilters.category) return false;
+    return true;
+  });
+  const nullCount = scopedRows.filter((r) => !r.entry).length;
+  const diffCount = scopedRows.filter((r) => r.entry && Number(r.qtyDiff || 0) !== 0 && countReviewNeedsReview(r)).length;
+  const doneCount = scopedRows.filter((r) => !countReviewNeedsReview(r)).length;
+  const remaining = nullCount + diffCount;
+  const rows = countReviewPanelRows(session);
+  const activeFilter = state.countReviewTargetFilter || "all";
+  const filterButton = (key, label, count) => `<button type="button" class="count-review-filter-btn ${activeFilter === key ? "active" : ""}" data-review-filter="${key}">${label} <b>${number.format(count)}</b></button>`;
   panel.innerHTML = `
-    <div class="panel-heading">
+    <div class="panel-heading count-review-panel-heading">
       <div><p class="eyebrow">Review mode</p><h3>${number.format(remaining)} items need review</h3></div>
-      <span class="muted">Not scanned first, then biggest qty diff. PASS moves to bottom.</span>
+      <span class="muted">Separate NULL items from qty differences. Reviewed/PASS items move to bottom.</span>
+    </div>
+    <div class="count-review-toolbar">
+      ${filterButton("all", "All review", remaining)}
+      ${filterButton("null", "NULL / not scanned", nullCount)}
+      ${filterButton("diff", "Qty diff", diffCount)}
+      ${filterButton("done", "Reviewed / PASS", doneCount)}
+      <button type="button" id="confirmVisibleNullsZeroButton" class="secondary-button">Set visible NULL → 0</button>
     </div>
     <div class="table-wrap count-stable-scroll count-review-targets-scroll">
       <table class="count-report-table count-stable-table">
-        <thead><tr><th>Code</th><th>PLU</th><th>Item</th><th>POS</th><th>After</th><th>Diff</th><th>Status</th></tr></thead>
-        <tbody>${rows.slice(0, 120).map(({ item, entry, originalQty, finalQty, isNull, qtyDiff }) => {
-          const cls = isNull ? "count-review-row-null" : qtyDiff !== 0 ? "count-review-row-diff" : "count-review-row-pass";
-          return `<tr class="${cls}"><td>${escapeHtml(item.code || "-")}</td><td>${escapeHtml(item.plu || "-")}</td><td>${escapeHtml(item.product || "-")}</td><td class="num">${number.format(originalQty)}</td><td class="num">${number.format(finalQty)}</td><td class="num ${qtyDiff < 0 ? "variance-down" : qtyDiff > 0 ? "variance-up" : "variance-flat"}">${qtyDiff > 0 ? `+${number.format(qtyDiff)}` : number.format(qtyDiff)}</td><td>${entry && qtyDiff === 0 ? `<span class="count-pass-badge">PASS</span>` : isNull ? `<span class="muted">Not scanned</span>` : `Qty diff`}</td></tr>`;
+        <thead><tr><th>Code</th><th>PLU</th><th>Item</th><th>POS</th><th>After</th><th>Diff</th><th>Status</th><th>Action</th></tr></thead>
+        <tbody>${rows.slice(0, 160).map(({ item, entry, originalQty, finalQty, qtyDiff }) => {
+          const needs = countReviewNeedsReview({ item, entry, originalQty, finalQty, qtyDiff });
+          const cls = !entry ? "count-review-row-null" : needs ? "count-review-row-diff" : "count-review-row-pass";
+          const status = countReviewRowStatusLabel({ item, entry, originalQty, finalQty, qtyDiff });
+          const action = !entry ? `<button type="button" class="secondary-button tiny-button review-confirm-zero" data-code="${escapeHtml(item.code || "")}">Confirm 0</button>` : "";
+          return `<tr class="${cls}"><td>${escapeHtml(item.code || "-")}</td><td>${escapeHtml(item.plu || "-")}</td><td>${escapeHtml(item.product || "-")}</td><td class="num">${number.format(originalQty)}</td><td class="num">${number.format(finalQty)}</td><td class="num ${qtyDiff < 0 ? "variance-down" : qtyDiff > 0 ? "variance-up" : "variance-flat"}">${qtyDiff > 0 ? `+${number.format(qtyDiff)}` : number.format(qtyDiff)}</td><td>${status === "PASS" ? `<span class="count-pass-badge">PASS</span>` : escapeHtml(status)}</td><td>${action}</td></tr>`;
         }).join("")}</tbody>
       </table>
     </div>`;
+  panel.querySelectorAll("[data-review-filter]").forEach((btn) => btn.addEventListener("click", () => {
+    state.countReviewTargetFilter = btn.dataset.reviewFilter || "all";
+    renderCountReviewTargets(state.activeCountSession);
+  }));
+  panel.querySelector("#confirmVisibleNullsZeroButton")?.addEventListener("click", confirmVisibleReviewNullsAsZero);
+  panel.querySelectorAll(".review-confirm-zero").forEach((btn) => btn.addEventListener("click", () => commitReviewZero(btn.dataset.code || "")));
 }
 
 function renderCountsWorkspace(options = {}) {
