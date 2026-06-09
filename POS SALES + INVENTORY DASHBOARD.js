@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "20260606-continue-pass-keepopen-fix";
+  const VERSION = "20260609-session-flow-save-front-fix";
 
   function makeSearchEditable() {
     const search = document.querySelector("#searchInput");

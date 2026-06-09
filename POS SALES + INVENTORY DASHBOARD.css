@@ -7203,3 +7203,12 @@ body.scan-mode-active.scan-performance-medium .scan-mode-panel * {
   font-weight: 900;
   letter-spacing: 0.03em;
 }
+
+
+/* 2026-06-09 session-flow fix: count workspace must beat report/history overlays; hidden overlays cannot steal Save clicks. */
+.count-modal[hidden] { pointer-events: none !important; }
+#countSessionModal.count-modal:not([hidden]) { z-index: 12000 !important; pointer-events: auto !important; }
+#countSessionModal.count-modal:not([hidden]) .count-modal__dialog { pointer-events: auto !important; }
+#countReportModal.count-modal:not([hidden]),
+#reportCountModal.count-modal:not([hidden]),
+#sessionHistoryModal.count-modal:not([hidden]) { z-index: 9000 !important; }
