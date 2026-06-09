@@ -41,6 +41,7 @@
   _countLastSyncAt: "",
   _countSyncInFlight: null,
   _countSessionOpen: false,
+  _openingCountSessionId: "",
   _deletedCountSessionIds: new Set(JSON.parse(localStorage.getItem("posDashboardDeletedCountSessionIds:v1") || "[]")),
   _priceCheckExactIndex: null,
   _priceCheckExactIndexStamp: 0,
@@ -470,6 +471,7 @@ const els = {
   countLaunchTitle: document.querySelector("#countLaunchTitle"),
   countLaunchDescription: document.querySelector("#countLaunchDescription"),
   countLaunchState: document.querySelector("#countLaunchState"),
+  countStartNewCard: document.querySelector("#countStartNewCard"),
   countSyncStatus: document.querySelector("#countSyncStatus"),
   countSummaryStrip: document.querySelector("#countSummaryStrip"),
   activeCountTitle: document.querySelector("#activeCountTitle"),
@@ -873,6 +875,11 @@ document.querySelector("#orderArrangeColumnsButton")?.addEventListener("click", 
 });
 els.createPoShortcut?.addEventListener("click", openProductPoReviewModal);
 els.countLaunchCard?.addEventListener("click", () => openLatestCountOrSetup());
+els.countStartNewCard?.addEventListener("click", (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  openFreshCountSetupModal();
+});
 els.closeCountSessionButton?.addEventListener("click", closeActiveCountSession);
 els.countReviewButton?.addEventListener("click", () => openCountReport(state.activeCountSession?.id, "input"));
 els.countSaveSessionButton?.addEventListener("click", saveCountSession);
@@ -4293,7 +4300,34 @@ function countSessionCanDelete(session) {
   return !!(userOwnsSession || deviceOwnsSession);
 }
 
+function cleanupCountOverlays({ keepSession = false, keepSetup = false, keepReport = false } = {}) {
+  if (!keepReport && els.countReportModal) els.countReportModal.hidden = true;
+  const reportCountModal = document.querySelector("#reportCountModal");
+  if (!keepReport && reportCountModal) reportCountModal.hidden = true;
+  const sessionHistoryModal = document.querySelector("#sessionHistoryModal");
+  if (sessionHistoryModal) sessionHistoryModal.hidden = true;
+  if (!keepSetup && els.countSetupModal) els.countSetupModal.hidden = true;
+  if (!keepSession && els.countSessionModal) els.countSessionModal.hidden = true;
+}
+
+function openFreshCountSetupModal() {
+  // Explicit Start New Count must never resume a ghost/active session.
+  // It is a separate operator intent from Report History -> Continue.
+  state._openingCountSessionId = "";
+  state._continuingCountId = "";
+  stopContinueCountKeepOpenGuard();
+  state._countSessionOpen = false;
+  state.selectedCountItemCode = "";
+  state.countQtyBuffer = "0";
+  state.countStage = "search";
+  state.pendingDuplicateCount = null;
+  state.pendingDuplicateMode = null;
+  cleanupCountOverlays({ keepSetup: true });
+  openCountSetupModal();
+}
+
 function openCountSetupModal() {
+  cleanupCountOverlays({ keepSetup: true });
   els.countDateInput.value = new Date().toISOString().slice(0, 10);
   populateCountSetupOptions();
   // Always reset to "All" for a fresh count
@@ -4336,6 +4370,9 @@ function populateCountSetupOptions() {
 
 
 function startCountSessionFromModal() {
+  // New Count wizard always creates a fresh session and clears previous active workspace state.
+  clearContinuedCountLock();
+  state._openingCountSessionId = "";
   const statusEl = document.querySelector("#countStatusInput");
   const deviceId = countDeviceId();
   const session = {
@@ -4407,6 +4444,7 @@ function closeActiveCountSession() {
 }
 
 async function saveCountSession() {
+  cleanupCountOverlays({ keepSession: true });
   if (!state.activeCountSession) return;
   clearContinuedCountLock();
   const syncCheckedSession = await ensureCountSessionReadyToApply(state.activeCountSession, "saving");
@@ -5200,11 +5238,16 @@ function openCountReport(sessionId = state.activeCountSession?.id, mode = state.
       <span><b>Sync</b> ${syncStats.failed ? `${number.format(syncStats.failed)} failed` : syncStats.pending || session.localSyncPending ? `${number.format(syncStats.pending)} pending` : "Synced"}</span>`;
   }
   renderCountReportRows(session, mode);
+  els.countReportModal.style.pointerEvents = "auto";
   els.countReportModal.hidden = false;
 }
 
 function closeCountReport() {
-  els.countReportModal.hidden = true;
+  if (els.countReportModal) {
+    els.countReportModal.hidden = true;
+    els.countReportModal.style.pointerEvents = "none";
+    setTimeout(() => { if (els.countReportModal?.hidden) els.countReportModal.style.pointerEvents = ""; }, 80);
+  }
 }
 
 function exportCountReportPdf() {
@@ -5718,6 +5761,7 @@ function renderCountsWorkspace(options = {}) {
   if (els.countSessionModal) els.countSessionModal.hidden = !active || !state._countSessionOpen;
   els.countWorkspaceEmpty.hidden = false;
   if (els.countLaunchCard) els.countLaunchCard.hidden = false;
+  if (els.countStartNewCard) els.countStartNewCard.hidden = false;
   if (els.countLaunchTitle) els.countLaunchTitle.textContent = active ? "Continue Count" : "Start New Count";
   if (els.countLaunchDescription) {
     els.countLaunchDescription.textContent = active
@@ -11525,65 +11569,74 @@ function confirmDeleteSavedSession() {
 
 // -- Continue count from report (re-open the session as active) -------------
 async function continueCountFromReport(event = null) {
-  // PERF-F: Try to find the session locally first — no need to block on remote fetch if
-  // we already have it. Fall back to a timed remote pull only if it's not found locally.
-  const sessionId = state.countReportOpenId;
+  event?.preventDefault?.();
+  event?.stopPropagation?.();
+
+  const sessionId = cleanCell(state.countReportOpenId || event?.currentTarget?.dataset?.sessionId || "");
+  if (!sessionId) { showToast("No count session selected.", 3000, "warning"); return; }
+
+  // Hide report/history overlays FIRST so the continued workspace cannot open behind them.
+  cleanupCountOverlays({ keepSession: true });
+
   let session = findCountSessionById(sessionId);
   if (!session && ENABLE_SHARED_SYNC && sharedCountSessionsAvailable) {
-    const timeout = scanPerformanceProfile.tier === "low" ? 4000 : 2000;
+    const timeout = scanPerformanceProfile.tier === "low" ? 3500 : 1800;
     await Promise.race([
-      refreshLatestCountSessions({ history: true }),
+      restoreSharedCountSessionsOnlyFromSupabase({ silent: true, history: true, render: false }),
       new Promise((resolve) => setTimeout(resolve, timeout)),
-    ]);
+    ]).catch(() => {});
     session = findCountSessionById(sessionId);
   }
   if (!session) { showToast("Session not found.", 3000, "warning"); return; }
-  // FIX-B: Keep in countSessions[] with isActiveLive:true — removing it hid it from history.
-  const liveSession = markCountSessionDirty({ ...session, savedAt: "", submittedAt: "", isActiveLive: true });
-  state.countSessions = [liveSession, ...state.countSessions.filter((s) => s.id !== sessionId)];
+
+  const liveSession = markCountSessionDirty({
+    ...session,
+    savedAt: "",
+    submittedAt: "",
+    isActiveLive: true,
+    localSyncPending: true,
+    updatedAt: new Date().toISOString(),
+  });
+
   state.activeCountSession = liveSession;
+  state.countSessions = [liveSession, ...(state.countSessions || []).filter((s) => cleanCell(s?.id) !== sessionId)];
   state._countSessionOpen = true;
+  state._openingCountSessionId = sessionId;
+  state._continuingCountId = sessionId;
+  state._ignoreNextCountBackdropCloseUntil = Date.now() + 5000;
   state.countQtyBuffer = "0";
   state.selectedCountItemCode = "";
   state.countStage = "search";
   state.pendingDuplicateCount = null;
   state.pendingDuplicateMode = null;
-  state._ignoreNextCountBackdropCloseUntil = Date.now() + 2000;
-  state._continuingCountId = sessionId;
-  persistCountSessions();
+
+  persistActiveCountSession();
+  persistCountSessions({ scheduleSync: false });
   startContinueCountKeepOpenGuard(sessionId);
 
   const forceOpen = () => {
-    const current = state.activeCountSession?.id === sessionId ? state.activeCountSession : null;
-    state.activeCountSession = markCountSessionDirty({ ...(current || liveSession), savedAt: "", submittedAt: "", isActiveLive: true });
+    if (cleanCell(state.activeCountSession?.id) !== sessionId) {
+      state.activeCountSession = markCountSessionDirty({ ...liveSession, isActiveLive: true, savedAt: "", submittedAt: "" });
+      state.countSessions = [state.activeCountSession, ...(state.countSessions || []).filter((s) => cleanCell(s?.id) !== sessionId)];
+    }
     state._countSessionOpen = true;
     state._continuingCountId = sessionId;
-    state._ignoreNextCountBackdropCloseUntil = Date.now() + 4000;
-    persistActiveCountSession();
-    persistCountSessions({ scheduleSync: false });
-    // The report/history overlays are only containers. Hide them after the active
-    // session is set so the workspace cannot be immediately closed by the same click.
-    if (els.countReportModal) els.countReportModal.hidden = true;
-    const reportCountModal = document.querySelector("#reportCountModal");
-    if (reportCountModal) reportCountModal.hidden = true;
-    const sessionHistoryModal = document.querySelector("#sessionHistoryModal");
-    if (sessionHistoryModal) sessionHistoryModal.hidden = true;
+    cleanupCountOverlays({ keepSession: true });
     renderCountsWorkspace();
     if (els.countSessionModal) {
       els.countSessionModal.hidden = false;
       els.countSessionModal.classList.add("count-session-forced-open");
+      els.countSessionModal.style.zIndex = "10050";
+      els.countSessionModal.style.pointerEvents = "auto";
     }
+    focusCountSearch();
   };
 
-  event?.preventDefault?.();
-  event?.stopPropagation?.();
   forceOpen();
-  // A second pass catches delayed renders/sync refreshes that were closing the workspace.
-  setTimeout(forceOpen, 120);
-  setTimeout(() => { forceOpen(); focusCountSearch(); }, 450);
-  // Do not block the reopened workspace on sync. Queue it after the UI is stable.
-  setTimeout(() => syncSharedCountSessionsToSupabase(true).catch(() => scheduleSharedCountSessionsSync()), 800);
-  showToast(`Continuing count: ${countSessionLabel(session)}`, 2800, "success");
+  setTimeout(forceOpen, 100);
+  setTimeout(forceOpen, 450);
+  setTimeout(() => syncSharedCountSessionsToSupabase(true).catch(() => scheduleSharedCountSessionsSync()), 900);
+  showToast(`Continuing count: ${countSessionLabel(liveSession)}`, 2800, "success");
 }
 
 async function ensureCountSessionReadyToApply(session, action = "submitting") {
