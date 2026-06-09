@@ -883,10 +883,18 @@ els.countStartNewCard?.addEventListener("click", (event) => {
 els.closeCountSessionButton?.addEventListener("click", closeActiveCountSession);
 els.countReviewButton?.addEventListener("click", () => openCountReport(state.activeCountSession?.id, "input"));
 els.countSaveSessionButton?.addEventListener("click", (event) => saveCountSession(event));
+// Safety net: if a stale overlay is sitting above the workspace, route Save clicks anyway.
+document.addEventListener("click", (event) => {
+  const saveBtn = event.target?.closest?.("#countSaveSessionButton");
+  if (!saveBtn) return;
+  event.preventDefault();
+  event.stopPropagation();
+  void saveCountSession(event);
+}, true);
 els.countDeleteSessionButton?.addEventListener("click", deleteCountSession);
 els.countInputReportButton?.addEventListener("click", () => openCountReport(state.activeCountSession?.id, "input"));
 els.countComparisonReportButton?.addEventListener("click", () => openCountReport(state.activeCountSession?.id, "comparison"));
-els.countStartButton?.addEventListener("click", startCountSessionFromModal);
+els.countStartButton?.addEventListener("click", (event) => startCountSessionFromModal(event));
 els.countCancelButton?.addEventListener("click", closeCountSetupModal);
 els.countSetupModal?.addEventListener("click", (event) => {
   if (event.target === els.countSetupModal) closeCountSetupModal();
@@ -4301,7 +4309,7 @@ function countSessionCanDelete(session) {
 }
 
 function cleanupCountOverlays({ keepSession = false, keepSetup = false, keepReport = false } = {}) {
-  const hideNode = (node) => { if (node) { node.hidden = true; node.style.pointerEvents = "none"; } };
+  const hideNode = (node) => { if (node) { node.hidden = true; node.style.pointerEvents = "none"; node.classList?.remove("count-session-forced-open"); } };
   if (!keepReport) hideNode(els.countReportModal);
   const reportCountModal = document.querySelector("#reportCountModal");
   if (!keepReport) hideNode(reportCountModal);
@@ -4309,6 +4317,23 @@ function cleanupCountOverlays({ keepSession = false, keepSetup = false, keepRepo
   hideNode(sessionHistoryModal);
   if (!keepSetup) hideNode(els.countSetupModal);
   if (!keepSession) hideNode(els.countSessionModal);
+}
+
+function forceShowActiveCountWorkspace({ closeReports = true, focus = true } = {}) {
+  if (!state.activeCountSession) return false;
+  if (activeTabName() !== "counts") switchTab("counts");
+  state._countSessionOpen = true;
+  if (closeReports) cleanupCountOverlays({ keepSession: true });
+  renderCountsWorkspace();
+  if (els.countSessionModal) {
+    els.countSessionModal.hidden = false;
+    els.countSessionModal.style.pointerEvents = "auto";
+    els.countSessionModal.style.zIndex = "12000";
+    els.countSessionModal.classList.add("count-session-forced-open");
+  }
+  if (els.countSetupModal) { els.countSetupModal.hidden = true; els.countSetupModal.style.pointerEvents = "none"; }
+  if (focus) setTimeout(() => focusCountSearch(), 0);
+  return true;
 }
 
 function openFreshCountSetupModal() {
@@ -4373,9 +4398,17 @@ function populateCountSetupOptions() {
 
 
 
-function startCountSessionFromModal() {
+function startCountSessionFromModal(event = null) {
+  event?.preventDefault?.();
+  event?.stopPropagation?.();
   // New Count wizard always creates a fresh session and clears previous active workspace state.
+  // Guard against double taps/clicks creating multiple 0-entry sessions.
+  if (state._startingCountSession) return;
+  state._startingCountSession = true;
+  if (els.countStartButton) els.countStartButton.disabled = true;
   clearContinuedCountLock();
+  state.activeCountSession = null;
+  state._countSessionOpen = false;
   state._openingCountSessionId = "";
   const statusEl = document.querySelector("#countStatusInput");
   const deviceId = countDeviceId();
@@ -4415,9 +4448,13 @@ function startCountSessionFromModal() {
   closeCountSetupModal();
   // FIX-D: Build the search index lazily — defer until after the UI paints.
   // On Kindle this was a synchronous ~400ms block before the count screen appeared.
-  // findCountMatch()/findAnyCountMatch() also auto-build on first use (lines 4307/4323).
+  // findCountMatch()/findAnyCountMatch() also auto-build on first use.
   setTimeout(() => buildCountSearchIndex(), 80);
-  renderCountsWorkspace();
+  forceShowActiveCountWorkspace({ closeReports: true, focus: true });
+  setTimeout(() => {
+    state._startingCountSession = false;
+    if (els.countStartButton) els.countStartButton.disabled = false;
+  }, 650);
   showToast(
     state._countSyncUnavailable
       ? `Started local count: ${countSessionLabel(session)}. Sync will retry when available.`
@@ -4458,10 +4495,11 @@ async function saveCountSession(event = null) {
   });
   if (!state.activeCountSession) return;
   clearContinuedCountLock();
-  const syncCheckedSession = await ensureCountSessionReadyToApply(state.activeCountSession, "saving");
-  if (!syncCheckedSession) return;
+  // Save is a pause/close action, not final Submit & Apply. Do not block it on cloud sync.
+  // Entries stay local and queue for sync if Supabase is slow/unavailable.
+  const syncCheckedSession = state.activeCountSession;
   state._countSessionOpen = false;
-  if (els.countSessionModal) els.countSessionModal.hidden = true;
+  if (els.countSessionModal) { els.countSessionModal.hidden = true; els.countSessionModal.style.pointerEvents = "none"; }
   const session = markCountSessionDirty({
     ...syncCheckedSession,
     savedAt: new Date().toISOString(),
@@ -11564,6 +11602,7 @@ function confirmDeleteSavedSession() {
   }
   persistCountSessions();
   renderCountsWorkspace();
+  renderCountSessionRows();
   void (async () => {
     if (ENABLE_SHARED_SYNC && sharedCountSessionsAvailable) {
       await supabaseDeleteRowsByValues("count_sessions", "id", [id, `active:${id}`]);
@@ -11625,26 +11664,13 @@ async function continueCountFromReport(event = null) {
     // Report History -> Continue must not merely mark the session active.
     // It must close report/history overlays, switch to the Inventory/Counts view,
     // and put the count workspace physically in front ready to scan.
-    if (activeTabName() !== "counts") switchTab("counts");
     if (cleanCell(state.activeCountSession?.id) !== sessionId) {
       state.activeCountSession = markCountSessionDirty({ ...liveSession, isActiveLive: true, savedAt: "", submittedAt: "" });
       state.countSessions = [state.activeCountSession, ...(state.countSessions || []).filter((s) => cleanCell(s?.id) !== sessionId)];
     }
     state._countSessionOpen = true;
     state._continuingCountId = sessionId;
-    cleanupCountOverlays({ keepSession: true });
-    renderCountsWorkspace();
-    if (els.countSessionModal) {
-      els.countSessionModal.hidden = false;
-      els.countSessionModal.classList.add("count-session-forced-open");
-      els.countSessionModal.style.zIndex = "12000";
-      els.countSessionModal.style.pointerEvents = "auto";
-    }
-    ["#countReportModal", "#reportCountModal", "#sessionHistoryModal"].forEach((sel) => {
-      const node = document.querySelector(sel);
-      if (node) { node.hidden = true; node.style.pointerEvents = "none"; }
-    });
-    focusCountSearch();
+    forceShowActiveCountWorkspace({ closeReports: true, focus: true });
   };
 
   forceOpen();
