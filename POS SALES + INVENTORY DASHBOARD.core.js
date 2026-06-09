@@ -1,4 +1,4 @@
-﻿const state = {
+const state = {
   rawSales: [],
   inventories: new Map(),
   latestInventory: new Map(),
@@ -872,7 +872,7 @@ document.querySelector("#orderArrangeColumnsButton")?.addEventListener("click", 
   renderOrders();
 });
 els.createPoShortcut?.addEventListener("click", openProductPoReviewModal);
-els.countLaunchCard?.addEventListener("click", () => openLatestCountOrSetup());
+els.countLaunchCard?.addEventListener("click", () => openCountSetupModal());
 els.closeCountSessionButton?.addEventListener("click", closeActiveCountSession);
 els.countReviewButton?.addEventListener("click", () => openCountReport(state.activeCountSession?.id, "input"));
 els.countSaveSessionButton?.addEventListener("click", saveCountSession);
@@ -4409,8 +4409,7 @@ function closeActiveCountSession() {
 async function saveCountSession() {
   if (!state.activeCountSession) return;
   clearContinuedCountLock();
-  const syncCheckedSession = await ensureCountSessionReadyToApply(state.activeCountSession, "saving");
-  if (!syncCheckedSession) return;
+  const syncCheckedSession = state.activeCountSession;
   state._countSessionOpen = false;
   const session = markCountSessionDirty({
     ...syncCheckedSession,
@@ -5718,20 +5717,14 @@ function renderCountsWorkspace(options = {}) {
   if (els.countSessionModal) els.countSessionModal.hidden = !active || !state._countSessionOpen;
   els.countWorkspaceEmpty.hidden = false;
   if (els.countLaunchCard) els.countLaunchCard.hidden = false;
-  if (els.countLaunchTitle) els.countLaunchTitle.textContent = active ? "Continue Count" : "Start New Count";
+  // Baseline flow: this card is always ONLY for starting a fresh count.
+  // Continuing a previous count happens from Report History/View -> Continue.
+  if (els.countLaunchTitle) els.countLaunchTitle.textContent = "Start New Count";
   if (els.countLaunchDescription) {
-    els.countLaunchDescription.textContent = active
-      ? "Resume the latest active synced count."
-      : state._countSyncUnavailable
-        ? "Sync is unavailable. Start locally; entries stay on this device and retry automatically."
-        : "No active count exists. Choose the scope and begin a new physical count.";
+    els.countLaunchDescription.textContent = "Open the vendor/category/name setup wizard for a new physical count.";
   }
   if (els.countLaunchState) {
-    els.countLaunchState.textContent = active
-      ? "Active count found - Continue Count"
-      : state._countSyncUnavailable
-        ? "Sync unavailable - Start local count with warning"
-        : "No active count - Start New Count";
+    els.countLaunchState.textContent = "New physical count";
   }
   if (els.closeCountSessionButton) els.closeCountSessionButton.hidden = true;
   if (els.countReviewButton) els.countReviewButton.hidden = true;
@@ -14170,6 +14163,346 @@ document.querySelector("#orderVendorFilterSelect")?.addEventListener("change", (
 if (!state.authRequired || !loadUsers().length) {
   if (!state.authRequired) bootAppIfNeeded();
 }
+
+
+
+// ---------------------------------------------------------------------------
+// BASELINE SESSION FLOW + REVIEW MODE PATCH 2026-06-09
+// Focus only: one New Count path, report Continue opens that session directly,
+// and Review Mode lists NULL/not-scanned + quantity differences for rescanning.
+// ---------------------------------------------------------------------------
+(function sessionFlowReviewPatch(){
+  const PATCH = "20260609-session-flow-review-baseline";
+
+  function safeId(value){ return cleanCell(value || ""); }
+
+  function bringCountToFront() {
+    [els.countSetupModal, els.countReportModal, els.sessionHistoryModal].forEach((modal) => {
+      if (modal) modal.hidden = true;
+    });
+    if (els.countSessionModal) {
+      els.countSessionModal.hidden = false;
+      els.countSessionModal.style.zIndex = "12050";
+      els.countSessionModal.classList.add("count-session-forced-open");
+    }
+    document.querySelectorAll(".count-modal[hidden], .modal[hidden]").forEach((modal) => {
+      modal.style.pointerEvents = "none";
+    });
+    if (els.countSessionModal && !els.countSessionModal.hidden) els.countSessionModal.style.pointerEvents = "auto";
+    setTimeout(() => focusCountSearch(), 0);
+  }
+
+  function openCountSessionDirect(sessionId, opts = {}) {
+    const id = safeId(sessionId || state.countReportOpenId || state._continuingCountId);
+    const source = findCountSessionById(id) || state.countSessions.find((s) => safeId(s?.id) === id);
+    if (!source) {
+      showToast("Session not found. Close history and try again.", 2800, "warning");
+      return false;
+    }
+    const live = markCountSessionDirty({
+      ...source,
+      savedAt: "",
+      submittedAt: "",
+      isActiveLive: true,
+      updatedAt: new Date().toISOString(),
+    });
+    state.activeCountSession = live;
+    state.countSessions = [live, ...(state.countSessions || []).filter((s) => safeId(s?.id) !== id)];
+    state._countSessionOpen = true;
+    state._continuingCountId = id;
+    state.countQtyBuffer = "0";
+    state.selectedCountItemCode = "";
+    state.countStage = "search";
+    state.pendingDuplicateCount = null;
+    state.pendingDuplicateMode = null;
+    state._countReviewMode = !!opts.review;
+    state._countReviewSessionId = opts.review ? id : "";
+    persistActiveCountSession();
+    persistCountSessions({ scheduleSync: false });
+    renderCountsWorkspace();
+    bringCountToFront();
+    if (state._countReviewMode) renderCountReviewPanel();
+    return true;
+  }
+  window.openCountSessionDirect = openCountSessionDirect;
+
+  function forceNewCountSetup() {
+    state._countReviewMode = false;
+    state._countReviewSessionId = "";
+    openCountSetupModal();
+    if (els.countSetupModal) {
+      els.countSetupModal.hidden = false;
+      els.countSetupModal.style.zIndex = "12060";
+      els.countSetupModal.style.pointerEvents = "auto";
+    }
+  }
+
+  function dedupeFreshZeroEntrySessions() {
+    const seen = new Set();
+    state.countSessions = (state.countSessions || []).filter((s) => {
+      if (!s) return false;
+      const key = [s.date || "", s.vendor || "", s.category || "", s.status || "", s.searchFilter || "", s.startedAt || ""].join("|");
+      if (!(s.entries || []).length && seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  const originalStart = typeof startCountSessionFromModal === "function" ? startCountSessionFromModal : null;
+  if (originalStart) {
+    startCountSessionFromModal = function patchedStartCountSessionFromModal() {
+      if (state._countStartInFlight) return;
+      state._countStartInFlight = true;
+      try {
+        originalStart();
+        dedupeFreshZeroEntrySessions();
+        persistCountSessions({ scheduleSync: false });
+        state._countSessionOpen = true;
+        renderCountsWorkspace();
+        bringCountToFront();
+      } finally {
+        setTimeout(() => { state._countStartInFlight = false; }, 700);
+      }
+    };
+  }
+
+  const originalSave = typeof saveCountSession === "function" ? saveCountSession : null;
+  if (originalSave) {
+    saveCountSession = async function patchedSaveCountSession() {
+      await originalSave();
+      state._countSessionOpen = false;
+      state._countReviewMode = false;
+      state._countReviewSessionId = "";
+      if (els.countSessionModal) {
+        els.countSessionModal.hidden = true;
+        els.countSessionModal.style.pointerEvents = "none";
+      }
+      renderCountsWorkspace();
+    };
+  }
+
+  const originalRenderWorkspace = typeof renderCountsWorkspace === "function" ? renderCountsWorkspace : null;
+  if (originalRenderWorkspace) {
+    renderCountsWorkspace = function patchedRenderCountsWorkspace(options = {}) {
+      originalRenderWorkspace(options);
+      if (els.countLaunchCard) {
+        els.countLaunchCard.hidden = false;
+        els.countLaunchCard.querySelector("strong") && (els.countLaunchCard.querySelector("strong").textContent = "Start New Count");
+        if (els.countLaunchTitle) els.countLaunchTitle.textContent = "Start New Count";
+        if (els.countLaunchDescription) els.countLaunchDescription.textContent = "Open a fresh vendor/category/name setup wizard.";
+        if (els.countLaunchState) els.countLaunchState.textContent = "New physical count";
+      }
+      if (state._countReviewMode && state.activeCountSession) renderCountReviewPanel();
+    };
+  }
+
+  function reviewRowsForSession(session) {
+    if (!session) return [];
+    const entriesByCode = new Map((session.entries || []).map((entry) => [codeKey(entry.code), entry]));
+    return currentCountSessionCandidates(session).map((item) => {
+      const key = codeKey(item.code);
+      const entry = entriesByCode.get(key);
+      const before = Number(item.stock || 0);
+      const after = entry ? Number(entry.countedQty || 0) : 0;
+      const diff = after - before;
+      const isNull = !entry;
+      const needsReview = isNull || diff !== 0;
+      return { item, entry, key, before, after, diff, isNull, needsReview };
+    }).filter((row) => row.needsReview)
+      .sort((a, b) => {
+        if (a.isNull !== b.isNull) return a.isNull ? -1 : 1;
+        return Math.abs(b.diff) - Math.abs(a.diff);
+      });
+  }
+
+  function renderCountReviewPanel() {
+    const session = state.activeCountSession;
+    if (!session || !els.countSessionModal || els.countSessionModal.hidden) return;
+    const workspace = els.countSessionModal.querySelector(".count-workspace") || els.countSessionModal.querySelector("section");
+    if (!workspace) return;
+    let panel = workspace.querySelector("#countReviewPanel");
+    if (!panel) {
+      panel = document.createElement("section");
+      panel.id = "countReviewPanel";
+      panel.className = "count-review-panel";
+      const tablePanel = workspace.querySelector(".table-panel");
+      workspace.insertBefore(panel, tablePanel || null);
+    }
+    const rows = reviewRowsForSession(session);
+    const nullCount = rows.filter((r) => r.isNull).length;
+    const diffCount = rows.length - nullCount;
+    panel.innerHTML = `
+      <div class="count-review-header">
+        <div><p class="eyebrow">Review Mode</p><h3>${number.format(rows.length)} items need review</h3></div>
+        <div class="count-review-counts"><span>NULL/not scanned: <b>${number.format(nullCount)}</b></span><span>Qty diff: <b>${number.format(diffCount)}</b></span></div>
+      </div>
+      <p class="muted">Click a row or scan the item. NULL/not scanned stays first, then biggest quantity difference.</p>
+      <div class="table-wrap count-stable-scroll count-review-scroll">
+        <table class="count-report-table count-stable-table count-review-table">
+          <thead><tr><th>Code</th><th>PLU</th><th>Item</th><th>POS</th><th>After</th><th>Diff</th><th>Status</th></tr></thead>
+          <tbody>${rows.length ? rows.map((r) => {
+            const diffClass = r.diff > 0 ? "variance-up" : r.diff < 0 ? "variance-down" : "variance-flat";
+            const diffText = r.diff > 0 ? `+${number.format(r.diff)}` : number.format(r.diff);
+            return `<tr class="${r.isNull ? "review-null" : "review-diff"}" data-review-code="${escapeHtml(r.item.code || "")}">
+              <td>${escapeHtml(r.item.code || "-")}</td>
+              <td>${escapeHtml(r.item.plu || "-")}</td>
+              <td>${escapeHtml(r.item.product || "-")}</td>
+              <td class="num">${number.format(r.before)}</td>
+              <td class="num">${number.format(r.after)}</td>
+              <td class="num ${diffClass}">${diffText}</td>
+              <td>${r.isNull ? "Not scanned" : "Qty diff"}</td>
+            </tr>`;
+          }).join("") : `<tr><td colspan="7" class="empty-cell">Review complete. No NULL or quantity-difference items remain.</td></tr>`}</tbody>
+        </table>
+      </div>`;
+    panel.querySelectorAll("[data-review-code]").forEach((row) => {
+      row.addEventListener("click", () => {
+        const code = row.getAttribute("data-review-code") || "";
+        if (els.countSearchInput) {
+          els.countSearchInput.value = code;
+          els.countSearchInput.focus();
+          els.countSearchInput.select?.();
+        }
+        setTimeout(() => handleCountLookup(), 0);
+      });
+    });
+  }
+  window.renderCountReviewPanel = renderCountReviewPanel;
+
+  const originalResolveDuplicate = typeof resolveDuplicateCount === "function" ? resolveDuplicateCount : null;
+  if (originalResolveDuplicate) {
+    resolveDuplicateCount = function patchedResolveDuplicateCount(mode) {
+      const result = originalResolveDuplicate(mode);
+      if (state._countReviewMode) setTimeout(renderCountReviewPanel, 80);
+      return result;
+    };
+  }
+
+  const originalRenderReportRows = typeof renderCountReportRows === "function" ? renderCountReportRows : null;
+  if (originalRenderReportRows) {
+    renderCountReportRows = function patchedRenderCountReportRows(session, mode = state.countReportMode || "input") {
+      if (mode !== "comparison") return originalRenderReportRows(session, mode);
+      const entries = session?.entries || [];
+      const allItems = currentCountSessionCandidates(session);
+      if (!allItems.length) {
+        els.countReportBody.innerHTML = `<tr><td colspan="11" class="empty-cell">No items matched this count criteria.</td></tr>`;
+        return;
+      }
+      const latestByCode = new Map(entries.map((entry) => [codeKey(entry.code), entry]));
+      const rows = allItems.map((item) => {
+        const entry = latestByCode.get(codeKey(item.code));
+        const originalQty = Number(item.stock || 0);
+        const finalQty = entry ? Number(entry.countedQty || 0) : 0;
+        const isNull = !entry;
+        const qtyDiff = finalQty - originalQty;
+        const costDiff = qtyDiff * Number(item.unitCost || 0);
+        return { item, entry, originalQty, finalQty, isNull, qtyDiff, costDiff };
+      }).sort((a,b) => {
+        if (a.isNull !== b.isNull) return a.isNull ? -1 : 1;
+        const aPass = !a.isNull && a.qtyDiff === 0;
+        const bPass = !b.isNull && b.qtyDiff === 0;
+        if (aPass !== bPass) return aPass ? 1 : -1;
+        return Math.abs(b.qtyDiff) - Math.abs(a.qtyDiff);
+      });
+      els.countReportBody.innerHTML = rows.map((r) => {
+        const qtyClass = r.qtyDiff > 0 ? "variance-up" : r.qtyDiff < 0 ? "variance-down" : "variance-flat";
+        const costClass = r.costDiff > 0 ? "variance-up" : r.costDiff < 0 ? "variance-down" : "variance-flat";
+        return `<tr class="${r.isNull ? "review-null" : r.qtyDiff ? "review-diff" : "review-pass"}">
+          <td>${escapeHtml(r.item.code || "-")}</td>
+          <td>${escapeHtml(r.item.plu || "-")}</td>
+          <td>${escapeHtml(r.item.product || "-")}</td>
+          <td>${escapeHtml(r.item.vendor || "-")}</td>
+          <td>${escapeHtml(r.item.category || "-")}</td>
+          <td class="num">${number.format(r.originalQty)}</td>
+          <td class="num">${number.format(r.finalQty)}</td>
+          <td>${r.isNull ? `<span class="muted">NULL</span>` : ""}</td>
+          <td class="num ${qtyClass}">${r.qtyDiff > 0 ? `+${number.format(r.qtyDiff)}` : number.format(r.qtyDiff)}</td>
+          <td class="${costClass}">${currency.format(r.costDiff)}</td>
+          <td>${r.entry ? `<span class="count-pass-badge">PASS</span> <span class="muted">${escapeHtml(new Date(r.entry.recordedAt).toLocaleString())}</span>` : `<span class="muted">Not scanned</span>`}</td>
+        </tr>`;
+      }).join("");
+    };
+  }
+
+  const originalOpenReport = typeof openCountReport === "function" ? openCountReport : null;
+  if (originalOpenReport) {
+    openCountReport = function patchedOpenCountReport(sessionId = state.activeCountSession?.id, mode = state.countReportMode || "input") {
+      originalOpenReport(sessionId, mode);
+      const session = findCountSessionById(sessionId);
+      if (mode === "comparison" && session && els.countReportHead) {
+        els.countReportHead.innerHTML = `<tr><th>Code</th><th>PLU</th><th>Item</th><th>Vendor</th><th>Category</th><th>Qty before</th><th>Qty after</th><th>NULL</th><th>Qty diff</th><th>Cost diff</th><th>Status</th></tr>`;
+        renderCountReportRows(session, mode);
+        const rows = reviewRowsForSession(session);
+        let tools = document.querySelector("#countReviewTools");
+        if (!tools) {
+          tools = document.createElement("div");
+          tools.id = "countReviewTools";
+          tools.className = "count-review-tools";
+          els.countReportMeta?.insertAdjacentElement("afterend", tools);
+        }
+        const nullCount = rows.filter((r) => r.isNull).length;
+        const diffCount = rows.length - nullCount;
+        tools.innerHTML = `<button type="button" id="countContinueReviewButton" class="count-review-continue">Continue Review Count (${number.format(rows.length)} to review)</button><span>NULL/not scanned: <b>${number.format(nullCount)}</b></span><span>Qty diff: <b>${number.format(diffCount)}</b></span>`;
+        tools.querySelector("#countContinueReviewButton")?.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          openCountSessionDirect(session.id, { review: true });
+        });
+      } else {
+        document.querySelector("#countReviewTools")?.remove();
+      }
+    };
+  }
+
+  const originalContinue = typeof continueCountFromReport === "function" ? continueCountFromReport : null;
+  continueCountFromReport = async function patchedContinueCountFromReport(event = null) {
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+    const id = state.countReportOpenId;
+    if (openCountSessionDirect(id, { review: false })) {
+      showToast("Continuing count.", 1600, "success");
+      return;
+    }
+    if (originalContinue) return originalContinue(event);
+  };
+
+  document.addEventListener("click", (event) => {
+    const start = event.target.closest("#countLaunchCard");
+    if (start) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      forceNewCountSetup();
+      return;
+    }
+    const startBtn = event.target.closest("#countStartButton");
+    if (startBtn) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      startCountSessionFromModal();
+      return;
+    }
+    const saveBtn = event.target.closest("#countSaveSessionButton");
+    if (saveBtn) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      void saveCountSession();
+      return;
+    }
+    const cont = event.target.closest("#countContinueButton");
+    if (cont) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      void continueCountFromReport(event);
+      return;
+    }
+  }, true);
+
+  // Keep hidden modals from eating clicks after report/history close.
+  setInterval(() => {
+    document.querySelectorAll(".count-modal[hidden]").forEach((modal) => { modal.style.pointerEvents = "none"; });
+    document.querySelectorAll(".count-modal:not([hidden])").forEach((modal) => { modal.style.pointerEvents = "auto"; });
+  }, 1500);
+})();
 
 // Multi-device sync: poll a tiny shared sync_state row so devices can refresh
 // products-only changes quickly without constantly refetching full sales data.
