@@ -4304,6 +4304,9 @@ function openCountSetupModal() {
   if (els.countScopeSearchInput) els.countScopeSearchInput.value = "";
   if (els.countAllowOutOfScopeInput) els.countAllowOutOfScopeInput.checked = false;
   els.countSetupModal.hidden = false;
+  // FIX 2026-06-09D: clear any stale inline hide styles left by older patch helpers.
+  els.countSetupModal.style.display = "";
+  els.countSetupModal.style.pointerEvents = "auto";
   els.countDateInput.focus();
 }
 
@@ -5200,6 +5203,9 @@ function openCountReport(sessionId = state.activeCountSession?.id, mode = state.
   }
   renderCountReportRows(session, mode);
   els.countReportModal.hidden = false;
+  // FIX 2026-06-09D: clear any stale inline hide styles left by older patch helpers.
+  els.countReportModal.style.display = "";
+  els.countReportModal.style.pointerEvents = "auto";
 }
 
 function closeCountReport() {
@@ -5413,7 +5419,12 @@ function renderCountReportRows(session, mode = state.countReportMode || "input")
 }
 
 async function openSessionHistoryModal() {
-  if (els.sessionHistoryModal) els.sessionHistoryModal.hidden = false;
+  if (els.sessionHistoryModal) {
+    els.sessionHistoryModal.hidden = false;
+    // FIX 2026-06-09D: clear any stale inline hide styles left by older patch helpers.
+    els.sessionHistoryModal.style.display = "";
+    els.sessionHistoryModal.style.pointerEvents = "auto";
+  }
   if (els.countSessionBody) els.countSessionBody.innerHTML = `<tr><td colspan="13" class="empty-cell">Loading report history...</td></tr>`;
   if (ENABLE_SHARED_SYNC && sharedCountSessionsAvailable) {
     await restoreSharedCountSessionsOnlyFromSupabase({ silent: true, history: true });
@@ -10786,7 +10797,10 @@ function applySharedCountSessionRows(rows = [], options = {}) {
       countSessionHasUnsyncedEdits(session) || cleanCell(session?.id) === cleanCell(state._continuingCountId || "")
     );
     state.activeCountSession = (countSessionHasUnsyncedEdits(localActive) || keepContinuedActive) ? localActive : null;
-    if (state.activeCountSession) state._countSessionOpen = true;
+    // FIX 2026-06-09D: Only auto-open the count screen when the operator explicitly
+    // continued this session. Background sync must never pop the count modal on its own
+    // (previously this opened the physical count screen just by visiting the Inventory tab).
+    if (state.activeCountSession && keepContinuedActive) state._countSessionOpen = true;
     state._countRemoteLoaded = true;
     persistCountSessions({ scheduleSync: false });
     if (options.render !== false && activeTabName() === "counts") {
@@ -10865,7 +10879,9 @@ function applySharedCountSessionRows(rows = [], options = {}) {
   if ((keepContinuedActive || countSessionHasUnsyncedEdits(localActive)) && (!nextActive || localActiveId !== remoteActiveId)) {
     if (nextActive?.id && nextActive.id !== localActive.id) mergedSavedById.set(nextActive.id, nextActive);
     nextActive = { ...localActive, isActiveLive: true };
-    state._countSessionOpen = true;
+    // FIX 2026-06-09D: unsynced edits keep the session alive in state, but only an
+    // explicit Continue should force the count screen visible.
+    if (keepContinuedActive) state._countSessionOpen = true;
   }
   // FIX-C: Do NOT remove nextActive from mergedSavedById.
   // Previously this deleted the active session from the sessions list entirely, making it
@@ -12083,7 +12099,11 @@ function openFinalCountReport(sessionId) {
       <span><b>Sync</b> ${syncStats.pending || syncStats.failed || session.finalizedWithUnsyncedEntries ? "WARNING - unconfirmed entries" : "All entries synced"}</span>`;
   }
   renderFinalCountReportRows(session);
-  document.querySelector("#finalCountReportModal").hidden = false;
+  const _finalModal = document.querySelector("#finalCountReportModal");
+  _finalModal.hidden = false;
+  // FIX 2026-06-09D: clear any stale inline hide styles left by older patch helpers.
+  _finalModal.style.display = "";
+  _finalModal.style.pointerEvents = "auto";
 }
 
 function renderFinalCountReportRows(session) {
@@ -14180,7 +14200,9 @@ if (!state.authRequired || !loadUsers().length) {
 
   function disableHiddenModalPointers() {
     document.querySelectorAll(".count-modal[hidden], .modal[hidden]").forEach((modal) => {
-      modal.style.pointerEvents = "none";
+      // FIX 2026-06-09D: clear inline styles; CSS `[hidden]` rules already block clicks.
+      modal.style.pointerEvents = "";
+      modal.style.display = "";
     });
     document.querySelectorAll(".count-modal:not([hidden]), .modal:not([hidden])").forEach((modal) => {
       modal.style.pointerEvents = "auto";
@@ -14191,7 +14213,8 @@ if (!state.authRequired || !loadUsers().length) {
     [els.countSetupModal, els.countReportModal, els.sessionHistoryModal, modalById("reportCountModal")].forEach((modal) => {
       if (modal) {
         modal.hidden = true;
-        modal.style.pointerEvents = "none";
+        modal.style.pointerEvents = "";
+        modal.style.display = "";
       }
     });
   }
@@ -14716,8 +14739,12 @@ if (!state.authRequired || !loadUsers().length) {
   function hideModal(modal){
     if (!modal) return;
     modal.hidden = true;
-    modal.style.display = "none";
-    modal.style.pointerEvents = "none";
+    // FIX 2026-06-09D: rely on the injected CSS rule `[hidden]{display:none!important}`.
+    // Leaving inline display:none / pointer-events:none here permanently broke every
+    // modal whose open path only flips `hidden = false` (New Count setup, Report
+    // History, View report, Final report) — they looked "non-responsive".
+    modal.style.display = "";
+    modal.style.pointerEvents = "";
     modal.classList.remove("count-session-forced-open");
   }
   function showModal(modal, z = 14000){
