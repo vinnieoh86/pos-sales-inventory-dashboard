@@ -14367,3 +14367,169 @@ if (!state.authRequired || !loadUsers().length) {
 })();
 
 
+
+/* SESSION FLOW HARD LOCK PATCH 20260609
+   Purpose: keep New / Continue / Save as three separate, deterministic flows.
+   Scope only: physical-count modal navigation and hidden-overlay cleanup. Sync untouched. */
+(function sessionFlowHardLockPatch(){
+  if (window.__SESSION_FLOW_HARD_LOCK_20260609__) return;
+  window.__SESSION_FLOW_HARD_LOCK_20260609__ = true;
+
+  const qs = (sel) => document.querySelector(sel);
+  const hideModal = (node) => {
+    if (!node) return;
+    node.hidden = true;
+    node.style.pointerEvents = 'none';
+    node.classList?.remove('count-session-forced-open');
+  };
+  const hideNonCountModals = () => {
+    ['#countReportModal', '#reportCountModal', '#sessionHistoryModal', '#countSetupModal'].forEach((sel) => hideModal(qs(sel)));
+  };
+  const putCountOnTop = () => {
+    const modal = qs('#countSessionModal');
+    if (!modal || !state.activeCountSession) return false;
+    if (activeTabName() !== 'counts') switchTab('counts');
+    state._countSessionOpen = true;
+    hideNonCountModals();
+    renderCountsWorkspace({ populateSetup: false });
+    modal.hidden = false;
+    modal.style.pointerEvents = 'auto';
+    modal.style.zIndex = '13000';
+    modal.classList.add('count-session-forced-open');
+    setTimeout(() => { try { focusCountSearch(); } catch (_) {} }, 0);
+    return true;
+  };
+
+  function findSessionByIdSafe(id) {
+    const cleanId = cleanCell(id || '');
+    if (!cleanId) return null;
+    return findCountSessionById(cleanId) || (state.countSessions || []).find((s) => cleanCell(s?.id) === cleanId) || null;
+  }
+
+  function stableContinueSession(sessionId) {
+    const cleanId = cleanCell(sessionId || state.countReportOpenId || state._continuingCountId || '');
+    const session = findSessionByIdSafe(cleanId);
+    if (!session) { showToast('Session not found. Close/reopen report history and try again.', 3200, 'warning'); return false; }
+    const live = markCountSessionDirty({
+      ...session,
+      savedAt: '',
+      submittedAt: '',
+      isActiveLive: true,
+      localSyncPending: true,
+      updatedAt: new Date().toISOString(),
+    });
+    state.activeCountSession = live;
+    state.countSessions = [live, ...(state.countSessions || []).filter((s) => cleanCell(s?.id) !== cleanId)];
+    state._countSessionOpen = true;
+    state._continuingCountId = cleanId;
+    state._openingCountSessionId = cleanId;
+    state._ignoreNextCountBackdropCloseUntil = Date.now() + 5000;
+    state.selectedCountItemCode = '';
+    state.countQtyBuffer = '0';
+    state.countStage = 'search';
+    state.pendingDuplicateCount = null;
+    state.pendingDuplicateMode = null;
+    persistActiveCountSession();
+    persistCountSessions({ scheduleSync: false });
+    try { startContinueCountKeepOpenGuard(cleanId); } catch (_) {}
+    putCountOnTop();
+    setTimeout(putCountOnTop, 80);
+    setTimeout(putCountOnTop, 350);
+    return true;
+  }
+
+  function stableOpenFreshSetup() {
+    state._startingCountSession = false;
+    state._openingCountSessionId = '';
+    state._continuingCountId = '';
+    state._countSessionOpen = false;
+    state.selectedCountItemCode = '';
+    state.countQtyBuffer = '0';
+    state.countStage = 'search';
+    state.pendingDuplicateCount = null;
+    state.pendingDuplicateMode = null;
+    hideModal(qs('#countSessionModal'));
+    hideModal(qs('#countReportModal'));
+    hideModal(qs('#reportCountModal'));
+    hideModal(qs('#sessionHistoryModal'));
+    openCountSetupModal();
+  }
+
+  let stableStartLockUntil = 0;
+  function stableStartFromSetup(event) {
+    const now = Date.now();
+    if (now < stableStartLockUntil || state._startingCountSession) return;
+    stableStartLockUntil = now + 1800;
+    try { startCountSessionFromModal(event); } catch (err) { console.error(err); }
+    // The original creates/registers the session. Force the physical count screen to the front immediately.
+    setTimeout(putCountOnTop, 30);
+    setTimeout(putCountOnTop, 180);
+    setTimeout(putCountOnTop, 600);
+  }
+
+  async function stableSave(event) {
+    if (!state.activeCountSession) return;
+    try { await saveCountSession(event); } catch (err) { console.error(err); }
+    // Save is a close/pause action. Do not leave invisible overlays intercepting clicks.
+    state._countSessionOpen = false;
+    state._continuingCountId = '';
+    hideModal(qs('#countSessionModal'));
+    hideNonCountModals();
+    try { renderCountsWorkspace({ populateSetup: false }); } catch (_) {}
+  }
+
+  document.addEventListener('click', (event) => {
+    const target = event.target;
+    const saveBtn = target?.closest?.('#countSaveSessionButton');
+    if (saveBtn) {
+      event.preventDefault(); event.stopPropagation(); event.stopImmediatePropagation();
+      void stableSave(event);
+      return;
+    }
+
+    const startBtn = target?.closest?.('#countStartButton');
+    if (startBtn) {
+      event.preventDefault(); event.stopPropagation(); event.stopImmediatePropagation();
+      stableStartFromSetup(event);
+      return;
+    }
+
+    const newCard = target?.closest?.('#countStartNewCard');
+    if (newCard) {
+      event.preventDefault(); event.stopPropagation(); event.stopImmediatePropagation();
+      stableOpenFreshSetup();
+      return;
+    }
+
+    const resumeCard = target?.closest?.('#countLaunchCard');
+    if (resumeCard) {
+      event.preventDefault(); event.stopPropagation(); event.stopImmediatePropagation();
+      if (state.activeCountSession?.id) {
+        stableContinueSession(state.activeCountSession.id);
+      } else {
+        stableOpenFreshSetup();
+      }
+      return;
+    }
+
+    const continueBtn = target?.closest?.('#countContinueButton');
+    if (continueBtn) {
+      event.preventDefault(); event.stopPropagation(); event.stopImmediatePropagation();
+      stableContinueSession(state.countReportOpenId || continueBtn.dataset.sessionId || state._continuingCountId);
+      return;
+    }
+  }, true);
+
+  // Keep hidden modals from ever blocking the count screen.
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      ['#countReportModal', '#reportCountModal', '#sessionHistoryModal'].forEach((sel) => {
+        const node = qs(sel);
+        if (node?.hidden) hideModal(node);
+      });
+    }
+  }, true);
+
+  // Expose tiny diagnostics without changing UI.
+  window.__posCountFlow = { putCountOnTop, stableContinueSession, stableOpenFreshSetup };
+})();
