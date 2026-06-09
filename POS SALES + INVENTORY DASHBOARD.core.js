@@ -1162,7 +1162,7 @@ document.querySelector("#countContinueButton")?.addEventListener("click", (event
   event.preventDefault();
   event.stopPropagation();
   if (!event.isTrusted) return;
-  void continueCountFromReport(event);
+  void continueCountFromReport(event, { reviewMode: state.countReportMode === "comparison" });
 });
 document.querySelector("#productPoCloseButton")?.addEventListener("click", closeProductPoReviewModal);
 document.querySelector("#productPoSendButton")?.addEventListener("click", () => sendProductPoSelection(false));
@@ -5604,7 +5604,9 @@ function countComparisonRows(session) {
 }
 
 function filteredSortedCountComparisonRows(session) {
-  const filters = state.countReportFilters || { status: "exceptions", vendor: "", category: "", diff: "any" };
+  const filters = (session?.reviewMode && session.reviewFilters)
+    ? session.reviewFilters
+    : (state.countReportFilters || { status: "exceptions", vendor: "", category: "", diff: "any" });
   let rows = countComparisonRows(session);
   if (filters.vendor) rows = rows.filter((r) => cleanCell(r.item.vendor) === filters.vendor);
   if (filters.category) rows = rows.filter((r) => cleanCell(r.item.category) === filters.category);
@@ -11998,6 +12000,13 @@ async function continueCountFromReport(event = null, options = {}) {
   startContinueCountKeepOpenGuard(sessionId);
 
   const forceOpen = () => {
+    // Continue Count must become the top modal/page. Close report/history overlays first;
+    // otherwise the count workspace can open behind the report and look broken.
+    if (els.countReportModal) els.countReportModal.hidden = true;
+    const reportCountModal = document.querySelector("#reportCountModal");
+    if (reportCountModal) reportCountModal.hidden = true;
+    const sessionHistoryModal = document.querySelector("#sessionHistoryModal");
+    if (sessionHistoryModal) sessionHistoryModal.hidden = true;
     const current = state.activeCountSession?.id === sessionId ? state.activeCountSession : null;
     state.activeCountSession = markCountSessionDirty({ ...(current || liveSession), savedAt: "", submittedAt: "", isActiveLive: true, reviewMode: !!options.reviewMode || !!(current || liveSession).reviewMode, reviewFilters: options.reviewMode ? { ...(state.countReportFilters || {}) } : (current || liveSession).reviewFilters });
     state._countSessionOpen = true;
@@ -12005,17 +12014,11 @@ async function continueCountFromReport(event = null, options = {}) {
     state._ignoreNextCountBackdropCloseUntil = Date.now() + 4000;
     persistActiveCountSession();
     persistCountSessions({ scheduleSync: false });
-    // The report/history overlays are only containers. Hide them after the active
-    // session is set so the workspace cannot be immediately closed by the same click.
-    if (els.countReportModal) els.countReportModal.hidden = true;
-    const reportCountModal = document.querySelector("#reportCountModal");
-    if (reportCountModal) reportCountModal.hidden = true;
-    const sessionHistoryModal = document.querySelector("#sessionHistoryModal");
-    if (sessionHistoryModal) sessionHistoryModal.hidden = true;
     renderCountsWorkspace();
     if (els.countSessionModal) {
       els.countSessionModal.hidden = false;
       els.countSessionModal.classList.add("count-session-forced-open");
+      els.countSessionModal.style.zIndex = "12000";
     }
   };
 
@@ -14675,28 +14678,25 @@ if (!state.authRequired || !loadUsers().length) {
       state._deferredSharedSync = false;
       const syncKind = String(syncRow.last_sync_kind || "").toLowerCase();
       const isProductsOnly = syncKind === "products" || syncKind === "product-meta";
+      const isFullSnapshot = syncKind === "full-snapshot" || syncKind === "imports" || isProductsOnly;
       const isVendorRulesOnly = syncKind === "vendor-rules";
-      const isImportsOnly = syncKind === "imports";
       const isCountsOnly = syncKind === "counts";
       const restored = isVendorRulesOnly
         ? await restoreSharedVendorRulesOnlyFromSupabase({ silent: true })
-        : isImportsOnly
-          ? await restoreSharedDataFromSupabase({ silent: true, preferCurrentState: false, expectedProductCount: Number(syncRow.product_count || 0) })
-          : isCountsOnly
-            ? await restoreSharedCountSessionsOnlyFromSupabase({ silent: true })
-        : isProductsOnly
-          ? await restoreSharedProductsOnlyFromSupabase({ silent: true })
-          : await restoreSharedDataFromSupabase({ silent: true, preferCurrentState: false, expectedProductCount: Number(syncRow.product_count || 0) });
+        : isCountsOnly
+          ? await restoreSharedCountSessionsOnlyFromSupabase({ silent: true })
+          : isFullSnapshot
+            // Accuracy first: products/product-meta updates can include inventory qty/case/status.
+            // A Kindle with an old local cache must pull the authoritative shared master,
+            // not only patch a partial in-memory list.
+            ? await restoreSharedDataFromSupabase({ silent: true, preferCurrentState: false, expectedProductCount: Number(syncRow.product_count || 0) })
+            : await restoreSharedDataFromSupabase({ silent: true, preferCurrentState: false, expectedProductCount: Number(syncRow.product_count || 0) });
       if (restored) {
-        if (!scanModeIsActive() && !isProductsOnly && !isCountsOnly && !state.activeCountSession) {
+        if (!scanModeIsActive() && !isCountsOnly && !state.activeCountSession) {
           showToast(
             isVendorRulesOnly
               ? "\u21ba Synced shared vendor rules from another device"
-              : isImportsOnly
-                ? "\u21ba Synced shared import updates from another device"
-                : isCountsOnly
-                  ? "\u21ba Synced shared count updates from another device"
-                  : "\u21ba Synced shared sales and inventory updates from another device",
+              : "\u21ba Synced shared sales and inventory updates from another device",
             1800,
             "success"
           );

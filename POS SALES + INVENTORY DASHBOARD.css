@@ -7362,3 +7362,22 @@ body.scan-mode-active.scan-performance-medium .scan-mode-panel * {
 .count-review-targets-scroll {
   max-height: 230px;
 }
+
+/* Count report sortable headers */
+.count-report-sort {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 800;
+  text-transform: uppercase;
+  cursor: pointer;
+  padding: 0;
+}
+.count-report-sort:hover { text-decoration: underline; }
+
+
+/* Continue Count must sit above report/history overlays when reopened from report. */
+#countSessionModal.count-session-forced-open.count-modal:not([hidden]) { z-index: 12000 !important; }
+#countSessionModal.count-session-forced-open .count-modal__dialog { z-index: 12001 !important; }
