@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "20260609D-count-menu-buttons-fix";
+  const VERSION = "20260609B-session-flow-success-pass";
 
   function makeSearchEditable() {
     const search = document.querySelector("#searchInput");
