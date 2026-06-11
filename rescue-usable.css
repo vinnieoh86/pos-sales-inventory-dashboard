@@ -428,3 +428,59 @@ body[data-active-tab="ordering"] .order-table thead th {
     display: none;
   }
 }
+
+/* 2026-06-11 count session flow/layout stabilization */
+#countSetupModal[hidden],
+#countReportModal[hidden],
+#sessionHistoryModal[hidden],
+#reportCountModal[hidden],
+#finalCountReportModal[hidden] {
+  pointer-events: none !important;
+}
+#countSetupModal,
+#countSessionModal {
+  z-index: 30000 !important;
+}
+#countSessionModal .count-modal__dialog--workspace {
+  width: min(98vw, 1480px) !important;
+  max-width: 98vw !important;
+}
+@media (min-width: 1100px) {
+  #countWorkspace {
+    display: grid !important;
+    grid-template-columns: minmax(390px, 0.85fr) minmax(560px, 1.15fr) !important;
+    grid-auto-rows: auto !important;
+    gap: 0.85rem !important;
+    align-items: start !important;
+  }
+  #countWorkspace > .count-workspace__header,
+  #countWorkspace > #activeCountMeta,
+  #countWorkspace > #activeCountSyncStatus,
+  #countWorkspace > .count-session-sync {
+    grid-column: 1 / -1 !important;
+  }
+  #countWorkspace > .count-workspace__grid {
+    grid-column: 1 !important;
+    display: grid !important;
+    grid-template-columns: 1fr !important;
+    gap: 0.75rem !important;
+    align-self: start !important;
+  }
+  #countWorkspace > .table-panel {
+    grid-column: 2 !important;
+    grid-row: 4 !important;
+    margin-top: 0 !important;
+    align-self: start !important;
+    min-width: 0 !important;
+  }
+  #countWorkspace .count-stable-scroll,
+  #countWorkspace .table-wrap {
+    max-height: calc(100vh - 19rem) !important;
+    overflow: auto !important;
+  }
+}
+.count-review-filterbar select,
+.count-review-filterbar input,
+.sortable-count-head {
+  scroll-margin-top: 0 !important;
+}
