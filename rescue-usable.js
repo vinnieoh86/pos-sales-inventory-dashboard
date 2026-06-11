@@ -476,3 +476,216 @@
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();
 })();
+
+/* 20260610B: count list scroll preservation + two-column layout + hard session launcher. */
+(function () {
+  function bootHardening() {
+    if (typeof state === "undefined" || typeof els === "undefined") {
+      setTimeout(bootHardening, 60);
+      return;
+    }
+
+    function safeId(v) { try { return typeof cleanCell === "function" ? cleanCell(v || "") : String(v || "").trim(); } catch (_) { return String(v || "").trim(); } }
+    function show(msg, ms = 2200, type = "success") { try { showToast?.(msg, ms, type); } catch (_) {} }
+
+    function countScrollBox() {
+      return document.querySelector("#countEntryTable")?.closest(".table-wrap") || document.querySelector(".count-stable-scroll");
+    }
+
+    function restoreScroll(top, left, activeEl) {
+      requestAnimationFrame(() => {
+        const box = countScrollBox();
+        if (box) {
+          box.scrollTop = top || 0;
+          box.scrollLeft = left || 0;
+        }
+        try {
+          if (activeEl && document.contains(activeEl) && typeof activeEl.focus === "function") {
+            activeEl.focus({ preventScroll: true });
+          }
+        } catch (_) {}
+      });
+    }
+
+    const priorFocusCountSearch = typeof focusCountSearch === "function" ? focusCountSearch : null;
+    if (priorFocusCountSearch && !priorFocusCountSearch.__reviewSafeWrapped) {
+      focusCountSearch = function focusCountSearchReviewSafe() {
+        if (state._countReviewUiBusyUntil && Date.now() < state._countReviewUiBusyUntil) return;
+        try { return priorFocusCountSearch.apply(this, arguments); } catch (_) {}
+      };
+      focusCountSearch.__reviewSafeWrapped = true;
+    }
+
+    const priorRenderRows = typeof renderCountEntryRows === "function" ? renderCountEntryRows : null;
+    if (priorRenderRows && !priorRenderRows.__scrollSafeWrapped) {
+      renderCountEntryRows = function renderCountEntryRowsScrollSafe() {
+        const box = countScrollBox();
+        const top = box ? box.scrollTop : 0;
+        const left = box ? box.scrollLeft : 0;
+        const activeEl = document.activeElement;
+        const keep = !!(state._preserveCountReviewScrollUntil && Date.now() < state._preserveCountReviewScrollUntil)
+          || !!(activeEl && (activeEl.closest?.("#countReviewFilterBar") || activeEl.closest?.("#countEntryTable thead")));
+        const result = priorRenderRows.apply(this, arguments);
+        if (keep) restoreScroll(top, left, activeEl);
+        return result;
+      };
+      renderCountEntryRows.__scrollSafeWrapped = true;
+    }
+
+    document.addEventListener("pointerdown", (event) => {
+      if (event.target?.closest?.("#countReviewFilterBar, #countEntryTable thead")) {
+        state._countReviewUiBusyUntil = Date.now() + 1200;
+        state._preserveCountReviewScrollUntil = Date.now() + 1200;
+      }
+    }, true);
+    document.addEventListener("change", (event) => {
+      if (event.target?.closest?.("#countReviewFilterBar")) {
+        state._countReviewUiBusyUntil = Date.now() + 1200;
+        state._preserveCountReviewScrollUntil = Date.now() + 1200;
+      }
+    }, true);
+    document.addEventListener("input", (event) => {
+      if (event.target?.closest?.("#countReviewFilterBar")) {
+        state._countReviewUiBusyUntil = Date.now() + 1200;
+        state._preserveCountReviewScrollUntil = Date.now() + 1200;
+      }
+    }, true);
+
+    function closeSetupAndReports() {
+      [els.countSetupModal, els.countReportModal, els.sessionHistoryModal, document.querySelector("#reportCountModal")].forEach((modal) => {
+        if (!modal) return;
+        modal.hidden = true;
+        modal.style.display = "none";
+        modal.style.pointerEvents = "none";
+        modal.classList.remove("count-session-forced-open");
+      });
+      document.querySelectorAll(".count-modal[hidden], .modal[hidden]").forEach((modal) => { modal.style.pointerEvents = "none"; });
+    }
+
+    function hardOpenCountScreen(options = {}) {
+      if (!state.activeCountSession) return false;
+      closeSetupAndReports();
+      state._countSessionOpen = true;
+      state._countHardOpenUntil = Date.now() + Number(options.ms || 8000);
+      if (els.countSessionModal) {
+        els.countSessionModal.hidden = false;
+        els.countSessionModal.style.display = "";
+        els.countSessionModal.style.pointerEvents = "auto";
+        els.countSessionModal.style.zIndex = "40000";
+        els.countSessionModal.classList.add("count-session-forced-open");
+        const dialog = els.countSessionModal.querySelector(".count-modal__dialog");
+        if (dialog) dialog.style.pointerEvents = "auto";
+      }
+      try { renderCountsWorkspace?.({ suppressLoadingClose: true }); } catch (_) {}
+      try { renderCountEntryRows?.(false); } catch (_) {}
+      if (!options.noFocus) setTimeout(() => { try { focusCountSearch?.(); } catch (_) {} }, 80);
+      return true;
+    }
+
+    const priorStart = typeof startCountSessionFromModal === "function" ? startCountSessionFromModal : null;
+    startCountSessionFromModal = function startCountSessionFromModalHardOpen() {
+      if (state._hardStartInFlight) return;
+      state._hardStartInFlight = true;
+      try {
+        if (priorStart) priorStart.apply(this, arguments);
+        if (state.activeCountSession) {
+          state.activeCountSession.isActiveLive = true;
+          state.activeCountSession.savedAt = "";
+          state.activeCountSession.submittedAt = "";
+          state.activeCountSession.updatedAt = new Date().toISOString();
+          state.countSessions = [state.activeCountSession, ...(state.countSessions || []).filter((s) => safeId(s?.id) !== safeId(state.activeCountSession?.id))];
+          try { persistActiveCountSession?.(); persistCountSessions?.({ scheduleSync: false }); } catch (_) {}
+          hardOpenCountScreen({ ms: 10000 });
+          setTimeout(() => hardOpenCountScreen({ ms: 10000 }), 150);
+        } else {
+          show("Count did not start. Try once more after products finish loading.", 3000, "warning");
+        }
+      } finally {
+        setTimeout(() => { state._hardStartInFlight = false; }, 1000);
+      }
+    };
+
+    continueCountFromReport = async function continueCountFromReportHardOpen(event = null) {
+      event?.preventDefault?.();
+      event?.stopPropagation?.();
+      const id = safeId(state.countReportOpenId || event?.target?.dataset?.continueSession || state._continuingCountId || "");
+      let session = null;
+      try { session = id && typeof findCountSessionById === "function" ? findCountSessionById(id) : null; } catch (_) {}
+      if (!session && id) session = (state.countSessions || []).find((s) => safeId(s?.id) === id);
+      if (!session) {
+        show("Count session not found. Close Report History and open it again.", 2800, "warning");
+        return false;
+      }
+      const live = typeof markCountSessionDirty === "function"
+        ? markCountSessionDirty({ ...session, savedAt: "", submittedAt: "", isActiveLive: true, updatedAt: new Date().toISOString() })
+        : { ...session, savedAt: "", submittedAt: "", isActiveLive: true, updatedAt: new Date().toISOString() };
+      state.activeCountSession = live;
+      state.countSessions = [live, ...(state.countSessions || []).filter((s) => safeId(s?.id) !== safeId(live.id))];
+      state._continuingCountId = live.id;
+      state._countSessionOpen = true;
+      state.countQtyBuffer = "0";
+      state.selectedCountItemCode = "";
+      state.countStage = "search";
+      try { persistActiveCountSession?.(); persistCountSessions?.({ scheduleSync: false }); } catch (_) {}
+      hardOpenCountScreen({ ms: 12000 });
+      setTimeout(() => hardOpenCountScreen({ ms: 12000 }), 200);
+      show(`Continuing count: ${typeof countSessionLabel === "function" ? countSessionLabel(live) : live.id}`, 2200, "success");
+      return true;
+    };
+
+    const priorSave = typeof saveCountSession === "function" ? saveCountSession : null;
+    saveCountSession = async function saveCountSessionHardClose() {
+      if (!state.activeCountSession) return;
+      try { await priorSave?.apply(this, arguments); }
+      finally {
+        state._countSessionOpen = false;
+        state._continuingCountId = "";
+        if (els.countSessionModal) {
+          els.countSessionModal.hidden = true;
+          els.countSessionModal.style.display = "none";
+          els.countSessionModal.style.pointerEvents = "none";
+        }
+        closeSetupAndReports();
+        try { renderCountsWorkspace?.(); } catch (_) {}
+      }
+    };
+
+    // Rebind Start/Continue/Save in capture phase. Earlier handlers call these globals; this also catches missed clicks.
+    function hardBind(id, fn) {
+      const node = document.querySelector(id);
+      if (!node || node.dataset.hardSessionBound === "1") return;
+      node.dataset.hardSessionBound = "1";
+      node.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        fn(event);
+      }, true);
+    }
+    hardBind("#countStartButton", () => startCountSessionFromModal());
+    hardBind("#countContinueButton", (event) => { void continueCountFromReport(event); });
+    hardBind("#countSaveSessionButton", () => { void saveCountSession(); });
+
+    const style = document.createElement("style");
+    style.textContent = `
+      /* two-column count workspace on laptop/desktop */
+      @media (min-width: 1020px) {
+        #countSessionModal .count-modal__dialog--workspace { width: min(98vw, 1780px) !important; max-width: 1780px !important; }
+        #countWorkspace.count-workspace { display: grid !important; grid-template-columns: minmax(360px, .85fr) minmax(640px, 1.15fr) !important; gap: .8rem !important; align-items: start !important; }
+        #countWorkspace .count-workspace__header,
+        #countWorkspace #activeCountMeta,
+        #countWorkspace #activeCountSyncStatus { grid-column: 1 / -1 !important; }
+        #countWorkspace .count-workspace__grid { grid-column: 1 !important; display: grid !important; grid-template-columns: 1fr !important; gap: .6rem !important; position: sticky !important; top: .35rem !important; align-self: start !important; }
+        #countWorkspace > section.panel.table-panel { grid-column: 2 !important; margin: 0 !important; min-width: 0 !important; }
+        #countWorkspace .count-panel--keypad { max-width: none !important; }
+        #countWorkspace .count-stable-scroll { max-height: calc(100vh - 16rem) !important; overflow: auto !important; }
+      }
+      #countSessionModal { z-index: 40000 !important; }
+      #countSetupModal[hidden], #countReportModal[hidden], #sessionHistoryModal[hidden], #reportCountModal[hidden] { display: none !important; pointer-events: none !important; }
+      #countReviewFilterBar select:focus, #countReviewFilterBar input:focus { scroll-margin-top: 0 !important; }
+    `;
+    document.head.appendChild(style);
+  }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", bootHardening);
+  else bootHardening();
+})();
