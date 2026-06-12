@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "20260612-sessionfix3";
+  const VERSION = "20260612-pass5-keypad99";
 
   function makeSearchEditable() {
     const search = document.querySelector("#searchInput");

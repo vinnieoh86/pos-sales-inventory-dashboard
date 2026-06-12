@@ -503,6 +503,7 @@ const els = {
   countScopeSearchInput: document.querySelector("#countScopeSearchInput"),
   countSelectedItem: document.querySelector("#countSelectedItem"),
   countQuantityDisplay: document.querySelector("#countQuantityDisplay"),
+  countKeypadPanel: document.querySelector("#countSessionModal .count-panel--keypad"),
   countKeyButtons: document.querySelectorAll("[data-count-key]"),
   countSetupModal: document.querySelector("#countSetupModal"),
   countDateInput: document.querySelector("#countDateInput"),
@@ -1020,6 +1021,7 @@ els.countSearchInput?.addEventListener("click", () => {
     state.selectedCountItemCode = "";
     state.countQtyBuffer = "0";
     state.pendingDuplicateMode = null;
+  closeCountKeypadPanel();
     els.countSearchInput.value = "";
     hideCountDropdown();
     renderSelectedCountItem();
@@ -4618,6 +4620,48 @@ function clearContinuedCountLock() {
   stopContinueCountKeepOpenGuard();
 }
 
+
+function isCompactCountKeypadMode() {
+  return !!(window.matchMedia && (window.matchMedia("(max-width: 1100px)").matches || window.matchMedia("(pointer: coarse)").matches));
+}
+
+function openCountKeypadPanel() {
+  if (!els.countKeypadPanel) return;
+  els.countKeypadPanel.classList.add("keypad-open");
+  els.countKeypadPanel.removeAttribute("aria-hidden");
+  if (isCompactCountKeypadMode()) {
+    setTimeout(() => {
+      try { els.countKeypadPanel.scrollIntoView({ block: "nearest", behavior: "smooth" }); } catch (_) {}
+    }, 0);
+  }
+}
+
+function closeCountKeypadPanel() {
+  if (!els.countKeypadPanel) return;
+  els.countKeypadPanel.classList.remove("keypad-open");
+  if (isCompactCountKeypadMode()) els.countKeypadPanel.setAttribute("aria-hidden", "true");
+  else els.countKeypadPanel.removeAttribute("aria-hidden");
+}
+
+function syncCountKeypadVisibility() {
+  if (!els.countKeypadPanel) return;
+  if (state.activeCountSession && state._countSessionOpen && state.countStage === "qty" && currentSelectedCountItem()) {
+    openCountKeypadPanel();
+  } else if (isCompactCountKeypadMode()) {
+    closeCountKeypadPanel();
+  } else {
+    els.countKeypadPanel.classList.remove("keypad-open");
+    els.countKeypadPanel.removeAttribute("aria-hidden");
+  }
+}
+
+function enforceCountQtyLimit(nextValue) {
+  const numeric = Number(nextValue || 0);
+  if (!Number.isFinite(numeric)) return { ok: false, value: "0" };
+  if (numeric > 99) return { ok: false, value: "99" };
+  return { ok: true, value: String(nextValue) };
+}
+
 function looksLikeBarcodeValue(value) {
   const digits = cleanCell(value).replace(/\D/g, "");
   return digits.length >= 8 && digits.length <= 18;
@@ -4693,7 +4737,10 @@ function handleCountKey(key) {
   } else if (key === ".") {
     if (!state.countQtyBuffer.includes(".")) state.countQtyBuffer += ".";
   } else {
-    state.countQtyBuffer = state.countQtyBuffer === "0" ? key : `${state.countQtyBuffer}${key}`;
+    const next = state.countQtyBuffer === "0" ? key : `${state.countQtyBuffer}${key}`;
+    const limited = enforceCountQtyLimit(next);
+    state.countQtyBuffer = limited.ok ? limited.value : "99";
+    if (!limited.ok) showToast("Qty limit is 99 per entry. Use multiple entries only if you intentionally need more.", 2600, "warning");
   }
   renderCountQuantity();
 }
@@ -4903,6 +4950,7 @@ function handleCountLookup() {
   state._replaceCountInputOnNextKey = false;
   renderSelectedCountItem();
   renderCountQuantity();
+  openCountKeypadPanel();
   // Normal count flow: after a successful scan, stay in QTY entry mode.
   // Operators can use the keypad/keyboard for qty, then Done/Enter returns to scan.
   // If the scan was wrong, clicking the barcode box intentionally switches back
@@ -4920,6 +4968,7 @@ function clearCountLookup() {
   state.pendingDuplicateMode = null;
   renderCountQuantity();
   renderSelectedCountItem();
+  syncCountKeypadVisibility();
   focusCountSearch();
 }
 
@@ -4947,6 +4996,7 @@ function closeDuplicateCountModal() {
   state.countQtyBuffer = "0";
   renderSelectedCountItem();
   renderCountQuantity();
+  closeCountKeypadPanel();
   focusCountSearch();
 }
 
@@ -4961,6 +5011,13 @@ function commitCountEntry(item, qty, mode, options = {}) {
   const countedQty = mode === "add"
     ? Math.max(0, Number(existing?.countedQty || 0) + qty)
     : qty;
+  if (countedQty > 99) {
+    state.countQtyBuffer = "99";
+    renderCountQuantity();
+    openCountKeypadPanel();
+    showToast("Qty limit is 99. This entry would exceed 99.", 3000, "warning");
+    return;
+  }
   const entryId = makeCountIdentifier("entry");
   session.entries.push({
     entryId,
@@ -5018,6 +5075,7 @@ function commitCountEntry(item, qty, mode, options = {}) {
     ));
   }
   renderCountAutoControls();
+  if (!options.autoPlus) closeCountKeypadPanel();
 }
 
 function resolveDuplicateCount(mode) {
@@ -5045,7 +5103,13 @@ function applyCountEntry() {
     showToast("Search and select an item first.", 3000, "warning");
     return;
   }
-  const qty = Math.max(0, Number(state.countQtyBuffer || "0"));
+  const qty = Math.max(0, Math.min(99, Number(state.countQtyBuffer || "0")));
+  if (Number(state.countQtyBuffer || "0") > 99) {
+    state.countQtyBuffer = "99";
+    renderCountQuantity();
+    showToast("Qty limit is 99 per entry.", 2400, "warning");
+    return;
+  }
   const existing = state.activeCountSession.entries?.filter((entry) => codeKey(entry.code) === codeKey(item.code)).at(-1);
   if (existing) {
     // In +1 Auto mode, repeated scans are continuous additions.
@@ -5193,6 +5257,7 @@ function selectCountDropdownItem(code) {
   els.countSearchInput?.blur();
   renderSelectedCountItem();
   renderCountQuantity();
+  openCountKeypadPanel();
   if (els.countSearchInput) els.countSearchInput.blur();
 }
 
