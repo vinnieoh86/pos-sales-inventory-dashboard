@@ -428,3 +428,30 @@ body[data-active-tab="ordering"] .order-table thead th {
     display: none;
   }
 }
+
+/* ===========================================================================
+   V2.0 sessionfix3 — count workspace must be a clear, opaque full-screen
+   takeover that pops in FRONT of the nav, dashboard, and landing cards.
+   Loads last so it wins the cascade. Tier (low -> high):
+   workspace 9000  <  reports/history 10000/10010  <  setup/confirm 11000  <  toast 12000
+   =========================================================================== */
+#countSessionModal.count-modal:not([hidden]) {
+  position: fixed !important;
+  inset: 0 !important;
+  z-index: 9000 !important;          /* above command-bar (z 30) and all page chrome */
+  display: flex !important;
+  align-items: flex-start !important; /* start at top so search + keypad are reachable */
+  justify-content: center !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  padding: 0.75rem !important;
+  background: #eef2ef !important;     /* OPAQUE — fully covers the menus behind it */
+  -webkit-overflow-scrolling: touch;
+}
+/* Keep the filter (setup) modal clearly on top when starting a new count */
+#countSetupModal.count-modal:not([hidden]) {
+  position: fixed !important;
+  inset: 0 !important;
+  z-index: 11000 !important;
+  background: rgba(15, 23, 20, 0.55) !important;
+}

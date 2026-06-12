@@ -702,9 +702,9 @@ enforceCompactProductColumns();
     state.columnOrder = placeColumnAfter(state.columnOrder, "product", "code");
     state.columnOrder = placeColumnAfter(state.columnOrder, "plu", "product");
     state.columnOrder = placeColumnAfter(state.columnOrder, "rule", "plu");
-    localStorage.setItem("posDashboardVisibleColumns:v4", JSON.stringify(state.visibleColumns));
-    localStorage.setItem("posDashboardColumnOrder:v3", JSON.stringify(state.columnOrder));
-    localStorage.setItem(flag, "done");
+    safeLocalStorageSet("posDashboardVisibleColumns:v4", JSON.stringify(state.visibleColumns));
+    safeLocalStorageSet("posDashboardColumnOrder:v3", JSON.stringify(state.columnOrder));
+    safeLocalStorageSet(flag, "done");
   } catch (_) {}
 })();
 
@@ -731,7 +731,7 @@ function saveActiveTabSearch() {
   const tab = activeTabName();
   if (!["dashboard", "inventory", "ordering"].includes(tab)) return;
   state.tabSearches[tab] = els.searchInput?.value || "";
-  localStorage.setItem("posDashboardTabSearches:v1", JSON.stringify(state.tabSearches));
+  safeLocalStorageSet("posDashboardTabSearches:v1", JSON.stringify(state.tabSearches));
 }
 
 els.fileInput.addEventListener("change", (event) => loadFiles(event.target.files));
@@ -1115,7 +1115,7 @@ document.querySelector("#logoutButton")?.addEventListener("click", () => lockApp
 document.querySelector("#lockLogoutButton")?.addEventListener("click", () => lockApp("Logged out."));
 document.querySelector("#metricsHoverZone .metrics-peek-bar")?.addEventListener("click", () => {
   state.metricsPinned = !state.metricsPinned;
-  localStorage.setItem("posDashboardMetricsPinned:v1", JSON.stringify(state.metricsPinned));
+  safeLocalStorageSet("posDashboardMetricsPinned:v1", JSON.stringify(state.metricsPinned));
   updateMetricsSummaryMode();
 });
 els.priceCheckSearchInput?.addEventListener("keydown", (event) => {
@@ -1263,7 +1263,7 @@ document.querySelector("#exportAdjustExcelButton")?.addEventListener("click", ()
 document.querySelector("#clearAdjustLogButton")?.addEventListener("click", () => {
   if (!confirm("Clear the entire stock adjustment log?")) return;
   state.adjustmentLog = [];
-  localStorage.setItem("posDashboardAdjustLog:v1", "[]");
+  safeLocalStorageSet("posDashboardAdjustLog:v1", "[]");
   renderAdjustLog();
   showToast("Adjustment log cleared.", 2400, "warning");
 });
@@ -1783,7 +1783,7 @@ function commitReorderFieldInput(input, options = {}) {
     input.value = String(state.reorderOverrides[codeId][field]);
   }
   input.dataset.lastCommittedValue = val === "" ? "" : input.value;
-  localStorage.setItem("posDashboardReorderOverrides:v1", JSON.stringify(state.reorderOverrides));
+  safeLocalStorageSet("posDashboardReorderOverrides:v1", JSON.stringify(state.reorderOverrides));
   scheduleSharedProductSync(codeId);
   const fastPath = !(
     (els.inventoryQuickFilter?.value || "").includes("needs") ||
@@ -2013,7 +2013,7 @@ document.addEventListener("click", (event) => {
         delete state.reorderOverrides[codeId][field];
         if (!Object.keys(state.reorderOverrides[codeId]).length) delete state.reorderOverrides[codeId];
       }
-      localStorage.setItem("posDashboardReorderOverrides:v1", JSON.stringify(state.reorderOverrides));
+      safeLocalStorageSet("posDashboardReorderOverrides:v1", JSON.stringify(state.reorderOverrides));
       scheduleSharedProductSync(codeId);
     }
     showToast(`${field === "all" ? "Min / Max" : field === "min" ? "Min" : "Max"} restored to auto for ${code}`);
@@ -2326,10 +2326,10 @@ function addExcelIndex(item) {
 }
 
 function saveMultiBarcodeState() {
-  localStorage.setItem("posDashboardMultiBarcodeMap:v1", JSON.stringify(state.multiBarcodeMap || {}));
-  localStorage.setItem("posDashboardMultiBarcodeMasters:v1", JSON.stringify(state.multiBarcodeMasters || []));
-  localStorage.setItem("posDashboardMultiBarcodeFileName:v1", state.multiBarcodeFileName || "");
-  localStorage.setItem("posDashboardManualMultiBarcodes:v1", JSON.stringify(state.manualMultiBarcodes || {}));
+  safeLocalStorageSet("posDashboardMultiBarcodeMap:v1", JSON.stringify(state.multiBarcodeMap || {}));
+  safeLocalStorageSet("posDashboardMultiBarcodeMasters:v1", JSON.stringify(state.multiBarcodeMasters || []));
+  safeLocalStorageSet("posDashboardMultiBarcodeFileName:v1", state.multiBarcodeFileName || "");
+  safeLocalStorageSet("posDashboardManualMultiBarcodes:v1", JSON.stringify(state.manualMultiBarcodes || {}));
 }
 
 function multiAliasesForCode(code) {
@@ -2371,7 +2371,7 @@ ensureBuiltinMultiBarcodesLoaded();
 
 function saveItemMeta() {
   try {
-    localStorage.setItem("posDashboardItemMetaMeta:v1", JSON.stringify({
+    safeLocalStorageSet("posDashboardItemMetaMeta:v1", JSON.stringify({
       savedAt: new Date().toISOString(),
       items: Object.keys(state.itemMeta || {}).length,
     }));
@@ -3729,7 +3729,7 @@ function removeSubmittedVendor(vendorName, options = {}) {
 }
 
 function saveDismissedOrderVendors() {
-  localStorage.setItem("posDashboardDismissedOrderVendors:v1", JSON.stringify(state.orderDismissedVendors || []));
+  safeLocalStorageSet("posDashboardDismissedOrderVendors:v1", JSON.stringify(state.orderDismissedVendors || []));
 }
 
 function dismissOrderVendor(vendorName) {
@@ -3938,7 +3938,7 @@ function countDeviceId() {
   let id = localStorage.getItem(COUNT_DEVICE_ID_KEY) || "";
   if (!id) {
     id = makeCountIdentifier("device");
-    localStorage.setItem(COUNT_DEVICE_ID_KEY, id);
+    safeLocalStorageSet(COUNT_DEVICE_ID_KEY, id);
   }
   return id;
 }
@@ -4007,6 +4007,36 @@ function filterUndoneCountEntries(entries = [], session = {}) {
   return entries.filter((entry) => !undone.has(cleanCell(entry.entryId)));
 }
 
+
+// SAFETY: localStorage quota should never break the count UI.
+// If the browser storage is full, keep the app running and compact old count history.
+function safeLocalStorageSet(key, value) {
+  try {
+    localStorage.setItem(key, value);
+    return true;
+  } catch (error) {
+    console.warn('[CountStorage] localStorage set failed', key, error);
+    if (String(key) === 'posDashboardCountSessions:v1') {
+      try {
+        const sessions = JSON.parse(value || '[]');
+        const compact = (Array.isArray(sessions) ? sessions : [])
+          .sort((a, b) => new Date(b.updatedAt || b.savedAt || b.createdAt || 0) - new Date(a.updatedAt || a.savedAt || a.createdAt || 0))
+          .slice(0, 40)
+          .map((session) => {
+            if (session && !session.isActiveLive && (session.savedAt || session.submittedAt) && Array.isArray(session.entries) && session.entries.length > 250) {
+              return { ...session, entries: session.entries.slice(-250), storageCompacted: true };
+            }
+            return session;
+          });
+        localStorage.setItem(key, JSON.stringify(compact));
+        return true;
+      } catch (secondError) {
+        console.warn('[CountStorage] compact retry failed', secondError);
+      }
+    }
+    return false;
+  }
+}
 function normalizeCountSession(session = {}, statusFallback = "pending") {
   if (!session?.id) return session;
   const undoEntryIds = [...countSessionUndoIds(session)];
@@ -4115,8 +4145,8 @@ function canonicalCountSessions(sessions = []) {
 
 function persistCountSessions(options = {}) {
   state.countSessions = canonicalCountSessions(state.countSessions);
-  localStorage.setItem("posDashboardCountSessions:v1", JSON.stringify(state.countSessions));
-  localStorage.setItem("posDashboardActiveCountSession:v1", JSON.stringify(state.activeCountSession));
+  safeLocalStorageSet("posDashboardCountSessions:v1", JSON.stringify(state.countSessions));
+  safeLocalStorageSet("posDashboardActiveCountSession:v1", JSON.stringify(state.activeCountSession));
   if (options.scheduleSync !== false) scheduleSharedCountSessionsSync();
 }
 
@@ -4151,7 +4181,7 @@ function handleScanModeLookup(value, options = {}) {
 }
 
 function persistDeletedCountSessionIds() {
-  localStorage.setItem("posDashboardDeletedCountSessionIds:v1", JSON.stringify([...state._deletedCountSessionIds].filter(Boolean).slice(-500)));
+  safeLocalStorageSet("posDashboardDeletedCountSessionIds:v1", JSON.stringify([...state._deletedCountSessionIds].filter(Boolean).slice(-500)));
 }
 
 function countSessionIsDeleted(sessionId) {
@@ -4179,8 +4209,8 @@ function pruneDeletedCountSessions(options = {}) {
     state.pendingDuplicateMode = null;
   }
   if (persist) {
-    localStorage.setItem("posDashboardCountSessions:v1", JSON.stringify(state.countSessions));
-    localStorage.setItem("posDashboardActiveCountSession:v1", JSON.stringify(state.activeCountSession));
+    safeLocalStorageSet("posDashboardCountSessions:v1", JSON.stringify(state.countSessions));
+    safeLocalStorageSet("posDashboardActiveCountSession:v1", JSON.stringify(state.activeCountSession));
   }
 }
 
@@ -4216,7 +4246,7 @@ function archiveCountSessionEntriesToAdjustmentLog(session) {
     });
     added++;
   });
-  if (added) localStorage.setItem("posDashboardAdjustLog:v1", JSON.stringify(state.adjustmentLog));
+  if (added) safeLocalStorageSet("posDashboardAdjustLog:v1", JSON.stringify(state.adjustmentLog));
   return added;
 }
 
@@ -4234,8 +4264,8 @@ function persistActiveCountSession() {
     ];
   }
   // The local journal is immediate; only the remote transfer is debounced.
-  localStorage.setItem("posDashboardActiveCountSession:v1", JSON.stringify(state.activeCountSession));
-  localStorage.setItem("posDashboardCountSessions:v1", JSON.stringify(state.countSessions));
+  safeLocalStorageSet("posDashboardActiveCountSession:v1", JSON.stringify(state.activeCountSession));
+  safeLocalStorageSet("posDashboardCountSessions:v1", JSON.stringify(state.countSessions));
   renderActiveCountSyncStatus();
   scheduleSharedCountSessionsSync();
 }
@@ -4505,7 +4535,7 @@ async function saveCountSession() {
   state._filteredCountCache = null;
   state._countCandidateStamp = -1;
   [...latestByCode.keys()].forEach((key) => state._inventoryRowIndex.delete(key));
-  localStorage.setItem("posDashboardAdjustLog:v1", JSON.stringify(state.adjustmentLog));
+  safeLocalStorageSet("posDashboardAdjustLog:v1", JSON.stringify(state.adjustmentLog));
   persistCountSessions();
   renderCountsWorkspace();
   // Sync in background. Delay product/inventory fact sync slightly so the UI is not blocked.
@@ -6653,7 +6683,7 @@ function renderOrderColumnPicker() {
   panel.querySelectorAll("[data-order-col]").forEach((cb) => {
     cb.addEventListener("change", () => {
       state.orderVisibleColumns[cb.dataset.orderCol] = cb.checked;
-      localStorage.setItem("posOrderColumns:v1", JSON.stringify(state.orderVisibleColumns));
+      safeLocalStorageSet("posOrderColumns:v1", JSON.stringify(state.orderVisibleColumns));
       renderOrders();
       document.querySelector("#orderColumnPicker")?.setAttribute("open", "open");
     });
@@ -6666,7 +6696,7 @@ function moveOrderColumn(from, to) {
   order.splice(order.indexOf(to), 0, from);
   state.orderColumnOrder = order;
   state.orderArrangeSource = "";
-  localStorage.setItem("posOrderColumnOrder:v1", JSON.stringify(state.orderColumnOrder));
+  safeLocalStorageSet("posOrderColumnOrder:v1", JSON.stringify(state.orderColumnOrder));
   renderOrders();
 }
 
@@ -6679,7 +6709,7 @@ function moveOrderColumnRelative(key, direction = 1) {
   const [column] = order.splice(index, 1);
   order.splice(nextIndex, 0, column);
   state.orderColumnOrder = order;
-  localStorage.setItem("posOrderColumnOrder:v1", JSON.stringify(state.orderColumnOrder));
+  safeLocalStorageSet("posOrderColumnOrder:v1", JSON.stringify(state.orderColumnOrder));
   renderOrders();
 }
 
@@ -7103,7 +7133,7 @@ function autoFitInventoryColumn(key) {
     .reduce((longest, text) => (text.trim().length > longest.length ? text.trim() : longest), "");
   const width = Math.max(48, Math.min(520, Math.ceil(sampleText.length * 7.4) + 34));
   state.columnWidths[key] = width;
-  localStorage.setItem("posDashboardColumnWidths:v2", JSON.stringify(state.columnWidths));
+  safeLocalStorageSet("posDashboardColumnWidths:v2", JSON.stringify(state.columnWidths));
   applyInventoryColumnWidths();
 }
 
@@ -7123,7 +7153,7 @@ function startInventoryColumnResize(event, key) {
     applyInventoryColumnWidths();
   };
   const onUp = () => {
-    localStorage.setItem("posDashboardColumnWidths:v2", JSON.stringify(state.columnWidths));
+    safeLocalStorageSet("posDashboardColumnWidths:v2", JSON.stringify(state.columnWidths));
     document.removeEventListener("mousemove", onMove);
     document.removeEventListener("mouseup", onUp);
     document.removeEventListener("pointermove", onMove);
@@ -7614,7 +7644,7 @@ function moveColumn(from, to) {
   const order = state.columnOrder.filter((key) => key !== from);
   order.splice(order.indexOf(to), 0, from);
   state.columnOrder = order;
-  localStorage.setItem("posDashboardColumnOrder:v3", JSON.stringify(state.columnOrder));
+  safeLocalStorageSet("posDashboardColumnOrder:v3", JSON.stringify(state.columnOrder));
   renderInventory();
 }
 
@@ -7628,7 +7658,7 @@ function moveDetailField(from, to) {
   const order = (state.detailOrder || defaultOrder).filter((key) => key !== from);
   order.splice(order.indexOf(to), 0, from);
   state.detailOrder = order;
-  localStorage.setItem("posDashboardDetailOrder:v1", JSON.stringify(order));
+  safeLocalStorageSet("posDashboardDetailOrder:v1", JSON.stringify(order));
 }
 
 function renderInventorySummary(rows) {
@@ -8560,7 +8590,7 @@ function showDetail(item, options = {}) {
     input.addEventListener("change", () => {
       const visible = new Set([...els.detailDrawer.querySelectorAll("[data-detail-filter]:checked")].map((item) => item.dataset.detailFilter));
       state.detailFilters = [...visible];
-      localStorage.setItem("posDashboardDetailFilters:v1", JSON.stringify(state.detailFilters));
+      safeLocalStorageSet("posDashboardDetailFilters:v1", JSON.stringify(state.detailFilters));
       els.detailDrawer.querySelectorAll("[data-detail-key]").forEach((node) => {
         const show = visible.has(node.dataset.detailKey);
         node.hidden = !show;
@@ -8916,7 +8946,7 @@ function addAttributeRule() {
   if (!value || !aliases.length) return;
   const id = `${type}:${value}`;
   state.attributeRules = state.attributeRules.filter((rule) => rule.id !== id).concat({ id, type, value, aliases });
-  localStorage.setItem("posDashboardAttributeRules:v1", JSON.stringify(state.attributeRules));
+  safeLocalStorageSet("posDashboardAttributeRules:v1", JSON.stringify(state.attributeRules));
   els.attributeRuleValue.value = "";
   els.attributeRuleAliases.value = "";
   render();
@@ -8924,7 +8954,7 @@ function addAttributeRule() {
 
 function removeAttributeRule(id) {
   state.attributeRules = state.attributeRules.filter((rule) => rule.id !== id);
-  localStorage.setItem("posDashboardAttributeRules:v1", JSON.stringify(state.attributeRules));
+  safeLocalStorageSet("posDashboardAttributeRules:v1", JSON.stringify(state.attributeRules));
   render();
 }
 
@@ -8951,7 +8981,7 @@ function addParentRule() {
   const aliases = els.parentRuleAliases.value.split(",").map((item) => cleanCell(item)).filter(Boolean);
   if (!parent || !aliases.length) return;
   state.parentRules = state.parentRules.filter((rule) => rule.parent !== parent).concat({ parent, aliases });
-  localStorage.setItem("posDashboardParentRules:v1", JSON.stringify(state.parentRules));
+  safeLocalStorageSet("posDashboardParentRules:v1", JSON.stringify(state.parentRules));
   els.parentRuleName.value = "";
   els.parentRuleAliases.value = "";
   render();
@@ -8959,7 +8989,7 @@ function addParentRule() {
 
 function removeParentRule(parent) {
   state.parentRules = state.parentRules.filter((rule) => rule.parent !== parent);
-  localStorage.setItem("posDashboardParentRules:v1", JSON.stringify(state.parentRules));
+  safeLocalStorageSet("posDashboardParentRules:v1", JSON.stringify(state.parentRules));
   render();
 }
 
@@ -9028,7 +9058,7 @@ function renderColumnPicker() {
   els.columnPickerPanel.querySelectorAll("[data-column-toggle]").forEach((input) => {
     input.addEventListener("change", () => {
       state.visibleColumns[input.dataset.columnToggle] = input.checked;
-      localStorage.setItem("posDashboardVisibleColumns:v4", JSON.stringify(state.visibleColumns));
+      safeLocalStorageSet("posDashboardVisibleColumns:v4", JSON.stringify(state.visibleColumns));
       applyColumnVisibility();
     });
   });
@@ -9805,7 +9835,7 @@ function coverageSummary() {
 }
 
 function saveUploadLogs() {
-  localStorage.setItem("posDashboardUploadLogs:v1", JSON.stringify((state.uploadLogs || []).slice(0, 5000)));
+  safeLocalStorageSet("posDashboardUploadLogs:v1", JSON.stringify((state.uploadLogs || []).slice(0, 5000)));
 }
 
 function logUploadedFile({ filename, type, status }) {
@@ -10105,7 +10135,7 @@ function renderMultiBarcodes() {
 
 function resetUiCriteriaOnStartup() {
   state.tabSearches = { dashboard: "", inventory: "", ordering: "" };
-  localStorage.setItem("posDashboardTabSearches:v1", JSON.stringify(state.tabSearches));
+  safeLocalStorageSet("posDashboardTabSearches:v1", JSON.stringify(state.tabSearches));
   if (els.searchInput) els.searchInput.value = "";
   if (els.parentsSearch) els.parentsSearch.value = "";
   if (els.departmentFilter) els.departmentFilter.value = "";
@@ -10225,7 +10255,7 @@ async function savePersistedState() {
     poBackorderCounts: state.poBackorderCounts || {},
   };
   try {
-    localStorage.setItem(LOCAL_SNAPSHOT_KEY, JSON.stringify({
+    safeLocalStorageSet(LOCAL_SNAPSHOT_KEY, JSON.stringify({
       savedAt: new Date().toISOString(),
       salesRows: payload.rawSales.length,
       inventoryRows: payload.inventoryRows.length,
@@ -10639,7 +10669,7 @@ function applySharedVendorRuleRows(rows = []) {
   state.vendorRules = [...mergedByVendor.values()]
     .filter((rule) => rule.vendor)
     .sort((a, b) => compareDisplayValue(a.vendor, b.vendor));
-  localStorage.setItem("posDashboardVendorRules:v1", JSON.stringify(state.vendorRules));
+  safeLocalStorageSet("posDashboardVendorRules:v1", JSON.stringify(state.vendorRules));
   bumpDataStamp();
   if (!scanModeIsActive()) {
     renderVendorRules();
@@ -10837,7 +10867,7 @@ function applySharedProductRows(rows) {
   state.latestInventory = mergedInventory;
   saveItemMeta();
   state.reorderOverrides = nextOverrides;
-  localStorage.setItem("posDashboardReorderOverrides:v1", JSON.stringify(state.reorderOverrides));
+  safeLocalStorageSet("posDashboardReorderOverrides:v1", JSON.stringify(state.reorderOverrides));
   state.inventories.set(snapshotDate, [...mergedInventory.values()]);
   rebuildExcelIndexes();
   bumpDataStamp();
@@ -10921,7 +10951,7 @@ function applySharedProductMetaRowsLight(rows = []) {
   if (!changedCodes.size) return [];
   state.reorderOverrides = nextOverrides;
   try {
-    localStorage.setItem("posDashboardReorderOverrides:v1", JSON.stringify(state.reorderOverrides));
+    safeLocalStorageSet("posDashboardReorderOverrides:v1", JSON.stringify(state.reorderOverrides));
   } catch (_) {}
   saveItemMeta();
   refreshInventorySnapshotFromLatestInventory();
@@ -11476,7 +11506,7 @@ async function restoreSharedDataFromSupabase(options = {}) {
     state.itemMeta = nextItemMeta;
     saveItemMeta();
     state.reorderOverrides = nextOverrides;
-    localStorage.setItem("posDashboardReorderOverrides:v1", JSON.stringify(state.reorderOverrides));
+    safeLocalStorageSet("posDashboardReorderOverrides:v1", JSON.stringify(state.reorderOverrides));
     rebuildExcelIndexes();
 
     const inventoryRows = mergedProductRows.map(hydrateInventoryFromSupabase).filter((row) => row.code || row.product);
@@ -11887,7 +11917,7 @@ function restorePreviousCount(sessionId) {
   markCountSessionDirty(session);
   Object.keys(session.preCountSnapshot || {}).forEach((code) => state._localProductMetaEdits.set(codeKey(code), Date.now()));
   persistCountSessions();
-  localStorage.setItem("posDashboardAdjustLog:v1", JSON.stringify(state.adjustmentLog));
+  safeLocalStorageSet("posDashboardAdjustLog:v1", JSON.stringify(state.adjustmentLog));
   bumpDataStamp();
   renderCountSessionRows();
   renderCountsWorkspace();
@@ -11946,7 +11976,7 @@ async function submitAndApplyCount() {
       reason: entry ? `Physical count: ${countSessionLabel(session)}` : `NULL -> 0: ${countSessionLabel(session)}`,
     });
   });
-  localStorage.setItem("posDashboardAdjustLog:v1", JSON.stringify(state.adjustmentLog));
+  safeLocalStorageSet("posDashboardAdjustLog:v1", JSON.stringify(state.adjustmentLog));
   persistCountSessions();
   bumpDataStamp();
   closeCountReport();
@@ -12018,7 +12048,7 @@ async function applyZeroNegatives() {
       reason: "ZERO NEGATIVES",
     });
   });
-  localStorage.setItem("posDashboardAdjustLog:v1", JSON.stringify(state.adjustmentLog));
+  safeLocalStorageSet("posDashboardAdjustLog:v1", JSON.stringify(state.adjustmentLog));
   bumpDataStamp();
   render();
   renderAdjustLog();
@@ -12120,7 +12150,7 @@ function finalizeStockAdjust(reason) {
     qtyAfter: after,
     reason,
   });
-  localStorage.setItem("posDashboardAdjustLog:v1", JSON.stringify(state.adjustmentLog));
+  safeLocalStorageSet("posDashboardAdjustLog:v1", JSON.stringify(state.adjustmentLog));
   state._pinnedAdjustCode = item.code;
   closeStockAdjustModal();
   patchVisibleStockCell(item.code, after);
@@ -12455,7 +12485,7 @@ async function exportFinalCountReportExcel() {
 
 // -- Vendor Rules (Vendors tab) ----------------------------------------------
 function persistVendorRules() {
-  localStorage.setItem("posDashboardVendorRules:v1", JSON.stringify(state.vendorRules));
+  safeLocalStorageSet("posDashboardVendorRules:v1", JSON.stringify(state.vendorRules));
   bumpDataStamp();
   queueActiveTabRender();
   scheduleSharedVendorRulesSync();
@@ -12895,13 +12925,13 @@ function loadPendingOrders() {
   return JSON.parse(localStorage.getItem("posPendingOrders:v1") || "[]");
 }
 function savePendingOrders() {
-  localStorage.setItem("posPendingOrders:v1", JSON.stringify(state.pendingOrders));
+  safeLocalStorageSet("posPendingOrders:v1", JSON.stringify(state.pendingOrders));
 }
 if (!state.pendingOrders) state.pendingOrders = loadPendingOrders();
 
 function savePoBackorderCounts() {
   state.poBackorderCounts = state.poBackorderCounts || {};
-  localStorage.setItem("posDashboardPoBackorderCounts:v1", JSON.stringify(state.poBackorderCounts));
+  safeLocalStorageSet("posDashboardPoBackorderCounts:v1", JSON.stringify(state.poBackorderCounts));
 }
 
 function pendingVendorNames() {
@@ -13086,7 +13116,7 @@ function submitVendorPo(vendorName, options = {}) {
     qtyAfter: 0,
     reason: currency.format(totalCost) + " total",
   });
-  localStorage.setItem("posDashboardAdjustLog:v1", JSON.stringify(state.adjustmentLog));
+  safeLocalStorageSet("posDashboardAdjustLog:v1", JSON.stringify(state.adjustmentLog));
   if (options.email !== false) {
     emailVendorPo(vendorName, { items, silent: options.silentEmail, poNumber });
   }
@@ -13449,7 +13479,7 @@ function generateFinalCountExport(session, candidates, latestByCode, snapshot) {
     ? "WARNING: unconfirmed shared-sync entries are included."
     : "";
   state.finalCountReports.unshift({ sessionId: session.id, label: countSessionLabel(session), date: dateStr, submittedAt: new Date().toISOString(), entries, syncWarning });
-  localStorage.setItem("posFinalCountReports:v1", JSON.stringify(state.finalCountReports.slice(0,30)));
+  safeLocalStorageSet("posFinalCountReports:v1", JSON.stringify(state.finalCountReports.slice(0,30)));
   // Offer immediate download
   setTimeout(() => {
     if (confirm("Count submitted! Download the final count export for your POS import?\n\nColumns: Code, QTY (ready for POS import)")) {
@@ -13529,7 +13559,7 @@ function loadUsers() {
 function saveUsers(users) {
   const normalized = (users || []).map(normalizeAuthUser).filter((user) => user?.name && user?.pin);
   state.authUsers = normalized;
-  localStorage.setItem(AUTH_KEY, JSON.stringify(normalized));
+  safeLocalStorageSet(AUTH_KEY, JSON.stringify(normalized));
 }
 
 function supabaseHeaders(preferReturn = false) {
@@ -13816,7 +13846,7 @@ function nextPoNumber() {
   const existingMax = Math.max(0, ...(state.pendingOrders || []).map((po) => Number(po.poNumber || 0)).filter(Number.isFinite));
   const storedNext = Number(localStorage.getItem("posDashboardNextPoNumber:v1") || "1") || 1;
   const poNumber = Math.max(1, existingMax + 1, storedNext);
-  localStorage.setItem("posDashboardNextPoNumber:v1", String(poNumber + 1));
+  safeLocalStorageSet("posDashboardNextPoNumber:v1", String(poNumber + 1));
   return poNumber;
 }
 

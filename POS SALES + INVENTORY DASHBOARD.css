@@ -7333,3 +7333,35 @@ body.scan-mode-active.scan-performance-medium .scan-mode-panel * {
   .count-workspace__grid { grid-template-columns: 1fr !important; }
   .count-review-wrap { max-height: 48vh; }
 }
+
+/* 2026-06-12 emergency stability patch: keep count workspace on screen above menus */
+#countSessionModal.count-modal:not([hidden]) {
+  z-index: 20000 !important;
+  display: block !important;
+  overflow: auto !important;
+  padding: 0.75rem !important;
+  box-sizing: border-box !important;
+}
+#countSessionModal .count-modal__dialog--workspace {
+  width: calc(100vw - 1.5rem) !important;
+  max-width: calc(100vw - 1.5rem) !important;
+  min-width: 0 !important;
+  margin: 0 auto !important;
+  box-sizing: border-box !important;
+  max-height: none !important;
+  overflow: visible !important;
+}
+#countSessionModal .count-workspace__grid {
+  grid-template-columns: minmax(22rem, 0.95fr) minmax(20rem, 0.75fr) minmax(28rem, 1.2fr) !important;
+}
+@media (max-width: 1100px) {
+  #countSessionModal .count-workspace__grid {
+    grid-template-columns: 1fr !important;
+  }
+}
+@media (pointer: coarse) {
+  #countSessionModal .count-modal__dialog--workspace {
+    min-width: 0 !important;
+    width: calc(100vw - 1.5rem) !important;
+  }
+}
