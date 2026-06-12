@@ -11717,8 +11717,13 @@ function showCountWorkspace() {
   if (els.countSetupModal) els.countSetupModal.hidden = true;
   renderCountsWorkspace();
   if (els.countSessionModal) {
+    // Force it fully visible and in front. removeAttribute is belt-and-suspenders in case
+    // a stale [hidden] attribute lingers and defeats the :not([hidden]) z-index rule.
     els.countSessionModal.hidden = false;
+    els.countSessionModal.removeAttribute("hidden");
     els.countSessionModal.classList.add("count-session-forced-open");
+    // Land at the TOP of the count screen (search box), not scrolled down to the keypad.
+    els.countSessionModal.scrollTop = 0;
   }
 }
 
