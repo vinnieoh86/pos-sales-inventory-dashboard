@@ -4,8 +4,8 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>POS Sales + Inventory Dashboard</title>
-    <link rel="stylesheet" href="POS SALES + INVENTORY DASHBOARD.css?v=20260609-baseline-session-review-flow" />
-    <link rel="stylesheet" href="rescue-usable.css?v=20260609-baseline-session-review-flow" />
+    <link rel="stylesheet" href="POS SALES + INVENTORY DASHBOARD.css?v=20260526-scanready1" />
+    <link rel="stylesheet" href="rescue-usable.css?v=20260526-layoutclarity1" />
   </head>
   <body>
     <div class="metrics-hover-zone" id="metricsHoverZone">
@@ -753,6 +753,47 @@
                 <button type="button" data-count-key="done" class="count-keypad__done count-key--done">Done</button>
               </div>
             </div>
+            <aside class="count-panel count-review-panel" aria-label="Filtered count review list">
+              <div class="count-review-head">
+                <div>
+                  <p class="eyebrow">Live review</p>
+                  <h3>Filtered start counts</h3>
+                </div>
+                <label class="count-hide-pass-label"><input id="countHidePassInput" type="checkbox" /> Hide PASS</label>
+              </div>
+              <div id="countReviewBadges" class="count-review-badges"></div>
+              <div class="count-review-filters">
+                <label>Status
+                  <select id="countReviewStatusFilter">
+                    <option value="all">All</option>
+                    <option value="needs">Needs Review</option>
+                    <option value="null">NULL</option>
+                    <option value="diff">Qty Diff</option>
+                    <option value="pass">PASS</option>
+                  </select>
+                </label>
+                <label>Vendor <select id="countReviewVendorFilter"></select></label>
+                <label>Category <select id="countReviewCategoryFilter"></select></label>
+                <label>Search <input id="countReviewSearchInput" type="search" placeholder="PLU, item, code..." autocomplete="off" /></label>
+              </div>
+              <div class="table-wrap count-review-wrap">
+                <table id="countReviewTable" class="count-review-table">
+                  <thead>
+                    <tr>
+                      <th data-count-review-sort="code">PLU</th>
+                      <th data-count-review-sort="product">Item</th>
+                      <th data-count-review-sort="before">Qty before</th>
+                      <th data-count-review-sort="after">Qty after</th>
+                      <th data-count-review-sort="diff">Qty diff</th>
+                      <th data-count-review-sort="status">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody id="countReviewBody">
+                    <tr><td colspan="6" class="empty-cell">Start a count to review filtered items.</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </aside>
           </div>
           <section class="panel table-panel">
             <div class="panel-heading">
@@ -1195,6 +1236,6 @@
       </div>
 
         <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-    <script src="POS SALES + INVENTORY DASHBOARD.js?v=20260609-baseline-session-review-flow"></script>
+    <script src="POS SALES + INVENTORY DASHBOARD.js?v=20260526-layoutclarity1"></script>
   </body>
 </html>
