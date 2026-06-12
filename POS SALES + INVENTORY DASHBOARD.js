@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "20260606-continue-pass-keepopen-fix";
+  const VERSION = "20260612-sessionmgr-tworeview";
 
   function makeSearchEditable() {
     const search = document.querySelector("#searchInput");
