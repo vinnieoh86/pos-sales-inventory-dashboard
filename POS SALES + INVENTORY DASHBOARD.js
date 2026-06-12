@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "20260612-sessionmgr-tworeview";
+  const VERSION = "20260612-sessionmgr-fix2";
 
   function makeSearchEditable() {
     const search = document.querySelector("#searchInput");

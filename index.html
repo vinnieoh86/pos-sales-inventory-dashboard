@@ -429,18 +429,19 @@
             <span><b>Stored</b> each scanned entry stays saved for manager review reports</span>
           </div>
           <div id="countWorkspaceEmpty" class="compare-card-grid">
-            <button id="countLaunchCard" class="compare-card count-launch-card" type="button">
-              <strong id="countLaunchTitle">Continue Count</strong>
-              <p id="countLaunchDescription" class="muted">Resume the latest active synced count.</p>
-              <span id="countLaunchState" class="count-launch-state">Continue Count</span>
+            <button id="countStartNewCard" class="compare-card count-launch-card" type="button">
+              <strong>Start New Count</strong>
+              <p class="muted">Pick vendor, category, item status, and an optional Name/PLU filter, then begin a fresh physical count.</p>
+              <span class="count-launch-state">Start New Count</span>
             </button>
-            <div class="compare-card" data-admin-only>
-              <strong>Employee view</strong>
-              <p class="muted">The count screen hides current system stock so staff only records what is physically on hand.</p>
-            </div>
+            <button id="countContinueCard" class="compare-card count-launch-card" type="button">
+              <strong id="countContinueCardTitle">Continue Count</strong>
+              <p id="countContinueCardDesc" class="muted">Resume the current active count on this device.</p>
+              <span class="count-launch-state">Continue Count</span>
+            </button>
             <button id="openSessionHistoryButton" class="compare-card count-launch-card" type="button">
               <strong>View Report History</strong>
-              <p class="muted">Review submitted physical count summaries and open details only when needed.</p>
+              <p class="muted">Open a saved count to View (read-only) or Continue it.</p>
               <span class="count-launch-state">View report history</span>
             </button>
           </div>
@@ -710,6 +711,7 @@
           <div id="activeCountMeta" class="count-meta-pills"></div>
           <div id="activeCountSyncStatus" class="count-session-sync" aria-live="polite"></div>
           <div class="count-workspace__grid">
+            <div class="count-workspace__left">
             <div class="count-panel">
               <label class="count-search-label">Scan / search
                 <div class="count-search-wrapper">
@@ -753,47 +755,37 @@
                 <button type="button" data-count-key="done" class="count-keypad__done count-key--done">Done</button>
               </div>
             </div>
-            <aside class="count-panel count-review-panel" aria-label="Filtered count review list">
+            </div>
+            <div class="count-panel count-review-panel" id="countReviewPanel">
               <div class="count-review-head">
-                <div>
-                  <p class="eyebrow">Live review</p>
-                  <h3>Filtered start counts</h3>
-                </div>
-                <label class="count-hide-pass-label"><input id="countHidePassInput" type="checkbox" /> Hide PASS</label>
+                <div><p class="eyebrow">Live review</p><h3>Items in scope</h3></div>
+                <div class="count-review-badges" id="countReviewBadges"></div>
               </div>
-              <div id="countReviewBadges" class="count-review-badges"></div>
-              <div class="count-review-filters">
-                <label>Status
-                  <select id="countReviewStatusFilter">
-                    <option value="all">All</option>
-                    <option value="needs">Needs Review</option>
-                    <option value="null">NULL</option>
-                    <option value="diff">Qty Diff</option>
-                    <option value="pass">PASS</option>
-                  </select>
-                </label>
-                <label>Vendor <select id="countReviewVendorFilter"></select></label>
-                <label>Category <select id="countReviewCategoryFilter"></select></label>
-                <label>Search <input id="countReviewSearchInput" type="search" placeholder="PLU, item, code..." autocomplete="off" /></label>
+              <div class="count-review-filters" id="countReviewFilters">
+                <button type="button" class="count-review-chip is-active" data-review-filter="remaining">Remaining</button>
+                <button type="button" class="count-review-chip" data-review-filter="null">NULL</button>
+                <button type="button" class="count-review-chip" data-review-filter="qtydiff">Qty Diff</button>
+                <button type="button" class="count-review-chip" data-review-filter="pass">PASS</button>
+                <button type="button" class="count-review-chip" data-review-filter="all">All</button>
               </div>
               <div class="table-wrap count-review-wrap">
-                <table id="countReviewTable" class="count-review-table">
+                <table class="count-review-table" id="countReviewTable">
                   <thead>
                     <tr>
-                      <th data-count-review-sort="code">PLU</th>
-                      <th data-count-review-sort="product">Item</th>
-                      <th data-count-review-sort="before">Qty before</th>
-                      <th data-count-review-sort="after">Qty after</th>
-                      <th data-count-review-sort="diff">Qty diff</th>
-                      <th data-count-review-sort="status">Status</th>
+                      <th data-review-sort="plu">PLU</th>
+                      <th data-review-sort="item">Item</th>
+                      <th data-review-sort="before" class="num">Qty Before</th>
+                      <th data-review-sort="after" class="num">Qty After</th>
+                      <th data-review-sort="diff" class="num">Qty Diff</th>
+                      <th data-review-sort="status">Status</th>
                     </tr>
                   </thead>
                   <tbody id="countReviewBody">
-                    <tr><td colspan="6" class="empty-cell">Start a count to review filtered items.</td></tr>
+                    <tr><td colspan="6" class="empty-cell">Start or continue a count to see the live review list.</td></tr>
                   </tbody>
                 </table>
               </div>
-            </aside>
+            </div>
           </div>
           <section class="panel table-panel">
             <div class="panel-heading">
@@ -1236,6 +1228,6 @@
       </div>
 
         <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-    <script src="POS SALES + INVENTORY DASHBOARD.js?v=20260526-layoutclarity1"></script>
+    <script src="POS SALES + INVENTORY DASHBOARD.js?v=20260612-sessionmgr-fix2"></script>
   </body>
 </html>

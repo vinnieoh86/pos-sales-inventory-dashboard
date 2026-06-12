@@ -83,12 +83,6 @@
   pendingDuplicateCount: null,
   pendingDuplicateMode: null,
   countReportMode: "input",
-  countReviewStatusFilter: "all",
-  countReviewVendorFilter: "",
-  countReviewCategoryFilter: "",
-  countReviewSearch: "",
-  countReviewSort: { key: "default", dir: "default" },
-  countReviewHidePass: false,
   metricsPinned: JSON.parse(localStorage.getItem("posDashboardMetricsPinned:v1") || "false"),
   orderVendorQuickFilter: "",
   orderSubmissionVendors: [],
@@ -476,6 +470,17 @@ const els = {
   countLaunchTitle: document.querySelector("#countLaunchTitle"),
   countLaunchDescription: document.querySelector("#countLaunchDescription"),
   countLaunchState: document.querySelector("#countLaunchState"),
+  // V2.0 split launch cards
+  countStartNewCard: document.querySelector("#countStartNewCard"),
+  countContinueCard: document.querySelector("#countContinueCard"),
+  countContinueCardTitle: document.querySelector("#countContinueCardTitle"),
+  countContinueCardDesc: document.querySelector("#countContinueCardDesc"),
+  // V2.0 two-column live review panel
+  countReviewPanel: document.querySelector("#countReviewPanel"),
+  countReviewBody: document.querySelector("#countReviewBody"),
+  countReviewBadges: document.querySelector("#countReviewBadges"),
+  countReviewFilters: document.querySelector("#countReviewFilters"),
+  countReviewTable: document.querySelector("#countReviewTable"),
   countSyncStatus: document.querySelector("#countSyncStatus"),
   countSummaryStrip: document.querySelector("#countSummaryStrip"),
   activeCountTitle: document.querySelector("#activeCountTitle"),
@@ -564,14 +569,6 @@ const els = {
   countCloseReportButton: document.querySelector("#countCloseReportButton"),
   countInputViewButton: document.querySelector("#countInputViewButton"),
   countComparisonViewButton: document.querySelector("#countComparisonViewButton"),
-  countReviewBody: document.querySelector("#countReviewBody"),
-  countReviewBadges: document.querySelector("#countReviewBadges"),
-  countReviewStatusFilter: document.querySelector("#countReviewStatusFilter"),
-  countReviewVendorFilter: document.querySelector("#countReviewVendorFilter"),
-  countReviewCategoryFilter: document.querySelector("#countReviewCategoryFilter"),
-  countReviewSearchInput: document.querySelector("#countReviewSearchInput"),
-  countHidePassInput: document.querySelector("#countHidePassInput"),
-  countReviewTable: document.querySelector("#countReviewTable"),
 };
 
 [els.safetyDays, els.daysOfInventory].filter(Boolean).forEach((input) => {
@@ -886,7 +883,19 @@ document.querySelector("#orderArrangeColumnsButton")?.addEventListener("click", 
   renderOrders();
 });
 els.createPoShortcut?.addEventListener("click", openProductPoReviewModal);
-els.countLaunchCard?.addEventListener("click", () => openLatestCountOrSetup());
+els.countStartNewCard?.addEventListener("click", () => startNewCount());
+els.countContinueCard?.addEventListener("click", () => resumeActiveCount());
+els.countReviewFilters?.addEventListener("click", (e) => {
+  const chip = e.target.closest("[data-review-filter]");
+  if (!chip) return;
+  state._countReviewFilter = chip.dataset.reviewFilter;
+  renderCountReviewPanel();
+});
+els.countReviewTable?.addEventListener("click", (e) => {
+  const th = e.target.closest("th[data-review-sort]");
+  if (!th) return;
+  cycleCountReviewSort(th.dataset.reviewSort);
+});
 els.closeCountSessionButton?.addEventListener("click", closeActiveCountSession);
 els.countReviewButton?.addEventListener("click", () => openCountReport(state.activeCountSession?.id, "input"));
 els.countSaveSessionButton?.addEventListener("click", saveCountSession);
@@ -895,14 +904,6 @@ els.countInputReportButton?.addEventListener("click", () => openCountReport(stat
 els.countComparisonReportButton?.addEventListener("click", () => openCountReport(state.activeCountSession?.id, "comparison"));
 els.countStartButton?.addEventListener("click", startCountSessionFromModal);
 els.countCancelButton?.addEventListener("click", closeCountSetupModal);
-els.countReviewStatusFilter?.addEventListener("change", (event) => { state.countReviewStatusFilter = event.target.value || "all"; renderCountReviewList(); });
-els.countReviewVendorFilter?.addEventListener("change", (event) => { state.countReviewVendorFilter = event.target.value || ""; renderCountReviewList(); });
-els.countReviewCategoryFilter?.addEventListener("change", (event) => { state.countReviewCategoryFilter = event.target.value || ""; renderCountReviewList(); });
-els.countReviewSearchInput?.addEventListener("input", debounce((event) => { state.countReviewSearch = event.target.value || ""; renderCountReviewList(); }, 120));
-els.countHidePassInput?.addEventListener("change", (event) => { state.countReviewHidePass = !!event.target.checked; renderCountReviewList(); });
-els.countReviewTable?.querySelectorAll("th[data-count-review-sort]").forEach((th) => {
-  th.addEventListener("click", () => cycleCountReviewSort(th.dataset.countReviewSort));
-});
 els.countSetupModal?.addEventListener("click", (event) => {
   if (event.target === els.countSetupModal) closeCountSetupModal();
 });
@@ -1426,14 +1427,11 @@ document.addEventListener("keydown", (event) => {
   if (!els.countSessionModal.hidden) {
     if (event.key === "Escape") {
       event.preventDefault();
-      if (state._continuingCountId && state.activeCountSession?.id === state._continuingCountId) {
-        state._countSessionOpen = true;
-        focusCountSearch();
-        showToast("Continued count stays open until Save, Delete, or Submit.", 2400, "warning");
-        return;
-      }
+      // V2.0: ESC simply closes the workspace VIEW. The session stays active in
+      // Report History (Active / Live), so nothing is lost — Continue reopens it.
       state._countSessionOpen = false;
       els.countSessionModal.hidden = true;
+      renderCountsWorkspace();
       return;
     }
   }
@@ -4381,25 +4379,40 @@ function startCountSessionFromModal() {
   // shows it right away. activeCountSession points to the same object.
   // isActiveLive is read by countSessionStatusLabel() to show "Active / Live" in the table.
   const liveSession = { ...session, isActiveLive: true };
+  // V2.0: if another count was active on THIS device, set it aside (Paused) instead of
+  // leaving a second "Active / Live" row in history. Single active session per device.
+  const prevId = cleanCell(state.activeCountSession?.id);
+  if (prevId && prevId !== cleanCell(session.id)) {
+    state.countSessions = state.countSessions.map((s) =>
+      cleanCell(s.id) === prevId
+        ? { ...s, isActiveLive: false, savedAt: s.savedAt || new Date().toISOString() }
+        : s,
+    );
+  }
+  clearContinuedCountLock();
+  state.activeCountSession = liveSession;
+  state._continuingCountId = cleanCell(session.id); // marks the currently-open count so background sync won't drop it
+  state._countSessionOpen = true;
+  state.countQtyBuffer = "0";
+  state.selectedCountItemCode = "";
+  state.countStage = "search";
+  state.pendingDuplicateCount = null;
+  state.pendingDuplicateMode = null;
   state.countAutoPlusMode = false;
   state.countAutoUndoStack = [];
   state.countSessions = [liveSession, ...state.countSessions.filter((s) => s.id !== session.id)];
-  state.activeCountSession = liveSession;
   persistActiveCountSession();
   persistCountSessions({ scheduleSync: false });
   closeCountSetupModal();
-  if (!openCount(session.id)) {
-    state.countSessions = state.countSessions.filter((s) => s.id !== session.id);
-    state.activeCountSession = null;
-    persistCountSessions({ scheduleSync: false });
-    showToast("Count was not opened, so no report history was created.", 3600, "warning");
-    return;
-  }
   // FIX-D: Build the search index lazily — defer until after the UI paints.
   // On Kindle this was a synchronous ~400ms block before the count screen appeared.
   // findCountMatch()/findAnyCountMatch() also auto-build on first use (lines 4307/4323).
   setTimeout(() => buildCountSearchIndex(), 80);
-  renderCountReviewList();
+  // V2.0: route the open through the one canonical show path so a new count reliably
+  // appears (and any leftover setup/report overlay is torn down).
+  showCountWorkspace();
+  setTimeout(showCountWorkspace, 120);
+  setTimeout(() => { showCountWorkspace(); focusCountSearch(); }, 400);
   showToast(
     state._countSyncUnavailable
       ? `Started local count: ${countSessionLabel(session)}. Sync will retry when available.`
@@ -4411,14 +4424,8 @@ function startCountSessionFromModal() {
 
 function closeActiveCountSession() {
   if (!state.activeCountSession) return;
-  // Continued counts must stay open until Save/Delete/Submit.
-  // The top-right close/backdrop was causing the workspace to vanish mid-count.
-  if (state._continuingCountId && cleanCell(state.activeCountSession.id) === cleanCell(state._continuingCountId)) {
-    showToast("Continued count stays open until Save, Delete, or Submit.", 2600, "warning");
-    state._countSessionOpen = true;
-    renderCountsWorkspace();
-    return;
-  }
+  // V2.0: closing just hides the workspace VIEW. The session remains active in
+  // Report History so it can be continued; nothing is deleted.
   state._countSessionOpen = false;
   state.selectedCountItemCode = "";
   state.countQtyBuffer = "0";
@@ -4560,34 +4567,20 @@ function stopContinueCountKeepOpenGuard() {
   }
 }
 
+// V2.0 FIX: The old keep-open guard ran a 300ms interval that constantly forced the
+// workspace open, re-asserted the active session, and stole focus — only stopping on
+// Submit. That polling fought every deterministic action: it re-popped the count when
+// switching to the Inventory tab, re-showed the old count over the New-count filter,
+// churned the DOM so Save/Delete clicks didn't land, and clobbered header sorting.
+// We now rely on a single source of truth: state._countSessionOpen, flipped ONLY by
+// explicit user actions (openCount / start new / save / delete / close). This function
+// just records which count is currently open (so background sync won't drop it) and
+// makes sure no stray interval is left running.
 function startContinueCountKeepOpenGuard(sessionId) {
   const id = cleanCell(sessionId || state._continuingCountId || "");
   if (!id) return;
   state._continuingCountId = id;
   stopContinueCountKeepOpenGuard();
-  state._continueCountKeepOpenTimer = setInterval(() => {
-    const continuingId = cleanCell(state._continuingCountId || "");
-    if (!continuingId) { stopContinueCountKeepOpenGuard(); return; }
-    let active = state.activeCountSession && cleanCell(state.activeCountSession.id) === continuingId
-      ? state.activeCountSession
-      : findCountSessionById(continuingId);
-    if (!active || active.submittedAt) { stopContinueCountKeepOpenGuard(); return; }
-    active = markCountSessionDirty({ ...active, savedAt: "", submittedAt: "", isActiveLive: true });
-    state.activeCountSession = active;
-    state.countSessions = [
-      active,
-      ...(state.countSessions || []).filter((saved) => cleanCell(saved?.id) !== continuingId),
-    ];
-    state._countSessionOpen = true;
-    if (els.countReportModal && !els.countReportModal.hidden) els.countReportModal.hidden = true;
-    const historyModal = document.querySelector("#sessionHistoryModal");
-    if (historyModal && !historyModal.hidden) historyModal.hidden = true;
-    if (els.countSessionModal && els.countSessionModal.hidden) {
-      renderCountsWorkspace();
-      els.countSessionModal.hidden = false;
-      focusCountSearch();
-    }
-  }, 300);
 }
 
 function clearContinuedCountLock() {
@@ -4734,7 +4727,6 @@ function undoLastCountAutoPlus() {
     persistActiveCountSession();
     renderCountEntryRows(false);
     updateCountSummaryStrip();
-    renderCountReviewList();
     renderSelectedCountItem();
     renderCountQuantity();
     showToast(`Undid +1 for ${last.code}`, 1800, "warning");
@@ -4984,7 +4976,6 @@ function commitCountEntry(item, qty, mode, options = {}) {
   renderSelectedCountItem();
   renderCountQuantity();
   updateCountSummaryStrip();
-  renderCountReviewList();
   if (els.countSearchInput) els.countSearchInput.value = "";
   state._replaceCountInputOnNextKey = false;
   hideCountDropdown();
@@ -5591,6 +5582,7 @@ function renderCountEntryRows(prependOnly = false) {
     const placeholder = els.countEntryBody.querySelector("td[colspan]");
     if (placeholder) placeholder.closest("tr").remove();
     els.countEntryBody.prepend(tr);
+    renderCountReviewPanel();
     return;
   }
   // Full rebuild
@@ -5614,6 +5606,143 @@ function renderCountEntryRows(prependOnly = false) {
       </tr>`;
     })
     .join("");
+  renderCountReviewPanel();
+}
+
+// ===========================================================================
+// V2.0 TWO-COLUMN LIVE REVIEW (Pass 2)
+// Read-only right-hand list of the in-scope items for the active count.
+//  - Unscanned items show RED (NULL / still needs scanning).
+//  - Scanned items gray out, drop to the bottom, and show PASS (green, qty matches)
+//    or DIFF (orange, qty mismatch).
+//  - The "Remaining" filter literally diminishes the list as you scan.
+//  - Sortable headers cycle asc -> desc -> default (Excel-style).
+// This panel NEVER mutates count state — it only reads candidates + entries.
+// ===========================================================================
+function computeCountReviewRows(session) {
+  const candidates = currentCountSessionCandidates(session);
+  const entriesByCode = new Map();
+  (session.entries || []).forEach((e) => entriesByCode.set(codeKey(e.code), e));
+  return candidates.map((item) => {
+    const entry = entriesByCode.get(codeKey(item.code));
+    const before = Number(item.stock || 0);
+    const scanned = !!entry;
+    const after = scanned ? Number(entry.countedQty || 0) : null;
+    const diff = scanned ? after - before : null;
+    const status = !scanned ? "null" : diff === 0 ? "pass" : "diff";
+    return {
+      code: item.code,
+      plu: item.plu || item.itemNumber || item.code || "",
+      product: item.product || "",
+      before, after, diff, scanned, status,
+    };
+  });
+}
+
+function renderCountReviewPanel() {
+  if (!els.countReviewBody) return;
+  const session = state.activeCountSession;
+  if (!session || !state._countSessionOpen) {
+    els.countReviewBody.innerHTML = `<tr><td colspan="6" class="empty-cell">Start or continue a count to see the live review list.</td></tr>`;
+    if (els.countReviewBadges) els.countReviewBadges.innerHTML = "";
+    return;
+  }
+  const rows = computeCountReviewRows(session);
+
+  const nullCount = rows.filter((r) => r.status === "null").length;
+  const diffCount = rows.filter((r) => r.status === "diff").length;
+  const passCount = rows.filter((r) => r.status === "pass").length;
+  if (els.countReviewBadges) {
+    els.countReviewBadges.innerHTML =
+      `<span class="review-badge review-badge--null">Needs scan ${number.format(nullCount)}</span>` +
+      `<span class="review-badge review-badge--diff">Qty diff ${number.format(diffCount)}</span>` +
+      `<span class="review-badge review-badge--pass">PASS ${number.format(passCount)}</span>`;
+  }
+
+  const filter = state._countReviewFilter || "remaining";
+  let view = rows.filter((r) => {
+    if (filter === "remaining" || filter === "null") return r.status === "null";
+    if (filter === "qtydiff") return r.status === "diff";
+    if (filter === "pass") return r.status === "pass";
+    return true; // all
+  });
+
+  const sort = state._countReviewSort || null;
+  const cmpDefault = (a, b) => {
+    // Default order: NULL first, then biggest |diff| desc, then PASS last.
+    const rank = (r) => (r.status === "null" ? 0 : r.status === "diff" ? 1 : 2);
+    if (rank(a) !== rank(b)) return rank(a) - rank(b);
+    if (a.status === "diff" && b.status === "diff") return Math.abs(b.diff) - Math.abs(a.diff);
+    return String(a.product).localeCompare(String(b.product));
+  };
+  if (sort && sort.dir) {
+    const dir = sort.dir === "desc" ? -1 : 1;
+    const val = (r) => {
+      switch (sort.key) {
+        case "plu": return String(r.plu).toLowerCase();
+        case "item": return String(r.product).toLowerCase();
+        case "before": return r.before;
+        case "after": return r.after == null ? -Infinity : r.after;
+        case "diff": return r.diff == null ? -Infinity : r.diff;
+        case "status": return r.status;
+        default: return 0;
+      }
+    };
+    view = view.slice().sort((a, b) => {
+      const va = val(a), vb = val(b);
+      if (va < vb) return -1 * dir;
+      if (va > vb) return 1 * dir;
+      return 0;
+    });
+  } else {
+    view = view.slice().sort(cmpDefault);
+  }
+
+  if (!view.length) {
+    const msg = filter === "remaining" || filter === "null"
+      ? "Nothing left to scan in this scope."
+      : "No items match this filter.";
+    els.countReviewBody.innerHTML = `<tr><td colspan="6" class="empty-cell">${msg}</td></tr>`;
+  } else {
+    els.countReviewBody.innerHTML = view.map((r) => {
+      const cls = r.status === "null" ? "review-row--null"
+        : r.status === "diff" ? "review-row--diff" : "review-row--pass";
+      const scannedCls = r.scanned ? " review-row--scanned" : "";
+      const afterTxt = r.after == null ? "—" : number.format(r.after);
+      const diffTxt = r.diff == null ? "—" : (r.diff > 0 ? `+${number.format(r.diff)}` : number.format(r.diff));
+      const statusTxt = r.status === "null" ? "NULL" : r.status === "diff" ? "DIFF" : "PASS";
+      return `<tr class="${cls}${scannedCls}">
+        <td>${escapeHtml(String(r.plu))}</td>
+        <td>${escapeHtml(r.product)}</td>
+        <td class="num">${number.format(r.before)}</td>
+        <td class="num">${afterTxt}</td>
+        <td class="num">${diffTxt}</td>
+        <td><span class="review-status review-status--${r.status}">${statusTxt}</span></td>
+      </tr>`;
+    }).join("");
+  }
+
+  if (els.countReviewFilters) {
+    els.countReviewFilters.querySelectorAll("[data-review-filter]").forEach((chip) => {
+      chip.classList.toggle("is-active", chip.dataset.reviewFilter === filter);
+    });
+  }
+  if (els.countReviewTable) {
+    els.countReviewTable.querySelectorAll("th[data-review-sort]").forEach((th) => {
+      th.classList.remove("sort-asc", "sort-desc");
+      if (sort && sort.key === th.dataset.reviewSort && sort.dir) {
+        th.classList.add(sort.dir === "desc" ? "sort-desc" : "sort-asc");
+      }
+    });
+  }
+}
+
+function cycleCountReviewSort(key) {
+  const cur = state._countReviewSort;
+  if (!cur || cur.key !== key) state._countReviewSort = { key, dir: "asc" };
+  else if (cur.dir === "asc") state._countReviewSort = { key, dir: "desc" };
+  else state._countReviewSort = null; // back to default order
+  renderCountReviewPanel();
 }
 
 function currentAuditUser() {
@@ -5670,9 +5799,9 @@ async function refreshLatestCountSessions(options = {}) {
     }
   } finally {
     setCountSyncLoading(false);
-    if (state._continuingCountId && state.activeCountSession?.id === state._continuingCountId) {
-      state._countSessionOpen = true;
-    }
+    // V2.0 FIX: do NOT force the workspace open here. Whether it is open is owned by
+    // _countSessionOpen (explicit user action). Re-opening on a background sync was a
+    // cause of the count popping up over the Inventory landing page.
     if (activeTabName() === "counts") renderCountsWorkspace();
   }
 }
@@ -5711,163 +5840,15 @@ async function openLatestCountOrSetup() {
   openCountSetupModal();
 }
 
-
-function openCount(sessionId) {
-  const session = findCountSessionById(sessionId);
-  if (!session) {
-    showToast("Count session not found.", 3000, "warning");
-    return false;
-  }
-  const liveSession = markCountSessionDirty({ ...session, savedAt: "", submittedAt: session.submittedAt || "", isActiveLive: true });
-  state.activeCountSession = liveSession;
-  state._countSessionOpen = true;
-  state.countQtyBuffer = "0";
-  state.selectedCountItemCode = "";
-  state.countStage = "search";
-  state.pendingDuplicateCount = null;
-  state.pendingDuplicateMode = null;
-  state._ignoreNextCountBackdropCloseUntil = Date.now() + 1500;
-  const activeId = cleanCell(liveSession.id);
-  state.countSessions = [liveSession, ...(state.countSessions || []).filter((s) => cleanCell(s?.id) !== activeId)];
-  persistActiveCountSession();
-  persistCountSessions({ scheduleSync: false });
-  renderCountsWorkspace();
-  if (els.countSessionModal) els.countSessionModal.hidden = false;
-  focusCountSearch();
-  return true;
-}
-
-function latestCountEntryByCode(session = state.activeCountSession) {
-  const map = new Map();
-  filterUndoneCountEntries(session?.entries || [], session).forEach((entry) => map.set(codeKey(entry.code), entry));
-  return map;
-}
-
-function countReviewStatusForItem(item, entryMap) {
-  const entry = entryMap.get(codeKey(item.code));
-  const before = Number(item.stock || 0);
-  if (!entry) return { key: "null", label: "NULL", cls: "count-review-null", before, after: null, diff: null, order: 0 };
-  const after = Number(entry.countedQty || 0);
-  const diff = after - before;
-  if (diff === 0) return { key: "pass", label: "PASS", cls: "count-review-pass", before, after, diff, order: 2 };
-  return { key: "diff", label: "Qty Diff", cls: "count-review-diff", before, after, diff, order: 1 };
-}
-
-function refreshCountReviewFilterOptions(rows) {
-  if (!els.countReviewVendorFilter || !els.countReviewCategoryFilter) return;
-  const currentVendor = els.countReviewVendorFilter.value || state.countReviewVendorFilter || "";
-  const currentCategory = els.countReviewCategoryFilter.value || state.countReviewCategoryFilter || "";
-  fillSelect(els.countReviewVendorFilter, unique(rows.map((r) => r.vendor).filter(Boolean)));
-  fillSelect(els.countReviewCategoryFilter, unique(rows.map((r) => r.category).filter(Boolean)));
-  els.countReviewVendorFilter.value = [...els.countReviewVendorFilter.options].some((o) => o.value === currentVendor) ? currentVendor : "";
-  els.countReviewCategoryFilter.value = [...els.countReviewCategoryFilter.options].some((o) => o.value === currentCategory) ? currentCategory : "";
-  state.countReviewVendorFilter = els.countReviewVendorFilter.value || "";
-  state.countReviewCategoryFilter = els.countReviewCategoryFilter.value || "";
-}
-
-function cycleCountReviewSort(key) {
-  const current = state.countReviewSort || { key: "default", dir: "default" };
-  const nextDir = current.key !== key ? "asc" : current.dir === "asc" ? "desc" : current.dir === "desc" ? "default" : "asc";
-  state.countReviewSort = { key: nextDir === "default" ? "default" : key, dir: nextDir };
-  renderCountReviewList();
-}
-
-function renderCountReviewList() {
-  if (!els.countReviewBody) return;
-  const session = state.activeCountSession;
-  if (!session) {
-    els.countReviewBody.innerHTML = `<tr><td colspan="6" class="empty-cell">Start a count to review filtered items.</td></tr>`;
-    if (els.countReviewBadges) els.countReviewBadges.innerHTML = "";
-    return;
-  }
-  const scopedRows = currentCountSessionCandidates(session);
-  refreshCountReviewFilterOptions(scopedRows);
-  const entries = latestCountEntryByCode(session);
-  const stats = { null: 0, diff: 0, pass: 0 };
-  let rows = scopedRows.map((item) => ({ item, status: countReviewStatusForItem(item, entries) }));
-  rows.forEach((row) => { stats[row.status.key] += 1; });
-  const needs = stats.null + stats.diff;
-  if (els.countReviewBadges) {
-    els.countReviewBadges.innerHTML = `
-      <span class="count-review-badge count-review-null">Needs Review: ${number.format(needs)}</span>
-      <span class="count-review-badge count-review-null">NULL: ${number.format(stats.null)}</span>
-      <span class="count-review-badge count-review-diff">Qty Diff: ${number.format(stats.diff)}</span>
-      <span class="count-review-badge count-review-pass">PASS: ${number.format(stats.pass)}</span>`;
-  }
-  const statusFilter = state.countReviewStatusFilter || els.countReviewStatusFilter?.value || "all";
-  const vendorFilter = state.countReviewVendorFilter || "";
-  const categoryFilter = state.countReviewCategoryFilter || "";
-  const needle = cleanCell(state.countReviewSearch || els.countReviewSearchInput?.value || "").toLowerCase();
-  rows = rows.filter(({ item, status }) => {
-    if (state.countReviewHidePass && status.key === "pass") return false;
-    if (statusFilter === "needs" && status.key === "pass") return false;
-    if (["null", "diff", "pass"].includes(statusFilter) && status.key !== statusFilter) return false;
-    if (vendorFilter && (item.vendor || "") !== vendorFilter) return false;
-    if (categoryFilter && (item.category || "") !== categoryFilter) return false;
-    if (needle) {
-      const hay = [item.code, item.product, item.plu, item.itemNumber, item.vendor, item.category].map((v) => String(v || "").toLowerCase()).join("|");
-      if (!hay.includes(needle)) return false;
-    }
-    return true;
-  });
-  const sort = state.countReviewSort || { key: "default", dir: "default" };
-  const valueFor = (row) => {
-    const { item, status } = row;
-    if (sort.key === "code") return String(item.plu || item.code || "").toLowerCase();
-    if (sort.key === "product") return String(item.product || "").toLowerCase();
-    if (sort.key === "before") return status.before;
-    if (sort.key === "after") return status.after ?? -Infinity;
-    if (sort.key === "diff") return Math.abs(Number(status.diff || 0));
-    if (sort.key === "status") return status.label;
-    return status.order;
-  };
-  if (sort.dir && sort.dir !== "default") {
-    rows.sort((a, b) => {
-      const av = valueFor(a); const bv = valueFor(b);
-      if (av < bv) return sort.dir === "asc" ? -1 : 1;
-      if (av > bv) return sort.dir === "asc" ? 1 : -1;
-      return String(a.item.product || "").localeCompare(String(b.item.product || ""));
-    });
-  } else {
-    rows.sort((a, b) => {
-      if (a.status.order !== b.status.order) return a.status.order - b.status.order;
-      if (a.status.key === "diff" && b.status.key === "diff") return Math.abs(Number(b.status.diff || 0)) - Math.abs(Number(a.status.diff || 0));
-      return String(a.item.product || "").localeCompare(String(b.item.product || ""));
-    });
-  }
-  if (!rows.length) {
-    els.countReviewBody.innerHTML = `<tr><td colspan="6" class="empty-cell">No review items match these filters.</td></tr>`;
-    return;
-  }
-  els.countReviewBody.innerHTML = rows.slice(0, 600).map(({ item, status }) => {
-    const diffLabel = status.diff == null ? "-" : (status.diff > 0 ? `+${number.format(status.diff)}` : number.format(status.diff));
-    return `<tr class="${status.cls}" data-code="${escapeHtml(item.code || "")}">
-      <td>${escapeHtml(item.plu || item.code || "-")}</td>
-      <td>${escapeHtml(item.product || "-")}</td>
-      <td class="num">${number.format(status.before || 0)}</td>
-      <td class="num">${status.after == null ? "-" : number.format(status.after)}</td>
-      <td class="num">${diffLabel}</td>
-      <td><span class="count-review-status ${status.cls}">${escapeHtml(status.label)}</span></td>
-    </tr>`;
-  }).join("");
-  els.countReviewBody.querySelectorAll("tr[data-code]").forEach((tr) => {
-    tr.addEventListener("click", () => selectCountDropdownItem(tr.dataset.code));
-  });
-}
-
 function renderCountsWorkspace(options = {}) {
   if (options.loading || state._countSyncLoading) {
-    // Do not blank/close a continued physical count during background sync.
-    // The prior behavior hid the count modal while refreshLatestCountSessions() was polling,
-    // which made Continue Count appear for a few seconds then disappear.
-    if (state._continuingCountId && state.activeCountSession?.id === state._continuingCountId) {
-      state._countSessionOpen = true;
-    } else {
-      if (els.countSessionModal) els.countSessionModal.hidden = true;
-    }
+    // Do not blank/close a count workspace that is ALREADY open during background sync.
+    // But never force it open here — _countSessionOpen is owned by explicit user actions.
+    const keepOpen = state._countSessionOpen && !!state.activeCountSession;
+    if (!keepOpen && els.countSessionModal) els.countSessionModal.hidden = true;
     if (els.countWorkspaceEmpty) els.countWorkspaceEmpty.hidden = true;
     if (els.countSummaryStrip) els.countSummaryStrip.hidden = true;
-    if (!(state._continuingCountId && state.activeCountSession?.id === state._continuingCountId)) return;
+    if (!keepOpen) return;
   }
   // PERF-C: Only rebuild setup dropdowns when the setup modal is actually open or explicitly requested.
   // Previously this ran on every poll-triggered render, re-querying all vendors/categories
@@ -5882,12 +5863,25 @@ function renderCountsWorkspace(options = {}) {
     );
   }
   const active = state.activeCountSession;
-  if (state._continuingCountId && active?.id === state._continuingCountId) state._countSessionOpen = true;
   if (els.countSummaryStrip) els.countSummaryStrip.hidden = false;
   if (els.countSessionModal) els.countSessionModal.hidden = !active || !state._countSessionOpen;
   els.countWorkspaceEmpty.hidden = false;
   if (els.countLaunchCard) els.countLaunchCard.hidden = false;
   if (els.countLaunchTitle) els.countLaunchTitle.textContent = active ? "Continue Count" : "Start New Count";
+  // V2.0 split cards: Start New is always available; Continue reflects whether an
+  // active count exists on this device.
+  if (els.countContinueCard) {
+    els.countContinueCard.classList.toggle("count-card-disabled", !active);
+    els.countContinueCard.setAttribute("aria-disabled", active ? "false" : "true");
+  }
+  if (els.countContinueCardTitle) {
+    els.countContinueCardTitle.textContent = active ? "Continue Count" : "No active count";
+  }
+  if (els.countContinueCardDesc) {
+    els.countContinueCardDesc.textContent = active
+      ? `Resume: ${countSessionLabel(active)}`
+      : "Nothing active on this device. Use Report History to continue a saved count.";
+  }
   if (els.countLaunchDescription) {
     els.countLaunchDescription.textContent = active
       ? "Resume the latest active synced count."
@@ -5929,8 +5923,8 @@ function renderCountsWorkspace(options = {}) {
   // These are no-ops when the modal is hidden but add measurable parse cost on Kindle.
   if (active && state._countSessionOpen) {
     renderCountEntryRows();
-    renderCountReviewList();
   }
+  renderCountReviewPanel();
   renderCountSessionRows();
   if (active && state.countStage === "search") focusCountSearch();
 }
@@ -8262,6 +8256,15 @@ function switchTab(tab) {
   document.querySelectorAll("[data-tab]").forEach((button) => button.classList.toggle("active", button.dataset.tab === tab));
   document.querySelectorAll("[data-tab-view]").forEach((view) => view.classList.toggle("active", view.dataset.tabView === tab));
   document.body.dataset.activeTab = tab;
+  // V2.0: count workspace/setup/report are global overlays. When leaving the Inventory
+  // (counts) tab, hide them so they never float over Dashboard/Products/etc.
+  if (tab !== "counts") {
+    if (els.countSessionModal) els.countSessionModal.hidden = true;
+    if (els.countSetupModal) els.countSetupModal.hidden = true;
+    if (els.countReportModal) els.countReportModal.hidden = true;
+    const histModal = document.querySelector("#sessionHistoryModal");
+    if (histModal) histModal.hidden = true;
+  }
   if (["pricecheck", "scanmode"].includes(tab)) {
     if (!els.priceCheckResult?.innerHTML) renderPriceCheckResult(null);
     if (tab === "pricecheck") focusPriceCheckSearch();
@@ -10963,7 +10966,8 @@ function applySharedCountSessionRows(rows = [], options = {}) {
       countSessionHasUnsyncedEdits(session) || cleanCell(session?.id) === cleanCell(state._continuingCountId || "")
     );
     state.activeCountSession = (countSessionHasUnsyncedEdits(localActive) || keepContinuedActive) ? localActive : null;
-    if (state.activeCountSession) state._countSessionOpen = true;
+    // V2.0: preserve the active session across sync, but do NOT force the view open —
+    // visibility is owned by explicit user action (_countSessionOpen).
     state._countRemoteLoaded = true;
     persistCountSessions({ scheduleSync: false });
     if (options.render !== false && activeTabName() === "counts") {
@@ -11042,7 +11046,7 @@ function applySharedCountSessionRows(rows = [], options = {}) {
   if ((keepContinuedActive || countSessionHasUnsyncedEdits(localActive)) && (!nextActive || localActiveId !== remoteActiveId)) {
     if (nextActive?.id && nextActive.id !== localActive.id) mergedSavedById.set(nextActive.id, nextActive);
     nextActive = { ...localActive, isActiveLive: true };
-    state._countSessionOpen = true;
+    // V2.0: keep the session active across sync, but do NOT force the workspace open.
   }
   // FIX-C: Do NOT remove nextActive from mergedSavedById.
   // Previously this deleted the active session from the sessions list entirely, making it
@@ -11694,9 +11698,65 @@ function confirmDeleteSavedSession() {
 }
 
 // -- Continue count from report (re-open the session as active) -------------
+// ===========================================================================
+// V2.0 SESSION MANAGER — single canonical open path.
+// Every resume/continue path routes through openCount(sessionId).
+// showCountWorkspace() is the one place that forces the workspace visible and
+// tears down any container overlay (report / history / setup) that could sit on
+// top and intercept clicks. No path should hand-roll its own open logic.
+// ===========================================================================
+
+// Force the active count workspace visible and remove every container overlay
+// that is NOT the workspace itself. Safe to call repeatedly.
+function showCountWorkspace() {
+  if (els.countReportModal) els.countReportModal.hidden = true;
+  const reportCountModal = document.querySelector("#reportCountModal");
+  if (reportCountModal) reportCountModal.hidden = true;
+  const sessionHistoryModal = document.querySelector("#sessionHistoryModal");
+  if (sessionHistoryModal) sessionHistoryModal.hidden = true;
+  if (els.countSetupModal) els.countSetupModal.hidden = true;
+  renderCountsWorkspace();
+  if (els.countSessionModal) {
+    els.countSessionModal.hidden = false;
+    els.countSessionModal.classList.add("count-session-forced-open");
+  }
+}
+
+// THE single function for opening/resuming an existing saved count by id.
+// Used by Continue (from report), Resume (active card), and any future resume path.
+// Returns true if the workspace was opened.
+function openCount(sessionId) {
+  const id = cleanCell(sessionId);
+  const session = findCountSessionById(id)
+    || (cleanCell(state.activeCountSession?.id) === id ? state.activeCountSession : null);
+  if (!session) { showToast("Session not found.", 3000, "warning"); return false; }
+  // FIX-B: keep it in countSessions[] with isActiveLive:true so history still shows it.
+  const liveSession = markCountSessionDirty({ ...session, savedAt: "", submittedAt: "", isActiveLive: true });
+  state.countSessions = [liveSession, ...state.countSessions.filter((s) => s.id !== id)];
+  state.activeCountSession = liveSession;
+  state._countSessionOpen = true;
+  state.countQtyBuffer = "0";
+  state.selectedCountItemCode = "";
+  state.countStage = "search";
+  state.pendingDuplicateCount = null;
+  state.pendingDuplicateMode = null;
+  state._continuingCountId = id;
+  state._ignoreNextCountBackdropCloseUntil = Date.now() + 4000;
+  persistActiveCountSession();
+  persistCountSessions({ scheduleSync: false });
+  startContinueCountKeepOpenGuard(id);
+  // Open immediately, then re-assert twice to win against any late render/sync tick
+  // that would otherwise close the workspace right after it opened.
+  showCountWorkspace();
+  setTimeout(showCountWorkspace, 120);
+  setTimeout(() => { showCountWorkspace(); focusCountSearch(); }, 400);
+  return true;
+}
+
 async function continueCountFromReport(event = null) {
   event?.preventDefault?.();
   event?.stopPropagation?.();
+  // PERF-F: find locally first; only fall back to a timed remote pull if missing.
   const sessionId = state.countReportOpenId;
   let session = findCountSessionById(sessionId);
   if (!session && ENABLE_SHARED_SYNC && sharedCountSessionsAvailable) {
@@ -11708,17 +11768,43 @@ async function continueCountFromReport(event = null) {
     session = findCountSessionById(sessionId);
   }
   if (!session) { showToast("Session not found.", 3000, "warning"); return; }
-  state._continuingCountId = sessionId;
-  if (els.countReportModal) els.countReportModal.hidden = true;
-  const reportCountModal = document.querySelector("#reportCountModal");
-  if (reportCountModal) reportCountModal.hidden = true;
-  const sessionHistoryModal = document.querySelector("#sessionHistoryModal");
-  if (sessionHistoryModal) sessionHistoryModal.hidden = true;
-  if (!openCount(sessionId)) return;
-  startContinueCountKeepOpenGuard(sessionId);
-  setTimeout(() => { state._countSessionOpen = true; renderCountsWorkspace(); focusCountSearch(); }, 150);
-  setTimeout(() => syncSharedCountSessionsToSupabase(true).catch(() => scheduleSharedCountSessionsSync()), 800);
-  showToast(`Continuing count: ${countSessionLabel(session)}`, 2800, "success");
+  if (openCount(sessionId)) {
+    // Do not block the reopened workspace on sync; queue it after the UI is stable.
+    setTimeout(() => syncSharedCountSessionsToSupabase(true).catch(() => scheduleSharedCountSessionsSync()), 800);
+    showToast(`Continuing count: ${countSessionLabel(session)}`, 2800, "success");
+  }
+}
+
+// V2.0: Start New always prompts the scope filters and begins a FRESH session.
+// Guard against silently discarding an in-progress count on THIS device.
+function startNewCount() {
+  const active = state.activeCountSession;
+  const hasUnsavedWork = active && (active.entries || []).length && !active.savedAt && !active.submittedAt;
+  if (hasUnsavedWork) {
+    const ok = confirm(
+      `A count is already in progress on this device:\n${countSessionLabel(active)}\n` +
+      `(${(active.entries || []).length} item(s) scanned)\n\n` +
+      `Starting a NEW count sets that one aside — it stays in Report History and you can ` +
+      `Continue it later. Start a new count now?`,
+    );
+    if (!ok) return;
+  }
+  // Close any open workspace FIRST so renderCountsWorkspace cannot re-show the old count
+  // on top of the New-count filter modal.
+  state._countSessionOpen = false;
+  if (els.countSessionModal) els.countSessionModal.hidden = true;
+  openCountSetupModal();
+}
+
+// V2.0: Resume the active count on this device. If there is none, send the user
+// to Report History (where Continue lives) rather than silently doing nothing.
+function resumeActiveCount() {
+  if (state.activeCountSession) {
+    openCount(state.activeCountSession.id);
+    return;
+  }
+  showToast("No active count on this device. Open Report History to continue a saved count, or Start New Count.", 4200, "warning");
+  if (typeof openSessionHistoryModal === "function") openSessionHistoryModal();
 }
 
 async function ensureCountSessionReadyToApply(session, action = "submitting") {

@@ -916,8 +916,15 @@ body {
 
 .count-workspace__grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.15fr) minmax(20rem, 0.9fr);
+  grid-template-columns: minmax(0, 1fr) minmax(22rem, 1.05fr);
   gap: 1rem;
+  align-items: start;
+}
+
+.count-workspace__left {
+  display: grid;
+  gap: 1rem;
+  align-content: start;
 }
 
 .count-panel {
@@ -7204,98 +7211,125 @@ body.scan-mode-active.scan-performance-medium .scan-mode-panel * {
   letter-spacing: 0.03em;
 }
 
-
-/* Clean Architecture Pass: two-column physical count review */
-#countSessionModal .count-modal__dialog--workspace {
-  width: min(98vw, 1500px);
-  max-width: 1500px;
-}
-.count-workspace__grid {
-  display: grid !important;
-  grid-template-columns: minmax(280px, 0.9fr) minmax(260px, 0.7fr) minmax(420px, 1.25fr) !important;
-  align-items: start !important;
-  gap: 1rem !important;
-}
+/* ===========================================================================
+   V2.0 TWO-COLUMN LIVE REVIEW PANEL (Pass 2)
+   Right-hand list of in-scope items that diminishes as you scan.
+   RED = NULL (not scanned), ORANGE = qty difference, GREEN = PASS.
+   =========================================================================== */
 .count-review-panel {
-  min-width: 0;
-  border: 1px solid rgba(120, 120, 120, 0.22);
+  align-content: start;
+  gap: 0.7rem;
+  min-height: 0;
 }
 .count-review-head {
   display: flex;
-  justify-content: space-between;
-  gap: 0.75rem;
   align-items: flex-start;
-  margin-bottom: 0.65rem;
+  justify-content: space-between;
+  gap: 0.6rem;
+  flex-wrap: wrap;
 }
-.count-hide-pass-label {
-  white-space: nowrap;
-  font-size: 0.84rem;
-  font-weight: 800;
-}
+.count-review-head h3 { margin: 0; }
 .count-review-badges {
   display: flex;
   flex-wrap: wrap;
   gap: 0.35rem;
-  margin-bottom: 0.65rem;
 }
-.count-review-badge,
-.count-review-status {
-  display: inline-flex;
-  align-items: center;
+.review-badge {
   border-radius: 999px;
-  padding: 0.16rem 0.5rem;
-  font-weight: 900;
-  font-size: 0.78rem;
-}
-.count-review-filters {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.5rem;
-  margin-bottom: 0.65rem;
-}
-.count-review-filters label {
-  font-size: 0.78rem;
+  padding: 0.22rem 0.55rem;
+  font-size: 0.72rem;
   font-weight: 800;
+  border: 1px solid var(--line);
+  white-space: nowrap;
 }
-.count-review-filters select,
-.count-review-filters input {
-  width: 100%;
-  min-height: 2rem;
+.review-badge--null { background: #fdecea; color: #b3271a; border-color: #f3c2bc; }
+.review-badge--diff { background: #fef0e3; color: #b85c00; border-color: #f4d2ab; }
+.review-badge--pass { background: #e9f7ef; color: #1e7a45; border-color: #b9e3c9; }
+
+.count-review-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
 }
+.count-review-chip {
+  border: 1px solid var(--line);
+  background: #fff;
+  border-radius: 999px;
+  padding: 0.35rem 0.75rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+  color: var(--muted);
+}
+.count-review-chip:hover { border-color: var(--accent, #2f8f5b); }
+.count-review-chip.is-active {
+  background: var(--accent, #2f8f5b);
+  border-color: var(--accent, #2f8f5b);
+  color: #fff;
+}
+
 .count-review-wrap {
-  max-height: 58vh;
+  max-height: 60vh;
   overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
 }
 .count-review-table {
   width: 100%;
   border-collapse: collapse;
   font-size: 0.82rem;
 }
-.count-review-table th {
+.count-review-table thead th {
   position: sticky;
   top: 0;
   z-index: 1;
+  background: #f4f7f5;
+  text-align: left;
+  padding: 0.5rem 0.55rem;
+  font-size: 0.72rem;
+  font-weight: 800;
   cursor: pointer;
   user-select: none;
-  background: var(--panel-bg, #fff);
+  white-space: nowrap;
+  border-bottom: 1px solid var(--line);
 }
-.count-review-table th,
-.count-review-table td {
-  padding: 0.42rem 0.48rem;
-  border-bottom: 1px solid rgba(120, 120, 120, 0.16);
-  vertical-align: top;
+.count-review-table thead th.num { text-align: right; }
+.count-review-table thead th::after { content: " ⇅"; opacity: 0.35; font-size: 0.7em; }
+.count-review-table thead th.sort-asc::after { content: " ↑"; opacity: 1; }
+.count-review-table thead th.sort-desc::after { content: " ↓"; opacity: 1; }
+.count-review-table tbody td {
+  padding: 0.45rem 0.55rem;
+  border-bottom: 1px solid #eef1ef;
+  vertical-align: middle;
 }
-.count-review-table tbody tr { cursor: pointer; }
-.count-review-table tbody tr:hover { filter: brightness(0.98); }
-.count-review-null { background: rgba(220, 38, 38, 0.14); color: #991b1b; }
-.count-review-diff { background: rgba(245, 158, 11, 0.16); color: #92400e; }
-.count-review-pass { background: rgba(22, 163, 74, 0.14); color: #166534; }
-.count-review-table tr.count-review-null td:first-child { border-left: 5px solid #dc2626; }
-.count-review-table tr.count-review-diff td:first-child { border-left: 5px solid #f59e0b; }
-.count-review-table tr.count-review-pass td:first-child { border-left: 5px solid #16a34a; }
-@media (max-width: 1050px) {
-  .count-workspace__grid {
-    grid-template-columns: 1fr !important;
-  }
-  .count-review-wrap { max-height: 42vh; }
+.count-review-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* Row colour coding */
+.review-row--null td { background: #fdecea; color: #8f1d12; font-weight: 600; }
+.review-row--diff td { background: #fef0e3; color: #8a4500; }
+.review-row--pass td { background: #f3faf5; color: #2a6b45; }
+
+/* Scanned rows recede (gray) so the eye lands on what's left to scan */
+.review-row--scanned td { opacity: 0.6; font-weight: 500; }
+.review-row--scanned.review-row--pass td { color: #6a7d70; }
+
+.review-status {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 0.1rem 0.5rem;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+.review-status--null { background: #b3271a; color: #fff; }
+.review-status--diff { background: #b85c00; color: #fff; }
+.review-status--pass { background: #1e7a45; color: #fff; }
+
+/* Disabled Continue card when nothing is active */
+.count-card-disabled { opacity: 0.55; }
+
+/* Phones: stack everything (matches existing 640px workspace stacking) */
+@media (max-width: 640px) {
+  .count-workspace__grid { grid-template-columns: 1fr !important; }
+  .count-review-wrap { max-height: 48vh; }
 }
