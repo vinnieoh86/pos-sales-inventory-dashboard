@@ -4407,6 +4407,16 @@ function startCountSessionFromModal() {
     localSyncPending: true,
     entries: [],
   };
+  // Snapshot the starting quantities for this count scope. This is read-only report
+  // data so old/future reports calculate Qty Before correctly even after product
+  // stock changes later.
+  const startCandidates = currentCountSessionCandidates(session);
+  session.countStartSnapshot = {};
+  startCandidates.forEach((item) => {
+    const key = codeKey(item.code);
+    if (key) session.countStartSnapshot[key] = Number(item.stock || 0);
+  });
+
   // FIX-B: Register in countSessions[] immediately with isActiveLive:true so Report History
   // shows it right away. activeCountSession points to the same object.
   // isActiveLive is read by countSessionStatusLabel() to show "Active / Live" in the table.
@@ -5318,6 +5328,21 @@ function countReportStatus(entry, qtyDiff) {
   return Number(qtyDiff || 0) === 0 ? "PASS" : "QTY DIFF";
 }
 
+function countStartSnapshotQty(session = {}, item = {}, firstEntry = null) {
+  const keys = [codeKey(item.code), codeKey(firstEntry?.code), codeKey(item.plu), codeKey(item.itemNumber)]
+    .filter(Boolean);
+  const snapshots = [session.countStartSnapshot, session.startSnapshot, session.preCountSnapshot]
+    .filter((snap) => snap && typeof snap === "object");
+  for (const snap of snapshots) {
+    for (const key of keys) {
+      if (Object.prototype.hasOwnProperty.call(snap, key)) return Number(snap[key] || 0);
+    }
+  }
+  if (firstEntry && Number.isFinite(Number(firstEntry.originalQty))) return Number(firstEntry.originalQty || 0);
+  if (Number.isFinite(Number(item.stock))) return Number(item.stock || 0);
+  return 0;
+}
+
 // REPORT RECALC SAFETY:
 // Build comparison rows from the saved session entries first, then fill in any
 // unscanned in-scope items from the current item master. This lets older saved
@@ -5360,7 +5385,11 @@ function countReportComparisonRows(session = {}) {
     const key = codeKey(item.code);
     const entry = latestByCode.get(key);
     const firstEntry = firstByCode.get(key);
-    const originalQty = Number(firstEntry?.originalQty ?? item.stock ?? 0);
+    // Report truth table:
+    // - Qty Before must come from the count-start snapshot when available.
+    // - A missing entry means the item was NOT SCANNED, so Qty After is 0 and
+    //   Qty Diff is 0 - Qty Before. Never treat missing as PASS.
+    const originalQty = countStartSnapshotQty(normalized, item, firstEntry);
     const finalQty = entry ? Number(entry.countedQty ?? entry.inputQty ?? 0) : 0;
     const isNull = !entry;
     const qtyDiff = finalQty - originalQty;
@@ -5436,7 +5465,7 @@ function exportCountReportPdf() {
         const cls = qtyDiff > 0 ? "var-up" : qtyDiff < 0 ? "var-down" : "";
         return `<tr class="${cls}"><td>${escapeHtml(item.code)}</td><td>${escapeHtml(item.plu || entry?.plu || "-")}</td><td>${escapeHtml(item.product)}</td><td>${escapeHtml(item.vendor || "-")}</td><td>${escapeHtml(item.category || "-")}</td>
           <td class="num">${number.format(originalQty)}</td>
-          <td class="num">${entry ? number.format(finalQty) : "-"}</td>
+          <td class="num">${number.format(finalQty)}</td>
           <td>${isNull ? "NULL" : ""}</td>
           <td class="num">${qtyDiff > 0 ? `+${number.format(qtyDiff)}` : number.format(qtyDiff)}</td>
           <td class="num">${currency.format(costDiff)}</td>
@@ -5528,7 +5557,7 @@ async function exportCountReportExcel() {
     [],
     ["Code", "PLU", "Item", "Vendor", "Category", "Qty Before", "Qty After", "NULL", "Qty Diff", "Cost Diff", "Status"],
     ...comparisonRows.map(({ item, entry, originalQty, finalQty, isNull, qtyDiff, costDiff, status }) => {
-      return [item.code, item.plu || entry?.plu || "", item.product, item.vendor || "", item.category || "", originalQty, entry ? finalQty : "", isNull ? "NULL" : "", qtyDiff, costDiff, status];
+      return [item.code, item.plu || entry?.plu || "", item.product, item.vendor || "", item.category || "", originalQty, finalQty, isNull ? "NULL" : "", qtyDiff, costDiff, status];
     }),
   ];
   const wsComp = xlsx.utils.aoa_to_sheet(compData);
@@ -5565,7 +5594,7 @@ function renderCountReportRows(session, mode = state.countReportMode || "input")
             <td>${escapeHtml(item.vendor || "-")}</td>
             <td>${escapeHtml(item.category || "-")}</td>
             <td class="num">${number.format(originalQty)}</td>
-            <td class="num">${entry ? number.format(finalQty) : "-"}</td>
+            <td class="num">${number.format(finalQty)}</td>
             <td>${isNull ? `<span class="muted">NULL</span>` : ""}</td>
             <td class="num ${qtyClass}">${qtyDiff > 0 ? `+${number.format(qtyDiff)}` : number.format(qtyDiff)}</td>
             <td class="${costClass}">${currency.format(costDiff)}</td>

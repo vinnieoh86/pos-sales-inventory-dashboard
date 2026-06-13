@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "20260613-pass6-report-plu-kindleitem";
+  const VERSION = "20260613-pass8-report-qtydiff-nullfix";
 
   function makeSearchEditable() {
     const search = document.querySelector("#searchInput");
