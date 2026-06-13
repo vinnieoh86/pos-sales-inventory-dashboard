@@ -5031,6 +5031,29 @@ function closeDuplicateCountModal() {
   focusCountSearch();
 }
 
+function playInventoryCommitSound() {
+  try {
+    const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextCtor) return;
+    const ctx = state._countAudioContext || new AudioContextCtor();
+    state._countAudioContext = ctx;
+    if (ctx.state === "suspended") ctx.resume?.();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(880, ctx.currentTime);
+    gain.gain.setValueAtTime(0.001, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.08, ctx.currentTime + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.12);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + 0.13);
+  } catch (error) {
+    // Sound is optional; never block inventory entry if audio is unavailable.
+  }
+}
+
 function commitCountEntry(item, qty, mode, options = {}) {
   clearCountAutoCommitTimer?.();
   const session = {
@@ -5089,6 +5112,7 @@ function commitCountEntry(item, qty, mode, options = {}) {
   state.selectedCountItemCode = "";
   state.pendingDuplicateMode = null;
   persistActiveCountSession();
+  playInventoryCommitSound();
   // Fast path: prepend new row, update summary, reset UI - no full workspace rebuild
   renderCountEntryRows(true);
   renderSelectedCountItem();
@@ -5364,19 +5388,12 @@ function countReportComparisonRows(session = {}) {
 
   const firstByCode = new Map();
   const latestByCode = new Map();
-  const varianceByCode = new Map();
   entriesByCode.forEach((list, key) => {
     firstByCode.set(key, list[0]);
+    // FINAL COMPARISON RULE:
+    // Input Log stays the full audit trail. Comparison/PDF/Excel use the
+    // latest action only, so a corrected reset/add becomes the final truth.
     latestByCode.set(key, list[list.length - 1]);
-    // IMPORTANT: comparison report is a manager exception report. If an item
-    // had ANY variance in the log, keep that variance visible instead of
-    // hiding it behind a later duplicate/pass entry.
-    const varianceEntry = list.find((entry) => {
-      const before = Number(entry.originalQty ?? 0);
-      const after = Number(entry.countedQty ?? entry.inputQty ?? 0);
-      return (after - before) !== 0;
-    });
-    if (varianceEntry) varianceByCode.set(key, varianceEntry);
   });
 
   const itemByCode = new Map();
@@ -5406,12 +5423,12 @@ function countReportComparisonRows(session = {}) {
     const key = codeKey(item.code);
     const firstEntry = firstByCode.get(key);
     const latestEntry = latestByCode.get(key);
-    const varianceEntry = varianceByCode.get(key);
-    const entry = varianceEntry || latestEntry;
+    const entry = latestEntry;
     // Report truth table:
-    // - If ANY saved log row had a qty variance, show that variance row.
+    // - Input Log = every action.
+    // - Comparison/PDF/Excel = final state from the latest saved entry.
     // - A missing entry means the item was NOT SCANNED, so Qty After is 0 and
-    //   Qty Diff is 0 - Qty Before. Never treat missing as PASS.
+    //   Qty Diff is 0 - Qty Before.
     const originalQty = countStartSnapshotQty(normalized, item, entry || firstEntry);
     const finalQty = entry ? Number(entry.countedQty ?? entry.inputQty ?? 0) : 0;
     const isNull = !entry;
@@ -5419,7 +5436,7 @@ function countReportComparisonRows(session = {}) {
     const unitCost = Number(entry?.unitCost ?? item.unitCost ?? 0);
     const costDiff = qtyDiff * unitCost;
     const status = isNull ? "Not scanned" : qtyDiff === 0 ? "PASS" : "QTY DIFF";
-    return { item, entry, firstEntry, originalQty, finalQty, isNull, qtyDiff, costDiff, status, hadVariance: Boolean(varianceEntry) };
+    return { item, entry, firstEntry, originalQty, finalQty, isNull, qtyDiff, costDiff, status };
   }).sort((a, b) => {
     // Wrong / missing items first for manager review, PASS last.
     const rank = (row) => row.isNull ? 0 : row.qtyDiff !== 0 ? 1 : 2;
@@ -5429,8 +5446,10 @@ function countReportComparisonRows(session = {}) {
 
 function countReportRowClass({ isNull, qtyDiff, status } = {}) {
   if (isNull || String(status || "").toLowerCase().includes("not scanned")) return "count-report-row-null";
-  if (Number(qtyDiff || 0) !== 0) return "count-report-row-diff";
-  return "count-report-row-pass";
+  const diff = Number(qtyDiff || 0);
+  if (diff < 0) return "count-report-row-negative";
+  if (diff > 0) return "count-report-row-positive";
+  return "count-report-row-zero";
 }
 
 function countReportSummary(rows = []) {
@@ -5535,10 +5554,11 @@ function exportCountReportPdf() {
     td { padding: 4px 6px; border-bottom: 1px solid #eee; }
     .num { text-align: right; }
     .var-up td { color: #16835b; } .var-down td { color: #c0392b; }
-    .count-report-row-pass td { background: #eaf7ef; }
-    .count-report-row-diff td { background: #fff0dc; color: #9a4b00; font-weight: 700; }
-    .count-report-row-null td { background: #fde2e2; color: #991b1b; font-weight: 700; }
-    @media print { body { padding: 8px; } .count-report-row-pass td { -webkit-print-color-adjust: exact; print-color-adjust: exact; } .count-report-row-diff td { -webkit-print-color-adjust: exact; print-color-adjust: exact; } .count-report-row-null td { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+    .count-report-row-zero td { background: #ffffff; }
+    .count-report-row-negative td { background: #fde2e2; color: #991b1b; font-weight: 700; }
+    .count-report-row-positive td { background: #dbeafe; color: #1d4ed8; font-weight: 700; }
+    .count-report-row-null td { background: #eeeeee; color: #6b7280; font-weight: 700; }
+    @media print { body { padding: 8px; } .count-report-row-zero td, .count-report-row-negative td, .count-report-row-positive td, .count-report-row-null td { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
   </style></head><body>
   <h1>Physical Count Report</h1>
   <div class="meta">
@@ -5600,7 +5620,7 @@ async function exportCountReportExcel() {
   wsInput["!cols"] = [12, 12, 32, 14, 14, 10, 10, 10, 8, 20].map((w) => ({ wch: w }));
   [...entries].reverse().forEach((entry, i) => {
     const variance = Number(entry.countedQty || 0) - Number(entry.originalQty || 0);
-    applyCountReportRowFill(wsInput, i + 3, variance === 0 ? "EAF7EF" : "FFF0DC");
+    applyCountReportRowFill(wsInput, i + 3, variance < 0 ? "FDE2E2" : variance > 0 ? "DBEAFE" : "FFFFFF");
   });
   xlsx.utils.book_append_sheet(wb, wsInput, "Input Log");
 
@@ -5617,7 +5637,8 @@ async function exportCountReportExcel() {
   const wsComp = xlsx.utils.aoa_to_sheet(compData);
   wsComp["!cols"] = [12, 12, 32, 14, 14, 10, 10, 8, 10, 10, 12].map((w) => ({ wch: w }));
   comparisonRows.forEach((row, i) => {
-    const fill = row.isNull ? "FDE2E2" : Number(row.qtyDiff || 0) !== 0 ? "FFF0DC" : "EAF7EF";
+    const diff = Number(row.qtyDiff || 0);
+    const fill = row.isNull ? "EEEEEE" : diff < 0 ? "FDE2E2" : diff > 0 ? "DBEAFE" : "FFFFFF";
     applyCountReportRowFill(wsComp, i + 3, fill);
   });
   xlsx.utils.book_append_sheet(wb, wsComp, "Comparison");

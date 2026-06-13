@@ -7427,13 +7427,16 @@ body.scan-mode-active.scan-performance-medium .scan-mode-panel * {
 }
 
 /* Pass 9: manager report color coding only. */
-.count-report-table tr.count-report-row-pass td { background: #eaf7ef; }
-.count-report-table tr.count-report-row-diff td { background: #fff0dc; color: #9a4b00; font-weight: 700; }
-.count-report-table tr.count-report-row-null td { background: #fde2e2; color: #991b1b; font-weight: 700; }
-.count-report-table tr.count-report-row-diff td .count-diff-badge,
-.count-report-table tr.count-report-row-null td .count-diff-badge { background: #ffedd5; color: #9a3412; }
+.count-report-table tr.count-report-row-zero td { background: #ffffff; color: inherit; }
+.count-report-table tr.count-report-row-negative td { background: #fde2e2; color: #991b1b; font-weight: 700; }
+.count-report-table tr.count-report-row-positive td { background: #dbeafe; color: #1d4ed8; font-weight: 700; }
+.count-report-table tr.count-report-row-null td { background: #eeeeee; color: #6b7280; font-weight: 700; }
+.count-report-table tr.count-report-row-negative td .count-diff-badge { background: #fee2e2; color: #991b1b; }
+.count-report-table tr.count-report-row-positive td .count-diff-badge { background: #dbeafe; color: #1d4ed8; }
+.count-report-table tr.count-report-row-null td .count-diff-badge { background: #e5e7eb; color: #4b5563; }
 @media print {
-  .count-report-table tr.count-report-row-pass td,
-  .count-report-table tr.count-report-row-diff td,
+  .count-report-table tr.count-report-row-zero td,
+  .count-report-table tr.count-report-row-negative td,
+  .count-report-table tr.count-report-row-positive td,
   .count-report-table tr.count-report-row-null td { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 }

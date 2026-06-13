@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "20260613-pass9-report-colors-anyvariance";
+  const VERSION = "20260613-pass10-final-latest-colors-beep";
 
   function makeSearchEditable() {
     const search = document.querySelector("#searchInput");
