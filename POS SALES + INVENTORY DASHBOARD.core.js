@@ -5445,6 +5445,38 @@ function activeReportEntries(session = {}) {
   return filterUndoneCountEntries(normalized.entries || [], normalized);
 }
 
+
+function countInputLogDisplayRows(entries = []) {
+  const runningByCode = new Map();
+  const sorted = sortedCountEntries(entries);
+  const displayByEntryId = new Map();
+  sorted.forEach((entry) => {
+    const key = codeKey(entry?.code);
+    const prior = runningByCode.has(key) ? Number(runningByCode.get(key) || 0) : 0;
+    let displayBefore = Number(entry?.originalQty || 0);
+    let displayAfter = Number(entry?.countedQty || 0);
+    let displayVariance = displayAfter - displayBefore;
+    if (entry?.autoPlus === true) {
+      const delta = Math.max(0, Number(entry.inputQty ?? entry.qty ?? 1) || 0);
+      displayBefore = prior;
+      displayAfter = prior + delta;
+      displayVariance = delta;
+    }
+    if (key) runningByCode.set(key, displayAfter);
+    const row = {
+      ...entry,
+      inputLogQtyBefore: displayBefore,
+      inputLogQtyAfter: displayAfter,
+      inputLogVariance: displayVariance,
+    };
+    displayByEntryId.set(cleanCell(entry?.entryId || `${entry?.code || ''}|${entry?.recordedAt || entry?.timestamp || ''}`), row);
+  });
+  return entries.map((entry) => {
+    const id = cleanCell(entry?.entryId || `${entry?.code || ''}|${entry?.recordedAt || entry?.timestamp || ''}`);
+    return displayByEntryId.get(id) || entry;
+  });
+}
+
 function latestCountEntryByCode(entries = []) {
   const map = new Map();
   [...entries]
@@ -5668,12 +5700,12 @@ function exportCountReportPdf() {
   } else {
     tableHtml = `<table>
       <thead><tr><th>Code</th><th>PLU</th><th>Item</th><th>Vendor</th><th>Category</th><th class="num">Qty Before</th><th class="num">Counted</th><th class="num">Variance</th><th>Mode</th><th>Time</th></tr></thead>
-      <tbody>${[...entries].reverse().map((entry) => {
-        const variance = Number(entry.countedQty || 0) - Number(entry.originalQty || 0);
+      <tbody>${countInputLogDisplayRows(entries).reverse().map((entry) => {
+        const variance = Number(entry.inputLogVariance ?? (Number(entry.countedQty || 0) - Number(entry.originalQty || 0)));
         const cls = variance > 0 ? "var-up" : variance < 0 ? "var-down" : "";
         return `<tr class="${cls}"><td>${escapeHtml(entry.code)}</td><td>${escapeHtml(entry.plu || "-")}</td><td>${escapeHtml(entry.product)}</td><td>${escapeHtml(entry.vendor || "-")}</td><td>${escapeHtml(entry.category || "-")}</td>
-          <td class="num">${number.format(entry.originalQty || 0)}</td>
-          <td class="num">${number.format(entry.countedQty || 0)}</td>
+          <td class="num">${number.format(entry.inputLogQtyBefore ?? entry.originalQty ?? 0)}</td>
+          <td class="num">${number.format(entry.inputLogQtyAfter ?? entry.countedQty ?? 0)}</td>
           <td class="num">${variance > 0 ? `+${number.format(variance)}` : number.format(variance)}</td>
           <td>${escapeHtml(entry.mode || "set")}</td>
           <td>${escapeHtml(new Date(entry.recordedAt).toLocaleString())}</td></tr>`;
@@ -5745,15 +5777,15 @@ async function exportCountReportExcel() {
     ["Physical Count - Input Log", "", "", `Date: ${session.date || "-"}`, `Vendor: ${vendorLabel}`, `Category: ${session.category || "All"}`, syncNote],
     [],
     ["Code", "PLU", "Item", "Vendor", "Category", "Qty Before", "Counted", "Variance", "Mode", "Time"],
-    ...[...entries].reverse().map((entry) => {
-      const variance = Number(entry.countedQty || 0) - Number(entry.originalQty || 0);
-      return [entry.code, entry.plu || "", entry.product, entry.vendor || "", entry.category || "", entry.originalQty || 0, entry.countedQty || 0, variance, entry.mode || "set", new Date(entry.recordedAt).toLocaleString()];
+    ...countInputLogDisplayRows(entries).reverse().map((entry) => {
+      const variance = Number(entry.inputLogVariance ?? (Number(entry.countedQty || 0) - Number(entry.originalQty || 0)));
+      return [entry.code, entry.plu || "", entry.product, entry.vendor || "", entry.category || "", entry.inputLogQtyBefore ?? entry.originalQty ?? 0, entry.inputLogQtyAfter ?? entry.countedQty ?? 0, variance, entry.mode || "set", new Date(entry.recordedAt).toLocaleString()];
     }),
   ];
   const wsInput = xlsx.utils.aoa_to_sheet(inputData);
   wsInput["!cols"] = [12, 12, 32, 14, 14, 10, 10, 10, 8, 20].map((w) => ({ wch: w }));
-  [...entries].reverse().forEach((entry, i) => {
-    const variance = Number(entry.countedQty || 0) - Number(entry.originalQty || 0);
+  countInputLogDisplayRows(entries).reverse().forEach((entry, i) => {
+    const variance = Number(entry.inputLogVariance ?? (Number(entry.countedQty || 0) - Number(entry.originalQty || 0)));
     const fill = variance < 0 ? "FDE2E2" : variance > 0 ? "DBEAFE" : "FFFFFF";
     if (variance !== 0) applyCountReportCellFill(wsInput, i + 3, 7, fill);
   });
@@ -5810,9 +5842,9 @@ function countReportSortValue(row, key, mode) {
   if (key === "item") return cleanCell(entry.product);
   if (key === "vendor") return cleanCell(entry.vendor);
   if (key === "category") return cleanCell(entry.category);
-  if (key === "originalQty") return Number(entry.originalQty || 0);
-  if (key === "finalQty") return Number(entry.countedQty || 0);
-  if (key === "qtyDiff") return Number(entry.countedQty || 0) - Number(entry.originalQty || 0);
+  if (key === "originalQty") return Number(entry.inputLogQtyBefore ?? entry.originalQty ?? 0);
+  if (key === "finalQty") return Number(entry.inputLogQtyAfter ?? entry.countedQty ?? 0);
+  if (key === "qtyDiff") return Number(entry.inputLogVariance ?? (Number(entry.countedQty || 0) - Number(entry.originalQty || 0)));
   if (key === "mode") return cleanCell(entry.mode || "set");
   if (key === "time") return new Date(entry.recordedAt || entry.timestamp || 0).getTime() || 0;
   return "";
@@ -5900,10 +5932,11 @@ function renderCountReportRows(session, mode = state.countReportMode || "input")
     return;
   }
   markCountReportSortHeaders();
-  const inputRows = state.countReportSort?.key ? sortCountReportRows(entries, "input") : entries.slice().reverse();
+  const displayEntries = countInputLogDisplayRows(entries);
+  const inputRows = state.countReportSort?.key ? sortCountReportRows(displayEntries, "input") : displayEntries.slice().reverse();
   els.countReportBody.innerHTML = inputRows
     .map((entry) => {
-      const variance = Number(entry.countedQty || 0) - Number(entry.originalQty || 0);
+      const variance = Number(entry.inputLogVariance ?? (Number(entry.countedQty || 0) - Number(entry.originalQty || 0)));
       const varianceClass = variance > 0 ? "variance-up" : variance < 0 ? "variance-down" : "variance-flat";
       const varianceLabel = variance > 0 ? `+${number.format(variance)}` : number.format(variance);
       return `
@@ -5913,8 +5946,8 @@ function renderCountReportRows(session, mode = state.countReportMode || "input")
           <td>${escapeHtml(entry.product || "-")}</td>
           <td>${escapeHtml(entry.vendor || "-")}</td>
           <td>${escapeHtml(entry.category || "-")}</td>
-          <td class="num">${number.format(entry.originalQty || 0)}</td>
-          <td class="num">${number.format(entry.countedQty || 0)}</td>
+          <td class="num">${number.format(entry.inputLogQtyBefore ?? entry.originalQty ?? 0)}</td>
+          <td class="num">${number.format(entry.inputLogQtyAfter ?? entry.countedQty ?? 0)}</td>
           <td class="num ${varianceClass}">${varianceLabel}</td>
           <td>${escapeHtml(entry.mode || "set")}</td>
           <td>${escapeHtml(new Date(entry.recordedAt).toLocaleString())}</td>
