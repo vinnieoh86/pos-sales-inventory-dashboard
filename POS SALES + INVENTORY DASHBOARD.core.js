@@ -43,6 +43,7 @@ const state = {
   _countSessionOpen: false,
   countSoundEnabled: localStorage.getItem("posDashboardCountSoundEnabled:v1") !== "false",
   _countAudioContext: null,
+  _countConfirmAudio: null,
   _deletedCountSessionIds: new Set(JSON.parse(localStorage.getItem("posDashboardDeletedCountSessionIds:v1") || "[]")),
   _priceCheckExactIndex: null,
   _priceCheckExactIndexStamp: 0,
@@ -4383,30 +4384,13 @@ function toggleCountSound() {
 
 function playCountConfirmBeep(options = {}) {
   try {
-    const AudioCtx = window.AudioContext || window.webkitAudioContext;
-    if (!AudioCtx) return;
-    const ctx = state._countAudioContext || new AudioCtx();
-    state._countAudioContext = ctx;
-    if (ctx.state === "suspended") ctx.resume?.();
-    const now = ctx.currentTime;
-    const master = ctx.createGain();
-    master.gain.setValueAtTime(0.0001, now);
-    master.gain.exponentialRampToValueAtTime(options.soft ? 0.10 : 0.22, now + 0.01);
-    master.gain.exponentialRampToValueAtTime(0.0001, now + (options.soft ? 0.14 : 0.24));
-    master.connect(ctx.destination);
-
-    const makeTone = (frequency, delay, duration, type = "triangle") => {
-      const osc = ctx.createOscillator();
-      osc.type = type;
-      osc.frequency.setValueAtTime(frequency, now + delay);
-      osc.connect(master);
-      osc.start(now + delay);
-      osc.stop(now + delay + duration);
-    };
-
-    // Louder, higher-pitched two-note "ding" for successful inventory save.
-    makeTone(options.soft ? 880 : 1320, 0, options.soft ? 0.10 : 0.16);
-    makeTone(options.soft ? 1320 : 1760, options.soft ? 0.045 : 0.055, options.soft ? 0.08 : 0.14);
+    const audio = state._countConfirmAudio || new Audio("count-confirm-ding.mp3");
+    state._countConfirmAudio = audio;
+    audio.preload = "auto";
+    audio.volume = 1;
+    audio.currentTime = 0;
+    const playPromise = audio.play();
+    if (playPromise?.catch) playPromise.catch(() => {});
   } catch (_) {}
 }
 
@@ -12068,6 +12052,12 @@ async function syncSharedDataToSupabase(options = {}) {
 async function initApp() {
   const bootStartedAt = performanceNow();
   console.info("[AppPerf] app boot start");
+  try {
+    state._countConfirmAudio = new Audio("count-confirm-ding.mp3");
+    state._countConfirmAudio.preload = "auto";
+    state._countConfirmAudio.volume = 1;
+    state._countConfirmAudio.load?.();
+  } catch (_) {}
   mountInventoryQuickTools();
   if (ENABLE_SHARED_SYNC) {
     refreshUsersFromSupabase({ silent: true }).catch(() => {});
