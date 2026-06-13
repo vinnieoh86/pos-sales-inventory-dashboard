@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "20260613-pass8-report-qtydiff-nullfix";
+  const VERSION = "20260613-pass9-report-colors-anyvariance";
 
   function makeSearchEditable() {
     const search = document.querySelector("#searchInput");

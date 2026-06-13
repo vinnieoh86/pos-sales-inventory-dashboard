@@ -5351,11 +5351,32 @@ function countStartSnapshotQty(session = {}, item = {}, firstEntry = null) {
 function countReportComparisonRows(session = {}) {
   const normalized = normalizeCountSession(session, "synced");
   const entries = activeReportEntries(normalized);
+  const entriesByCode = new Map();
+  entries
+    .slice()
+    .sort((a, b) => String(a.recordedAt || a.timestamp || "").localeCompare(String(b.recordedAt || b.timestamp || "")) || String(a.entryId || "").localeCompare(String(b.entryId || "")))
+    .forEach((entry) => {
+      const key = codeKey(entry.code);
+      if (!key) return;
+      if (!entriesByCode.has(key)) entriesByCode.set(key, []);
+      entriesByCode.get(key).push(entry);
+    });
+
   const firstByCode = new Map();
-  const latestByCode = latestCountEntryByCode(entries);
-  entries.forEach((entry) => {
-    const key = codeKey(entry.code);
-    if (key && !firstByCode.has(key)) firstByCode.set(key, entry);
+  const latestByCode = new Map();
+  const varianceByCode = new Map();
+  entriesByCode.forEach((list, key) => {
+    firstByCode.set(key, list[0]);
+    latestByCode.set(key, list[list.length - 1]);
+    // IMPORTANT: comparison report is a manager exception report. If an item
+    // had ANY variance in the log, keep that variance visible instead of
+    // hiding it behind a later duplicate/pass entry.
+    const varianceEntry = list.find((entry) => {
+      const before = Number(entry.originalQty ?? 0);
+      const after = Number(entry.countedQty ?? entry.inputQty ?? 0);
+      return (after - before) !== 0;
+    });
+    if (varianceEntry) varianceByCode.set(key, varianceEntry);
   });
 
   const itemByCode = new Map();
@@ -5383,24 +5404,40 @@ function countReportComparisonRows(session = {}) {
 
   return [...itemByCode.values()].map((item) => {
     const key = codeKey(item.code);
-    const entry = latestByCode.get(key);
     const firstEntry = firstByCode.get(key);
+    const latestEntry = latestByCode.get(key);
+    const varianceEntry = varianceByCode.get(key);
+    const entry = varianceEntry || latestEntry;
     // Report truth table:
-    // - Qty Before must come from the count-start snapshot when available.
+    // - If ANY saved log row had a qty variance, show that variance row.
     // - A missing entry means the item was NOT SCANNED, so Qty After is 0 and
     //   Qty Diff is 0 - Qty Before. Never treat missing as PASS.
-    const originalQty = countStartSnapshotQty(normalized, item, firstEntry);
+    const originalQty = countStartSnapshotQty(normalized, item, entry || firstEntry);
     const finalQty = entry ? Number(entry.countedQty ?? entry.inputQty ?? 0) : 0;
     const isNull = !entry;
     const qtyDiff = finalQty - originalQty;
     const unitCost = Number(entry?.unitCost ?? item.unitCost ?? 0);
     const costDiff = qtyDiff * unitCost;
-    return { item, entry, firstEntry, originalQty, finalQty, isNull, qtyDiff, costDiff, status: countReportStatus(entry, qtyDiff) };
+    const status = isNull ? "Not scanned" : qtyDiff === 0 ? "PASS" : "QTY DIFF";
+    return { item, entry, firstEntry, originalQty, finalQty, isNull, qtyDiff, costDiff, status, hadVariance: Boolean(varianceEntry) };
   }).sort((a, b) => {
     // Wrong / missing items first for manager review, PASS last.
     const rank = (row) => row.isNull ? 0 : row.qtyDiff !== 0 ? 1 : 2;
     return rank(a) - rank(b) || Math.abs(b.qtyDiff) - Math.abs(a.qtyDiff) || String(a.item.product || "").localeCompare(String(b.item.product || ""));
   });
+}
+
+function countReportRowClass({ isNull, qtyDiff, status } = {}) {
+  if (isNull || String(status || "").toLowerCase().includes("not scanned")) return "count-report-row-null";
+  if (Number(qtyDiff || 0) !== 0) return "count-report-row-diff";
+  return "count-report-row-pass";
+}
+
+function countReportSummary(rows = []) {
+  const pass = rows.filter((r) => !r.isNull && Number(r.qtyDiff || 0) === 0).length;
+  const qtyDiff = rows.filter((r) => !r.isNull && Number(r.qtyDiff || 0) !== 0).length;
+  const notScanned = rows.filter((r) => r.isNull).length;
+  return { pass, qtyDiff, notScanned, totalIssues: qtyDiff + notScanned };
 }
 
 function openCountReport(sessionId = state.activeCountSession?.id, mode = state.countReportMode || "input") {
@@ -5462,10 +5499,10 @@ function exportCountReportPdf() {
     tableHtml = `<table>
       <thead><tr><th>Code</th><th>PLU</th><th>Item</th><th>Vendor</th><th>Category</th><th class="num">Qty Before</th><th class="num">Qty After</th><th>NULL</th><th class="num">Qty Diff</th><th class="num">Cost Diff</th><th>Status</th></tr></thead>
       <tbody>${comparisonRows.map(({ item, entry, originalQty, finalQty, isNull, qtyDiff, costDiff, status }) => {
-        const cls = qtyDiff > 0 ? "var-up" : qtyDiff < 0 ? "var-down" : "";
+        const cls = countReportRowClass({ isNull, qtyDiff, status });
         return `<tr class="${cls}"><td>${escapeHtml(item.code)}</td><td>${escapeHtml(item.plu || entry?.plu || "-")}</td><td>${escapeHtml(item.product)}</td><td>${escapeHtml(item.vendor || "-")}</td><td>${escapeHtml(item.category || "-")}</td>
           <td class="num">${number.format(originalQty)}</td>
-          <td class="num">${number.format(finalQty)}</td>
+          <td class="num">${isNull ? "-" : number.format(finalQty)}</td>
           <td>${isNull ? "NULL" : ""}</td>
           <td class="num">${qtyDiff > 0 ? `+${number.format(qtyDiff)}` : number.format(qtyDiff)}</td>
           <td class="num">${currency.format(costDiff)}</td>
@@ -5498,7 +5535,10 @@ function exportCountReportPdf() {
     td { padding: 4px 6px; border-bottom: 1px solid #eee; }
     .num { text-align: right; }
     .var-up td { color: #16835b; } .var-down td { color: #c0392b; }
-    @media print { body { padding: 8px; } }
+    .count-report-row-pass td { background: #eaf7ef; }
+    .count-report-row-diff td { background: #fff0dc; color: #9a4b00; font-weight: 700; }
+    .count-report-row-null td { background: #fde2e2; color: #991b1b; font-weight: 700; }
+    @media print { body { padding: 8px; } .count-report-row-pass td { -webkit-print-color-adjust: exact; print-color-adjust: exact; } .count-report-row-diff td { -webkit-print-color-adjust: exact; print-color-adjust: exact; } .count-report-row-null td { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
   </style></head><body>
   <h1>Physical Count Report</h1>
   <div class="meta">
@@ -5535,6 +5575,16 @@ async function exportCountReportExcel() {
     ? `WARNING: ${syncStats.pending} pending / ${syncStats.failed} failed sync entries. Verify before POS import.`
     : "Sync: all entries confirmed.";
   const wb = xlsx.utils.book_new();
+  const applyCountReportRowFill = (ws, rowIndexZeroBased, hex) => {
+    // Safe no-op in basic SheetJS builds that ignore styles; supported builds
+    // will preserve these fills in the exported Excel workbook.
+    const range = xlsx.utils.decode_range(ws["!ref"] || "A1:A1");
+    for (let c = range.s.c; c <= range.e.c; c += 1) {
+      const addr = xlsx.utils.encode_cell({ r: rowIndexZeroBased, c });
+      if (!ws[addr]) ws[addr] = { t: "s", v: "" };
+      ws[addr].s = Object.assign({}, ws[addr].s || {}, { fill: { fgColor: { rgb: hex } } });
+    }
+  };
 
   // Input log sheet
   const inputData = [
@@ -5548,6 +5598,10 @@ async function exportCountReportExcel() {
   ];
   const wsInput = xlsx.utils.aoa_to_sheet(inputData);
   wsInput["!cols"] = [12, 12, 32, 14, 14, 10, 10, 10, 8, 20].map((w) => ({ wch: w }));
+  [...entries].reverse().forEach((entry, i) => {
+    const variance = Number(entry.countedQty || 0) - Number(entry.originalQty || 0);
+    applyCountReportRowFill(wsInput, i + 3, variance === 0 ? "EAF7EF" : "FFF0DC");
+  });
   xlsx.utils.book_append_sheet(wb, wsInput, "Input Log");
 
   // Comparison sheet
@@ -5562,6 +5616,10 @@ async function exportCountReportExcel() {
   ];
   const wsComp = xlsx.utils.aoa_to_sheet(compData);
   wsComp["!cols"] = [12, 12, 32, 14, 14, 10, 10, 8, 10, 10, 12].map((w) => ({ wch: w }));
+  comparisonRows.forEach((row, i) => {
+    const fill = row.isNull ? "FDE2E2" : Number(row.qtyDiff || 0) !== 0 ? "FFF0DC" : "EAF7EF";
+    applyCountReportRowFill(wsComp, i + 3, fill);
+  });
   xlsx.utils.book_append_sheet(wb, wsComp, "Comparison");
 
   xlsx.writeFile(wb, `PhysicalCount_${session.date || "report"}.xlsx`);
@@ -5586,8 +5644,9 @@ function renderCountReportRows(session, mode = state.countReportMode || "input")
           : status === "PASS"
             ? `<span class="count-pass-badge">PASS</span> <span class="muted">${escapeHtml(new Date(entry.recordedAt).toLocaleString())}</span>`
             : `<span class="count-diff-badge">QTY DIFF</span> <span class="muted">${escapeHtml(new Date(entry.recordedAt).toLocaleString())}</span>`;
+        const rowClass = countReportRowClass({ isNull, qtyDiff, status });
         return `
-          <tr>
+          <tr class="${rowClass}">
             <td>${escapeHtml(item.code || "-")}</td>
             <td>${escapeHtml(item.plu || entry?.plu || "-")}</td>
             <td>${escapeHtml(item.product || "-")}</td>
@@ -5616,7 +5675,7 @@ function renderCountReportRows(session, mode = state.countReportMode || "input")
       const varianceClass = variance > 0 ? "variance-up" : variance < 0 ? "variance-down" : "variance-flat";
       const varianceLabel = variance > 0 ? `+${number.format(variance)}` : number.format(variance);
       return `
-        <tr>
+        <tr class="${variance !== 0 ? "count-report-row-diff" : "count-report-row-pass"}">
           <td>${escapeHtml(entry.code || "-")}</td>
           <td>${escapeHtml(entry.plu || "-")}</td>
           <td>${escapeHtml(entry.product || "-")}</td>
