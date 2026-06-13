@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "20260612-pass5-keypad99";
+  const VERSION = "20260613-pass6-report-plu-kindleitem";
 
   function makeSearchEditable() {
     const search = document.querySelector("#searchInput");

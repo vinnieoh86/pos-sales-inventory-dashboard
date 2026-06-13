@@ -4627,6 +4627,7 @@ function isCompactCountKeypadMode() {
 
 function openCountKeypadPanel() {
   if (!els.countKeypadPanel) return;
+  renderCountKeypadItemSummary();
   els.countKeypadPanel.classList.add("keypad-open");
   els.countKeypadPanel.removeAttribute("aria-hidden");
   if (isCompactCountKeypadMode()) {
@@ -4877,6 +4878,7 @@ function renderSelectedCountItem() {
   if (!item) {
     els.countSelectedItem.classList.remove("is-ready");
     els.countSelectedItem.innerHTML = `<p class="muted">Scan or search an item to begin counting.</p>`;
+    renderCountKeypadItemSummary();
     return;
   }
   els.countSelectedItem.classList.add("is-ready");
@@ -4893,6 +4895,25 @@ function renderSelectedCountItem() {
       <small>${previousEntry ? `Last counted: ${number.format(previousEntry.countedQty || 0)} (${escapeHtml(previousEntry.mode)})` : "First entry for this item will set the counted quantity."}</small>
       <small><b>Next step:</b> enter the physical qty on the keypad, then press Enter or Done.</small>
     </div>`;
+}
+
+
+function renderCountKeypadItemSummary() {
+  if (!els.countKeypadPanel) return;
+  let summary = els.countKeypadPanel.querySelector(".count-keypad-item-summary");
+  const item = currentSelectedCountItem();
+  if (!summary) {
+    summary = document.createElement("div");
+    summary.className = "count-keypad-item-summary";
+    els.countKeypadPanel.insertBefore(summary, els.countKeypadPanel.firstChild);
+  }
+  if (!item) {
+    summary.hidden = true;
+    summary.innerHTML = "";
+    return;
+  }
+  summary.hidden = false;
+  summary.innerHTML = `<strong>${escapeHtml(item.product || "-")}</strong><span>Code ${escapeHtml(item.code || "-")} · PLU ${escapeHtml(item.plu || "-")}</span>`;
 }
 
 function handleCountLookup() {
@@ -5278,6 +5299,25 @@ function currentCountSessionCandidates(session) {
   });
 }
 
+
+function activeReportEntries(session = {}) {
+  const normalized = normalizeCountSession(session, "pending");
+  return filterUndoneCountEntries(normalized.entries || [], normalized);
+}
+
+function latestCountEntryByCode(entries = []) {
+  const map = new Map();
+  [...entries]
+    .sort((a, b) => String(a.recordedAt || a.timestamp || "").localeCompare(String(b.recordedAt || b.timestamp || "")) || String(a.entryId || "").localeCompare(String(b.entryId || "")))
+    .forEach((entry) => map.set(codeKey(entry.code), entry));
+  return map;
+}
+
+function countReportStatus(entry, qtyDiff) {
+  if (!entry) return "Not scanned";
+  return Number(qtyDiff || 0) === 0 ? "PASS" : "QTY DIFF";
+}
+
 function openCountReport(sessionId = state.activeCountSession?.id, mode = state.countReportMode || "input") {
   const session = findCountSessionById(sessionId);
   if (!session) {
@@ -5294,8 +5334,8 @@ function openCountReport(sessionId = state.activeCountSession?.id, mode = state.
   }
   if (els.countReportHead) {
     els.countReportHead.innerHTML = mode === "comparison"
-      ? `<tr><th>Code</th><th>Item</th><th>Vendor</th><th>Category</th><th>Qty before</th><th>Qty after</th><th>NULL</th><th>Qty diff</th><th>Cost diff</th><th>Status</th></tr>`
-      : `<tr><th>Code</th><th>Item</th><th>Vendor</th><th>Category</th><th>Qty before</th><th>Qty after</th><th>Variance</th><th>Mode</th><th>Date/Time</th></tr>`;
+      ? `<tr><th>Code</th><th>PLU</th><th>Item</th><th>Vendor</th><th>Category</th><th>Qty before</th><th>Qty after</th><th>NULL</th><th>Qty diff</th><th>Cost diff</th><th>Status</th></tr>`
+      : `<tr><th>Code</th><th>PLU</th><th>Item</th><th>Vendor</th><th>Category</th><th>Qty before</th><th>Qty after</th><th>Variance</th><th>Mode</th><th>Date/Time</th></tr>`;
   }
   if (els.countReportMeta) {
     const vendorLabel = session.vendor || session.department || "All vendors";
@@ -5325,7 +5365,7 @@ function exportCountReportPdf() {
   const mode = state.countReportMode || "input";
   const dateStr = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
   const vendorLabel = session.vendor || session.department || "All vendors";
-  const entries = session.entries || [];
+  const entries = activeReportEntries(session);
   const syncStats = countSessionSyncStats(session);
   const syncWarning = syncStats.pending || syncStats.failed || session.localSyncPending
     ? `WARNING: ${syncStats.pending} pending and ${syncStats.failed} failed sync entries. Verify before POS import.`
@@ -5334,10 +5374,9 @@ function exportCountReportPdf() {
   let tableHtml = "";
   if (mode === "comparison") {
     const allItems = currentCountSessionCandidates(session);
-    const latestByCode = new Map();
-    entries.forEach((entry) => latestByCode.set(codeKey(entry.code), entry));
+    const latestByCode = latestCountEntryByCode(entries);
     tableHtml = `<table>
-      <thead><tr><th>Code</th><th>Item</th><th>Vendor</th><th>Category</th><th class="num">Qty Before</th><th class="num">Qty After</th><th>NULL</th><th class="num">Qty Diff</th><th class="num">Cost Diff</th><th>Status</th></tr></thead>
+      <thead><tr><th>Code</th><th>PLU</th><th>Item</th><th>Vendor</th><th>Category</th><th class="num">Qty Before</th><th class="num">Qty After</th><th>NULL</th><th class="num">Qty Diff</th><th class="num">Cost Diff</th><th>Status</th></tr></thead>
       <tbody>${allItems.map((item) => {
         const entry = latestByCode.get(codeKey(item.code));
         const orig = Number(item.stock || 0);
@@ -5346,21 +5385,21 @@ function exportCountReportPdf() {
         const diff = final - orig;
         const costDiff = diff * Number(item.unitCost || 0);
         const cls = diff > 0 ? "var-up" : diff < 0 ? "var-down" : "";
-        return `<tr class="${cls}"><td>${escapeHtml(item.code)}</td><td>${escapeHtml(item.product)}</td><td>${escapeHtml(item.vendor || "-")}</td><td>${escapeHtml(item.category || "-")}</td>
+        return `<tr class="${cls}"><td>${escapeHtml(item.code)}</td><td>${escapeHtml(item.plu || entry?.plu || "-")}</td><td>${escapeHtml(item.product)}</td><td>${escapeHtml(item.vendor || "-")}</td><td>${escapeHtml(item.category || "-")}</td>
           <td class="num">${number.format(orig)}</td>
           <td class="num">${number.format(final)}</td>
           <td>${isNull ? "NULL" : ""}</td>
           <td class="num">${diff > 0 ? `+${number.format(diff)}` : number.format(diff)}</td>
           <td class="num">${currency.format(costDiff)}</td>
-          <td>${entry ? "PASS" : "Not scanned"}</td></tr>`;
+          <td>${countReportStatus(entry, diff)}</td></tr>`;
       }).join("")}</tbody></table>`;
   } else {
     tableHtml = `<table>
-      <thead><tr><th>Code</th><th>Item</th><th>Vendor</th><th>Category</th><th class="num">Qty Before</th><th class="num">Counted</th><th class="num">Variance</th><th>Mode</th><th>Time</th></tr></thead>
+      <thead><tr><th>Code</th><th>PLU</th><th>Item</th><th>Vendor</th><th>Category</th><th class="num">Qty Before</th><th class="num">Counted</th><th class="num">Variance</th><th>Mode</th><th>Time</th></tr></thead>
       <tbody>${[...entries].reverse().map((entry) => {
         const variance = Number(entry.countedQty || 0) - Number(entry.originalQty || 0);
         const cls = variance > 0 ? "var-up" : variance < 0 ? "var-down" : "";
-        return `<tr class="${cls}"><td>${escapeHtml(entry.code)}</td><td>${escapeHtml(entry.product)}</td><td>${escapeHtml(entry.vendor || "-")}</td><td>${escapeHtml(entry.category || "-")}</td>
+        return `<tr class="${cls}"><td>${escapeHtml(entry.code)}</td><td>${escapeHtml(entry.plu || "-")}</td><td>${escapeHtml(entry.product)}</td><td>${escapeHtml(entry.vendor || "-")}</td><td>${escapeHtml(entry.category || "-")}</td>
           <td class="num">${number.format(entry.originalQty || 0)}</td>
           <td class="num">${number.format(entry.countedQty || 0)}</td>
           <td class="num">${variance > 0 ? `+${number.format(variance)}` : number.format(variance)}</td>
@@ -5412,7 +5451,7 @@ async function exportCountReportExcel() {
   if (!xlsx) { showToast("Excel library not available.", 3000, "warning"); return; }
 
   const vendorLabel = session.vendor || session.department || "All vendors";
-  const entries = session.entries || [];
+  const entries = activeReportEntries(session);
   const syncStats = countSessionSyncStats(session);
   const syncNote = syncStats.pending || syncStats.failed || session.localSyncPending
     ? `WARNING: ${syncStats.pending} pending / ${syncStats.failed} failed sync entries. Verify before POS import.`
@@ -5423,24 +5462,23 @@ async function exportCountReportExcel() {
   const inputData = [
     ["Physical Count - Input Log", "", "", `Date: ${session.date || "-"}`, `Vendor: ${vendorLabel}`, `Category: ${session.category || "All"}`, syncNote],
     [],
-    ["Code", "Item", "Vendor", "Category", "Qty Before", "Counted", "Variance", "Mode", "Time"],
+    ["Code", "PLU", "Item", "Vendor", "Category", "Qty Before", "Counted", "Variance", "Mode", "Time"],
     ...[...entries].reverse().map((entry) => {
       const variance = Number(entry.countedQty || 0) - Number(entry.originalQty || 0);
-      return [entry.code, entry.product, entry.vendor || "", entry.category || "", entry.originalQty || 0, entry.countedQty || 0, variance, entry.mode || "set", new Date(entry.recordedAt).toLocaleString()];
+      return [entry.code, entry.plu || "", entry.product, entry.vendor || "", entry.category || "", entry.originalQty || 0, entry.countedQty || 0, variance, entry.mode || "set", new Date(entry.recordedAt).toLocaleString()];
     }),
   ];
   const wsInput = xlsx.utils.aoa_to_sheet(inputData);
-  wsInput["!cols"] = [12, 32, 14, 14, 10, 10, 10, 8, 20].map((w) => ({ wch: w }));
+  wsInput["!cols"] = [12, 12, 32, 14, 14, 10, 10, 10, 8, 20].map((w) => ({ wch: w }));
   xlsx.utils.book_append_sheet(wb, wsInput, "Input Log");
 
   // Comparison sheet
   const allItems = currentCountSessionCandidates(session);
-  const latestByCode = new Map();
-  entries.forEach((entry) => latestByCode.set(codeKey(entry.code), entry));
+  const latestByCode = latestCountEntryByCode(entries);
   const compData = [
     ["Physical Count - Comparison", "", "", `Date: ${session.date || "-"}`, `Vendor: ${vendorLabel}`, `Category: ${session.category || "All"}`, syncNote],
     [],
-    ["Code", "Item", "Vendor", "Category", "Qty Before", "Qty After", "NULL", "Qty Diff", "Cost Diff", "Status"],
+    ["Code", "PLU", "Item", "Vendor", "Category", "Qty Before", "Qty After", "NULL", "Qty Diff", "Cost Diff", "Status"],
     ...allItems.map((item) => {
       const entry = latestByCode.get(codeKey(item.code));
       const orig = Number(item.stock || 0);
@@ -5448,11 +5486,11 @@ async function exportCountReportExcel() {
       const isNull = !entry;
       const diff = final - orig;
       const costDiff = diff * Number(item.unitCost || 0);
-      return [item.code, item.product, item.vendor || "", item.category || "", orig, final, isNull ? "NULL" : "", diff, costDiff, entry ? "PASS" : "Not scanned"];
+      return [item.code, item.plu || entry?.plu || "", item.product, item.vendor || "", item.category || "", orig, final, isNull ? "NULL" : "", diff, costDiff, countReportStatus(entry, diff)];
     }),
   ];
   const wsComp = xlsx.utils.aoa_to_sheet(compData);
-  wsComp["!cols"] = [12, 32, 14, 14, 10, 10, 8, 10, 10, 12].map((w) => ({ wch: w }));
+  wsComp["!cols"] = [12, 12, 32, 14, 14, 10, 10, 8, 10, 10, 12].map((w) => ({ wch: w }));
   xlsx.utils.book_append_sheet(wb, wsComp, "Comparison");
 
   xlsx.writeFile(wb, `PhysicalCount_${session.date || "report"}.xlsx`);
@@ -5461,15 +5499,14 @@ async function exportCountReportExcel() {
 
 function renderCountReportRows(session, mode = state.countReportMode || "input") {
   if (!els.countReportBody) return;
-  const entries = session?.entries || [];
+  const entries = activeReportEntries(session || {});
   if (mode === "comparison") {
     const allItems = currentCountSessionCandidates(session);
     if (!allItems.length) {
-      els.countReportBody.innerHTML = `<tr><td colspan="10" class="empty-cell">No items matched this count criteria.</td></tr>`;
+      els.countReportBody.innerHTML = `<tr><td colspan="11" class="empty-cell">No items matched this count criteria.</td></tr>`;
       return;
     }
-    const latestByCode = new Map();
-    entries.forEach((entry) => latestByCode.set(codeKey(entry.code), entry));
+    const latestByCode = latestCountEntryByCode(entries);
     els.countReportBody.innerHTML = allItems
       .map((item) => {
         const entry = latestByCode.get(codeKey(item.code));
@@ -5483,6 +5520,7 @@ function renderCountReportRows(session, mode = state.countReportMode || "input")
         return `
           <tr>
             <td>${escapeHtml(item.code || "-")}</td>
+            <td>${escapeHtml(item.plu || entry?.plu || "-")}</td>
             <td>${escapeHtml(item.product || "-")}</td>
             <td>${escapeHtml(item.vendor || "-")}</td>
             <td>${escapeHtml(item.category || "-")}</td>
@@ -5491,14 +5529,14 @@ function renderCountReportRows(session, mode = state.countReportMode || "input")
             <td>${isNull ? `<span class="muted">NULL</span>` : ""}</td>
             <td class="num ${qtyClass}">${qtyDiff > 0 ? `+${number.format(qtyDiff)}` : number.format(qtyDiff)}</td>
             <td class="${costClass}">${currency.format(costDiff)}</td>
-            <td>${entry ? `<span class="count-pass-badge">PASS</span> <span class="muted">${escapeHtml(new Date(entry.recordedAt).toLocaleString())}</span>` : `<span class="muted">Not scanned</span>`}</td>
+            <td>${entry ? (qtyDiff === 0 ? `<span class="count-pass-badge">PASS</span>` : `<span class="count-diff-badge">QTY DIFF</span>`) + ` <span class="muted">${escapeHtml(new Date(entry.recordedAt).toLocaleString())}</span>` : `<span class="muted">Not scanned</span>`}</td>
           </tr>`;
       })
       .join("");
     return;
   }
   if (!entries.length) {
-    els.countReportBody.innerHTML = `<tr><td colspan="9" class="empty-cell">No items counted yet.</td></tr>`;
+    els.countReportBody.innerHTML = `<tr><td colspan="10" class="empty-cell">No items counted yet.</td></tr>`;
     return;
   }
   els.countReportBody.innerHTML = entries
@@ -5511,6 +5549,7 @@ function renderCountReportRows(session, mode = state.countReportMode || "input")
       return `
         <tr>
           <td>${escapeHtml(entry.code || "-")}</td>
+          <td>${escapeHtml(entry.plu || "-")}</td>
           <td>${escapeHtml(entry.product || "-")}</td>
           <td>${escapeHtml(entry.vendor || "-")}</td>
           <td>${escapeHtml(entry.category || "-")}</td>

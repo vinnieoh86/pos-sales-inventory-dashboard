@@ -7388,3 +7388,40 @@ body.scan-mode-active.scan-performance-medium .scan-mode-panel * {
     margin-bottom: 0.45rem !important;
   }
 }
+
+
+/* 2026-06-13 pass 6: report clarity + Kindle scanned-item visibility. */
+.count-diff-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.2rem 0.55rem;
+  font-weight: 800;
+  color: #9a3412;
+  background: #ffedd5;
+}
+.count-keypad-item-summary {
+  display: none;
+}
+@media (max-width: 1100px), (pointer: coarse) {
+  #countSessionModal .count-keypad-item-summary {
+    display: block;
+    margin-bottom: 0.5rem;
+    padding: 0.65rem 0.75rem;
+    border: 1px solid rgba(31, 143, 91, 0.28);
+    border-radius: 0.75rem;
+    background: #f7fffa;
+  }
+  #countSessionModal .count-keypad-item-summary strong {
+    display: block;
+    font-size: 1rem;
+    line-height: 1.25;
+    color: #10221b;
+  }
+  #countSessionModal .count-keypad-item-summary span {
+    display: block;
+    margin-top: 0.2rem;
+    font-size: 0.85rem;
+    color: #64706b;
+  }
+}
