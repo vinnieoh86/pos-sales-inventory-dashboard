@@ -912,7 +912,13 @@ function placeCountEntriesInDesktopGrid() {
   grid.appendChild(entrySection);
 }
 placeCountEntriesInDesktopGrid();
-els.countStartButton?.addEventListener("click", () => setTimeout(placeCountEntriesInDesktopGrid, 0));
+els.countStartButton?.addEventListener("click", (event) => {
+  event.preventDefault();
+  // Start Inventory must still launch the count session. Pass 12 accidentally left
+  // only the layout helper here, which made the button appear non-responsive.
+  startCountSessionFromModal();
+  setTimeout(placeCountEntriesInDesktopGrid, 0);
+});
 
 els.countCancelButton?.addEventListener("click", closeCountSetupModal);
 els.countSetupModal?.addEventListener("click", (event) => {
