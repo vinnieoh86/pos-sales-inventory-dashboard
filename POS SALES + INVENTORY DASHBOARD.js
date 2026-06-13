@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "20260613-pass12-auto-sort-3col";
+  const VERSION = "20260613-pass13-tablet-beep-instant-start";
 
   function makeSearchEditable() {
     const search = document.querySelector("#searchInput");

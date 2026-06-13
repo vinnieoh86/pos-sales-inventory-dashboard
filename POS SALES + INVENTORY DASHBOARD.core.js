@@ -1,4 +1,4 @@
-﻿const state = {
+const state = {
   rawSales: [],
   inventories: new Map(),
   latestInventory: new Map(),
@@ -41,6 +41,8 @@
   _countLastSyncAt: "",
   _countSyncInFlight: null,
   _countSessionOpen: false,
+  countSoundEnabled: localStorage.getItem("posDashboardCountSoundEnabled:v1") !== "false",
+  _countAudioContext: null,
   _deletedCountSessionIds: new Set(JSON.parse(localStorage.getItem("posDashboardDeletedCountSessionIds:v1") || "[]")),
   _priceCheckExactIndex: null,
   _priceCheckExactIndexStamp: 0,
@@ -900,6 +902,8 @@ els.countReviewTable?.addEventListener("click", (e) => {
 els.closeCountSessionButton?.addEventListener("click", closeActiveCountSession);
 els.countReviewButton?.addEventListener("click", () => openCountReport(state.activeCountSession?.id, "input"));
 els.countSaveSessionButton?.addEventListener("click", saveCountSession);
+document.querySelector("#countSoundToggleButton")?.addEventListener("click", toggleCountSound);
+updateCountSoundToggle();
 els.countDeleteSessionButton?.addEventListener("click", deleteCountSession);
 els.countInputReportButton?.addEventListener("click", () => openCountReport(state.activeCountSession?.id, "input"));
 els.countComparisonReportButton?.addEventListener("click", () => openCountReport(state.activeCountSession?.id, "comparison"));
@@ -4361,18 +4365,61 @@ function countSessionCanDelete(session) {
   return !!(userOwnsSession || deviceOwnsSession);
 }
 
+
+function updateCountSoundToggle() {
+  const button = document.querySelector("#countSoundToggleButton");
+  if (!button) return;
+  button.setAttribute("aria-pressed", state.countSoundEnabled ? "true" : "false");
+  button.classList.toggle("is-on", !!state.countSoundEnabled);
+  button.textContent = state.countSoundEnabled ? "Sound On" : "Sound Off";
+}
+
+function toggleCountSound() {
+  state.countSoundEnabled = !state.countSoundEnabled;
+  safeLocalStorageSet("posDashboardCountSoundEnabled:v1", state.countSoundEnabled ? "true" : "false");
+  updateCountSoundToggle();
+  if (state.countSoundEnabled) playCountConfirmBeep({ soft: true });
+}
+
+function playCountConfirmBeep(options = {}) {
+  if (!state.countSoundEnabled) return;
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return;
+    const ctx = state._countAudioContext || new AudioCtx();
+    state._countAudioContext = ctx;
+    if (ctx.state === "suspended") ctx.resume?.();
+    const now = ctx.currentTime;
+    const gain = ctx.createGain();
+    const osc = ctx.createOscillator();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(options.soft ? 660 : 880, now);
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(options.soft ? 0.035 : 0.06, now + 0.015);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + (options.soft ? 0.10 : 0.16));
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + (options.soft ? 0.12 : 0.18));
+  } catch (_) {}
+}
+
 function openCountSetupModal() {
   els.countDateInput.value = new Date().toISOString().slice(0, 10);
-  populateCountSetupOptions();
-  // Always reset to "All" for a fresh count
-  els.countVendorInput.value = "";
-  els.countCategoryInput.value = "";
-  const statusEl = document.querySelector("#countStatusInput");
-  if (statusEl) statusEl.value = "";
-  if (els.countScopeSearchInput) els.countScopeSearchInput.value = "";
-  if (els.countAllowOutOfScopeInput) els.countAllowOutOfScopeInput.checked = false;
+  // Instant Start UI: open the setup modal first, then populate heavy dropdowns
+  // after paint so slower tablets/Kindles feel responsive immediately.
   els.countSetupModal.hidden = false;
   els.countDateInput.focus();
+  requestAnimationFrame(() => {
+    populateCountSetupOptions();
+    // Always reset to "All" for a fresh count after options exist.
+    els.countVendorInput.value = "";
+    els.countCategoryInput.value = "";
+    const statusEl = document.querySelector("#countStatusInput");
+    if (statusEl) statusEl.value = "";
+    if (els.countScopeSearchInput) els.countScopeSearchInput.value = "";
+    if (els.countAllowOutOfScopeInput) els.countAllowOutOfScopeInput.checked = false;
+  });
 }
 
 function closeCountSetupModal() {
@@ -4423,20 +4470,15 @@ function startCountSessionFromModal() {
     localSyncPending: true,
     entries: [],
   };
-  // Snapshot the starting quantities for this count scope. This is read-only report
-  // data so old/future reports calculate Qty Before correctly even after product
-  // stock changes later.
-  const startCandidates = currentCountSessionCandidates(session);
+  // Instant Start UI: create/open the count screen first. The read-only starting
+  // quantity snapshot is filled in right after paint so slow devices are not stuck
+  // before the workspace appears.
   session.countStartSnapshot = {};
-  startCandidates.forEach((item) => {
-    const key = codeKey(item.code);
-    if (key) session.countStartSnapshot[key] = Number(item.stock || 0);
-  });
 
   // FIX-B: Register in countSessions[] immediately with isActiveLive:true so Report History
   // shows it right away. activeCountSession points to the same object.
   // isActiveLive is read by countSessionStatusLabel() to show "Active / Live" in the table.
-  const liveSession = { ...session, isActiveLive: true };
+  const liveSession = { ...session, isActiveLive: true, _instantStartLoading: true };
   // V2.0: if another count was active on THIS device, set it aside (Paused) instead of
   // leaving a second "Active / Live" row in history. Single active session per device.
   const prevId = cleanCell(state.activeCountSession?.id);
@@ -4462,6 +4504,27 @@ function startCountSessionFromModal() {
   persistActiveCountSession();
   persistCountSessions({ scheduleSync: false });
   closeCountSetupModal();
+  requestAnimationFrame(() => {
+    setTimeout(() => {
+      const target = state.activeCountSession?.id === liveSession.id ? state.activeCountSession : liveSession;
+      if (!target || Object.keys(target.countStartSnapshot || {}).length) return;
+      const snapshot = {};
+      currentCountSessionCandidates(target).forEach((item) => {
+        const key = codeKey(item.code);
+        if (key) snapshot[key] = Number(item.stock || 0);
+      });
+      target.countStartSnapshot = snapshot;
+      target._instantStartLoading = false;
+      const stored = state.countSessions.find((s) => s.id === target.id);
+      if (stored) {
+        stored.countStartSnapshot = snapshot;
+        stored._instantStartLoading = false;
+      }
+      persistActiveCountSession();
+      persistCountSessions({ scheduleSync: false });
+      renderCountReviewPanel();
+    }, 40);
+  });
   // FIX-D: Build the search index lazily — defer until after the UI paints.
   // On Kindle this was a synchronous ~400ms block before the count screen appeared.
   // findCountMatch()/findAnyCountMatch() also auto-build on first use (lines 4307/4323).
@@ -4573,6 +4636,7 @@ async function saveCountSession() {
     // on every device pulls the same inventory counts after a physical-count save.
     void syncSharedInventoryFactsByCodes([...latestByCode.keys()], { silent: true, updateSyncState: true });
   }, 400);
+  playCountConfirmBeep();
   showToast(`Count saved · ${updatedCount} item stock quantities updated`, 3200, "success");
 }
 
@@ -6063,6 +6127,11 @@ function renderCountReviewPanel() {
   if (!session || !state._countSessionOpen) {
     els.countReviewBody.innerHTML = `<tr><td colspan="6" class="empty-cell">Start or continue a count to see the live review list.</td></tr>`;
     if (els.countReviewBadges) els.countReviewBadges.innerHTML = "";
+    return;
+  }
+  if (session._instantStartLoading) {
+    els.countReviewBody.innerHTML = `<tr><td colspan="6" class="empty-cell">Opening count now... loading the scope list in the background.</td></tr>`;
+    if (els.countReviewBadges) els.countReviewBadges.innerHTML = `<span class="review-badge">Loading</span>`;
     return;
   }
   const rows = computeCountReviewRows(session);

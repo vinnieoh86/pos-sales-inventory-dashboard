@@ -7496,3 +7496,45 @@ body.scan-mode-active.scan-performance-medium .scan-mode-panel * {
     max-height: 18rem;
   }
 }
+
+
+/* 2026-06-13 scoped pass: tablet 3-column count layout + sound toggle. */
+#countSoundToggleButton.count-sound-toggle {
+  white-space: nowrap;
+}
+#countSoundToggleButton.count-sound-toggle.is-on {
+  border-color: rgba(31, 143, 91, 0.45);
+}
+
+@media (min-width: 900px) and (max-width: 1180px) and (pointer: coarse) {
+  #countSessionModal .count-modal__dialog--workspace {
+    width: calc(100vw - 1rem) !important;
+    max-width: calc(100vw - 1rem) !important;
+  }
+  #countSessionModal .count-workspace__grid {
+    grid-template-columns: minmax(0, 0.9fr) minmax(0, 0.8fr) minmax(0, 1.15fr) !important;
+    gap: 0.65rem !important;
+    align-items: start !important;
+  }
+  #countSessionModal .count-workspace__left {
+    display: contents !important;
+  }
+  #countSessionModal .count-panel,
+  #countSessionModal .count-workspace__entries {
+    min-width: 0 !important;
+  }
+  #countSessionModal .count-panel--keypad {
+    display: grid !important;
+    position: static !important;
+    margin-top: 0 !important;
+    box-shadow: none !important;
+  }
+  #countSessionModal .count-workspace__entries .count-stable-scroll,
+  #countSessionModal .count-review-wrap {
+    max-height: calc(100dvh - 18rem) !important;
+    overflow: auto !important;
+  }
+  #countSessionModal .count-workspace__actions {
+    grid-template-columns: repeat(5, minmax(0, 1fr)) !important;
+  }
+}
