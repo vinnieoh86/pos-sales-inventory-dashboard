@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "20260613-pass10-final-latest-colors-beep";
+  const VERSION = "20260613-pass12-auto-sort-3col";
 
   function makeSearchEditable() {
     const search = document.querySelector("#searchInput");

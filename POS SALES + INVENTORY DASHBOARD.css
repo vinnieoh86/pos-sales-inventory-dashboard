@@ -7446,3 +7446,53 @@ body.scan-mode-active.scan-performance-medium .scan-mode-panel * {
   .count-report-table td.variance-up,
   .count-report-table td.variance-null { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 }
+
+/* 2026-06-13 pass 12: laptop three-column count workspace + clear sortable headers */
+#countSessionModal .count-workspace__entries {
+  min-width: 0;
+  align-self: start;
+  max-height: calc(100vh - 18rem);
+  overflow: hidden;
+}
+#countSessionModal .count-workspace__entries .count-stable-scroll {
+  max-height: calc(100vh - 24rem);
+  overflow: auto;
+}
+#countSessionModal .count-workspace__entries .panel-heading {
+  margin-bottom: 0.5rem;
+}
+#countReportTable th[data-count-report-sort],
+#countReviewTable th[data-review-sort] {
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+#countReportTable th[data-count-report-sort]::after,
+#countReviewTable th[data-review-sort]::after {
+  content: " ↕";
+  color: #91a09a;
+  font-size: 0.75em;
+}
+#countReportTable th[data-count-report-sort].is-sorted[data-sort-dir="asc"]::after,
+#countReviewTable th[data-review-sort].sort-asc::after {
+  content: " ↑";
+  color: #0f6b4f;
+}
+#countReportTable th[data-count-report-sort].is-sorted[data-sort-dir="desc"]::after,
+#countReviewTable th[data-review-sort].sort-desc::after {
+  content: " ↓";
+  color: #0f6b4f;
+}
+@media (min-width: 1101px) and (pointer: fine) {
+  #countSessionModal .count-workspace__grid {
+    grid-template-columns: minmax(22rem, 0.9fr) minmax(22rem, 0.85fr) minmax(30rem, 1.15fr) !important;
+  }
+}
+@media (max-width: 1100px), (pointer: coarse) {
+  #countSessionModal .count-workspace__entries {
+    max-height: none;
+  }
+  #countSessionModal .count-workspace__entries .count-stable-scroll {
+    max-height: 18rem;
+  }
+}
