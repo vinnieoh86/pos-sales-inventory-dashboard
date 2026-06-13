@@ -4382,7 +4382,6 @@ function toggleCountSound() {
 }
 
 function playCountConfirmBeep(options = {}) {
-  if (!state.countSoundEnabled) return;
   try {
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
     if (!AudioCtx) return;
@@ -4390,17 +4389,24 @@ function playCountConfirmBeep(options = {}) {
     state._countAudioContext = ctx;
     if (ctx.state === "suspended") ctx.resume?.();
     const now = ctx.currentTime;
-    const gain = ctx.createGain();
-    const osc = ctx.createOscillator();
-    osc.type = "sine";
-    osc.frequency.setValueAtTime(options.soft ? 660 : 880, now);
-    gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(options.soft ? 0.035 : 0.06, now + 0.015);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + (options.soft ? 0.10 : 0.16));
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.start(now);
-    osc.stop(now + (options.soft ? 0.12 : 0.18));
+    const master = ctx.createGain();
+    master.gain.setValueAtTime(0.0001, now);
+    master.gain.exponentialRampToValueAtTime(options.soft ? 0.10 : 0.22, now + 0.01);
+    master.gain.exponentialRampToValueAtTime(0.0001, now + (options.soft ? 0.14 : 0.24));
+    master.connect(ctx.destination);
+
+    const makeTone = (frequency, delay, duration, type = "triangle") => {
+      const osc = ctx.createOscillator();
+      osc.type = type;
+      osc.frequency.setValueAtTime(frequency, now + delay);
+      osc.connect(master);
+      osc.start(now + delay);
+      osc.stop(now + delay + duration);
+    };
+
+    // Louder, higher-pitched two-note "ding" for successful inventory save.
+    makeTone(options.soft ? 880 : 1320, 0, options.soft ? 0.10 : 0.16);
+    makeTone(options.soft ? 1320 : 1760, options.soft ? 0.045 : 0.055, options.soft ? 0.08 : 0.14);
   } catch (_) {}
 }
 
