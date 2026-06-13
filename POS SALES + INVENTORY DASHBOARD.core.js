@@ -938,7 +938,7 @@ function clearCountAutoCommitTimer() {
     countAutoCommitTimer = null;
   }
 }
-function scheduleCountAutoCommit(delay = 75) {
+function scheduleCountAutoCommit(delay = 250) {
   if (!state.countAutoPlusMode || !els.countSearchInput || !state.activeCountSession) return;
   const raw = cleanCell(els.countSearchInput.value || '').trim();
   if (!raw || raw.length < 4) return;
@@ -949,8 +949,9 @@ function scheduleCountAutoCommit(delay = 75) {
     const value = cleanCell(els.countSearchInput.value || '').trim();
     if (!value || value.length < 4) return;
     // Safety net for scanners/browsers that occasionally miss the Enter key.
-    // handleCountLookup() still performs the real matching and scope checks.
-    handleCountLookup();
+    // Wait for the scanner burst to finish, then exact-match only so partial
+    // barcodes never fall through to a random text-search item.
+    handleCountAutoPlusLookup();
   }, delay);
 }
 els.countSearchInput?.addEventListener("keydown", (event) => {
@@ -969,7 +970,7 @@ els.countSearchInput?.addEventListener("keydown", (event) => {
     event.stopPropagation();
     clearCountAutoCommitTimer();
     hideCountDropdown();
-    handleCountLookup();
+    handleCountAutoPlusLookup();
     return;
   }
   const dropdown = document.querySelector("#countSearchDropdown");
@@ -4626,7 +4627,6 @@ async function saveCountSession() {
     // on every device pulls the same inventory counts after a physical-count save.
     void syncSharedInventoryFactsByCodes([...latestByCode.keys()], { silent: true, updateSyncState: true });
   }, 400);
-  playCountConfirmBeep();
   showToast(`Count saved · ${updatedCount} item stock quantities updated`, 3200, "success");
 }
 
@@ -4923,6 +4923,19 @@ function findAnyCountMatch(query) {
     || null;
 }
 
+function findCountExactMatch(query) {
+  const raw = cleanCell(query).trim();
+  if (!raw) return null;
+  const needle = raw.toLowerCase();
+  const normalizedNeedle = codeKey(raw);
+  if (!state._countSearchIndex || state._countIndexStamp !== state._dataCacheStamp) buildCountSearchIndex();
+  const exactMatch = state._countExactIndex?.get(normalizedNeedle)
+    || state._countExactIndex?.get(needle)
+    || null;
+  if (exactMatch && (countItemIsInScope(exactMatch) || countSessionAllowsOutOfScope())) return exactMatch;
+  return null;
+}
+
 function findCountMatch(query) {
   const raw = cleanCell(query).trim();
   if (!raw) return null;
@@ -4996,6 +5009,43 @@ function renderCountKeypadItemSummary() {
   summary.innerHTML = `<strong>${escapeHtml(item.product || "-")}</strong><span>Code ${escapeHtml(item.code || "-")} · PLU ${escapeHtml(item.plu || "-")}</span>`;
 }
 
+function handleCountAutoPlusLookup() {
+  if (!state.activeCountSession && !restoreContinuedCountSession()) {
+    showToast("Start a physical count first.", 3000, "warning");
+    return;
+  }
+  const query = cleanCell(els.countSearchInput?.value || "").trim();
+  if (!query) return;
+  const now = performanceNow();
+  const signature = `${query}|${state.activeCountSession?.id || ""}`;
+  if (state._countAutoLastCommitSig === signature && now - (state._countAutoLastCommitAt || 0) < 350) {
+    if (els.countSearchInput) els.countSearchInput.value = "";
+    focusCountSearch();
+    return;
+  }
+  const match = findCountExactMatch(query);
+  if (!match) {
+    // In +1 Auto, do not use partial/text search. A partial scanner burst or
+    // concatenated barcode must fail safely instead of committing a random item.
+    hideCountDropdown();
+    if (els.countSearchInput) {
+      els.countSearchInput.classList.add("count-search-error");
+      els.countSearchInput.value = "";
+      setTimeout(() => els.countSearchInput && els.countSearchInput.classList.remove("count-search-error"), 900);
+    }
+    showToast("Barcode not exact-matched. Nothing was added.", 1800, "warning");
+    focusCountSearch();
+    return;
+  }
+  state._countAutoLastCommitSig = signature;
+  state._countAutoLastCommitAt = now;
+  commitCountEntry(match, 1, "add", { autoPlus: true });
+  hideCountDropdown();
+  if (els.countSearchInput) els.countSearchInput.value = "";
+  state._replaceCountInputOnNextKey = false;
+  focusCountSearch();
+}
+
 function handleCountLookup() {
   if (!state.activeCountSession && !restoreContinuedCountSession()) {
     showToast("Start a physical count first.", 3000, "warning");
@@ -5035,11 +5085,7 @@ function handleCountLookup() {
     showToast("Manager override: this item is outside the selected count scope.", 4200, "warning");
   }
   if (state.countAutoPlusMode) {
-    commitCountEntry(match, 1, "add", { autoPlus: true });
-    hideCountDropdown();
-    if (els.countSearchInput) els.countSearchInput.value = "";
-    state._replaceCountInputOnNextKey = false;
-    focusCountSearch();
+    handleCountAutoPlusLookup();
     return;
   }
   state.selectedCountItemCode = match.code;
@@ -5102,26 +5148,9 @@ function closeDuplicateCountModal() {
 }
 
 function playInventoryCommitSound() {
-  try {
-    const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
-    if (!AudioContextCtor) return;
-    const ctx = state._countAudioContext || new AudioContextCtor();
-    state._countAudioContext = ctx;
-    if (ctx.state === "suspended") ctx.resume?.();
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = "sine";
-    osc.frequency.setValueAtTime(880, ctx.currentTime);
-    gain.gain.setValueAtTime(0.001, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.08, ctx.currentTime + 0.01);
-    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.12);
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.start(ctx.currentTime);
-    osc.stop(ctx.currentTime + 0.13);
-  } catch (error) {
-    // Sound is optional; never block inventory entry if audio is unavailable.
-  }
+  // Use the uploaded ding asset for successful +1 Auto / Add Qty commits.
+  // Save/finish count intentionally stays silent.
+  playCountConfirmBeep();
 }
 
 function commitCountEntry(item, qty, mode, options = {}) {
@@ -5189,7 +5218,7 @@ function commitCountEntry(item, qty, mode, options = {}) {
   state.selectedCountItemCode = "";
   state.pendingDuplicateMode = null;
   persistActiveCountSession();
-  playInventoryCommitSound();
+  if (options.autoPlus || mode === "add") playInventoryCommitSound();
   // Fast path: prepend new row, update summary, reset UI - no full workspace rebuild
   renderCountEntryRows(true);
   renderSelectedCountItem();
