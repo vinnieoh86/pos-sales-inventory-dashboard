@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "20260613-pass14-tablet-history-ding";
+  const VERSION = "20260613-pass15-report-state-tablet-3col";
 
   function makeSearchEditable() {
     const search = document.querySelector("#searchInput");

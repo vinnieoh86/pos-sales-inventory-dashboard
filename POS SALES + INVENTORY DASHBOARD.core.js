@@ -1331,11 +1331,11 @@ document.querySelectorAll(".stock-reason-btn").forEach((btn) => {
 });
 els.countInputViewButton?.addEventListener("click", () => {
   state.countReportMode = "input";
-  openCountReport(state.activeCountSession?.id || state.countSessions[0]?.id, "input");
+  openCountReport(state.countReportOpenId || state.activeCountSession?.id || state.countSessions[0]?.id, "input");
 });
 els.countComparisonViewButton?.addEventListener("click", () => {
   state.countReportMode = "comparison";
-  openCountReport(state.activeCountSession?.id || state.countSessions[0]?.id, "comparison");
+  openCountReport(state.countReportOpenId || state.activeCountSession?.id || state.countSessions[0]?.id, "comparison");
 });
 els.arrangeColumnsButton.addEventListener("click", () => {
   state.arrangeColumns = !state.arrangeColumns;

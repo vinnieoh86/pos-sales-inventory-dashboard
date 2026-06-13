@@ -7663,3 +7663,51 @@ body.scan-mode-active.scan-performance-medium .scan-mode-panel * {
     font-size: 1rem !important;
   }
 }
+
+/* 2026-06-13 scoped fix: keep tablet count workspace as three even usable columns. */
+@media (min-width: 620px) and (max-width: 1280px) and (pointer: coarse) {
+  #countSessionModal .count-modal__dialog--workspace {
+    width: calc(100vw - 0.5rem) !important;
+    max-width: calc(100vw - 0.5rem) !important;
+    min-width: 0 !important;
+    box-sizing: border-box !important;
+  }
+
+  #countSessionModal .count-workspace,
+  #countSessionModal .count-workspace__grid {
+    width: 100% !important;
+    max-width: none !important;
+    box-sizing: border-box !important;
+  }
+
+  #countSessionModal .count-workspace__grid {
+    display: grid !important;
+    grid-template-areas: "countLookup countHistory countReview" !important;
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+    gap: 0.7rem !important;
+    align-items: start !important;
+  }
+
+  #countSessionModal .count-workspace__left,
+  #countSessionModal .count-workspace__entries,
+  #countSessionModal .count-review-panel {
+    min-width: 0 !important;
+    width: 100% !important;
+    max-width: none !important;
+    box-sizing: border-box !important;
+  }
+
+  #countSessionModal .count-workspace__entries table,
+  #countSessionModal .count-review-table {
+    min-width: 100% !important;
+    width: 100% !important;
+  }
+
+  #countSessionModal .count-workspace__entries th,
+  #countSessionModal .count-workspace__entries td,
+  #countSessionModal .count-review-table th,
+  #countSessionModal .count-review-table td {
+    white-space: normal !important;
+    overflow-wrap: anywhere !important;
+  }
+}
