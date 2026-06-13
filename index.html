@@ -4,8 +4,8 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>POS Sales + Inventory Dashboard</title>
-    <link rel="stylesheet" href="POS SALES + INVENTORY DASHBOARD.css?v=20260613-pass14-tablet-history-ding" />
-    <link rel="stylesheet" href="rescue-usable.css?v=20260613-pass14-tablet-history-ding" />
+    <link rel="stylesheet" href="POS SALES + INVENTORY DASHBOARD.css?v=20260613-pass10-final-latest-colors-beep" />
+    <link rel="stylesheet" href="rescue-usable.css?v=20260613-pass10-final-latest-colors-beep" />
   </head>
   <body>
     <div class="metrics-hover-zone" id="metricsHoverZone">
@@ -756,24 +756,6 @@
               </div>
             </div>
             </div>
-            <section class="panel table-panel count-workspace__entries">
-            <div class="panel-heading">
-              <div><p class="eyebrow">Session entries</p><h3>Scanned items</h3></div>
-            </div>
-            <div class="table-wrap count-stable-scroll">
-              <table id="countEntryTable" class="count-report-table count-stable-table">
-                <colgroup><col class="count-col-code" /><col class="count-col-item" /><col class="count-col-vendor" /><col class="count-col-category" /><col class="count-col-entry" /><col class="count-col-entry" /><col class="count-col-physical" /><col class="count-col-mode" /><col class="count-col-variance" /></colgroup>
-                <thead>
-                  <tr>
-                    <th>Code</th><th>Item</th><th>Vendor</th><th>Category</th><th>POS Stock</th><th>Entered Qty</th><th>Physical Count</th><th>Mode</th><th>Variance</th>
-                  </tr>
-                </thead>
-                <tbody id="countEntryBody">
-                  <tr><td colspan="9" class="empty-cell">No items counted yet.</td></tr>
-                </tbody>
-              </table>
-            </div>
-          </section>
             <div class="count-panel count-review-panel" id="countReviewPanel">
               <div class="count-review-head">
                 <div><p class="eyebrow">Live review</p><h3>Items in scope</h3></div>
@@ -805,7 +787,24 @@
               </div>
             </div>
           </div>
-
+          <section class="panel table-panel">
+            <div class="panel-heading">
+              <div><p class="eyebrow">Session entries</p><h3>Scanned items</h3></div>
+            </div>
+            <div class="table-wrap count-stable-scroll">
+              <table id="countEntryTable" class="count-report-table count-stable-table">
+                <colgroup><col class="count-col-code" /><col class="count-col-item" /><col class="count-col-vendor" /><col class="count-col-category" /><col class="count-col-entry" /><col class="count-col-entry" /><col class="count-col-physical" /><col class="count-col-mode" /><col class="count-col-variance" /></colgroup>
+                <thead>
+                  <tr>
+                    <th>Code</th><th>Item</th><th>Vendor</th><th>Category</th><th>POS Stock</th><th>Entered Qty</th><th>Physical Count</th><th>Mode</th><th>Variance</th>
+                  </tr>
+                </thead>
+                <tbody id="countEntryBody">
+                  <tr><td colspan="9" class="empty-cell">No items counted yet.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
         </section>
       </div>
     </div>
@@ -1229,6 +1228,6 @@
       </div>
 
         <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-    <script src="POS SALES + INVENTORY DASHBOARD.js?v=20260613-pass14-tablet-history-ding"></script>
+    <script src="POS SALES + INVENTORY DASHBOARD.js?v=20260613-pass10-final-latest-colors-beep"></script>
   </body>
 </html>

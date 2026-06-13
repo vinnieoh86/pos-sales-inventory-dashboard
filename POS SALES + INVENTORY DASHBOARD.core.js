@@ -1,4 +1,4 @@
-const state = {
+﻿const state = {
   rawSales: [],
   inventories: new Map(),
   latestInventory: new Map(),
@@ -41,9 +41,6 @@ const state = {
   _countLastSyncAt: "",
   _countSyncInFlight: null,
   _countSessionOpen: false,
-  countSoundEnabled: localStorage.getItem("posDashboardCountSoundEnabled:v1") !== "false",
-  _countAudioContext: null,
-  _countConfirmAudio: null,
   _deletedCountSessionIds: new Set(JSON.parse(localStorage.getItem("posDashboardDeletedCountSessionIds:v1") || "[]")),
   _priceCheckExactIndex: null,
   _priceCheckExactIndexStamp: 0,
@@ -903,8 +900,6 @@ els.countReviewTable?.addEventListener("click", (e) => {
 els.closeCountSessionButton?.addEventListener("click", closeActiveCountSession);
 els.countReviewButton?.addEventListener("click", () => openCountReport(state.activeCountSession?.id, "input"));
 els.countSaveSessionButton?.addEventListener("click", saveCountSession);
-document.querySelector("#countSoundToggleButton")?.addEventListener("click", toggleCountSound);
-updateCountSoundToggle();
 els.countDeleteSessionButton?.addEventListener("click", deleteCountSession);
 els.countInputReportButton?.addEventListener("click", () => openCountReport(state.activeCountSession?.id, "input"));
 els.countComparisonReportButton?.addEventListener("click", () => openCountReport(state.activeCountSession?.id, "comparison"));
@@ -938,7 +933,7 @@ function clearCountAutoCommitTimer() {
     countAutoCommitTimer = null;
   }
 }
-function scheduleCountAutoCommit(delay = 250) {
+function scheduleCountAutoCommit(delay = 75) {
   if (!state.countAutoPlusMode || !els.countSearchInput || !state.activeCountSession) return;
   const raw = cleanCell(els.countSearchInput.value || '').trim();
   if (!raw || raw.length < 4) return;
@@ -949,9 +944,8 @@ function scheduleCountAutoCommit(delay = 250) {
     const value = cleanCell(els.countSearchInput.value || '').trim();
     if (!value || value.length < 4) return;
     // Safety net for scanners/browsers that occasionally miss the Enter key.
-    // Wait for the scanner burst to finish, then exact-match only so partial
-    // barcodes never fall through to a random text-search item.
-    handleCountAutoPlusLookup();
+    // handleCountLookup() still performs the real matching and scope checks.
+    handleCountLookup();
   }, delay);
 }
 els.countSearchInput?.addEventListener("keydown", (event) => {
@@ -970,7 +964,7 @@ els.countSearchInput?.addEventListener("keydown", (event) => {
     event.stopPropagation();
     clearCountAutoCommitTimer();
     hideCountDropdown();
-    handleCountAutoPlusLookup();
+    handleCountLookup();
     return;
   }
   const dropdown = document.querySelector("#countSearchDropdown");
@@ -4367,50 +4361,18 @@ function countSessionCanDelete(session) {
   return !!(userOwnsSession || deviceOwnsSession);
 }
 
-
-function updateCountSoundToggle() {
-  const button = document.querySelector("#countSoundToggleButton");
-  if (!button) return;
-  button.setAttribute("aria-pressed", state.countSoundEnabled ? "true" : "false");
-  button.classList.toggle("is-on", !!state.countSoundEnabled);
-  button.textContent = state.countSoundEnabled ? "Sound On" : "Sound Off";
-}
-
-function toggleCountSound() {
-  state.countSoundEnabled = !state.countSoundEnabled;
-  safeLocalStorageSet("posDashboardCountSoundEnabled:v1", state.countSoundEnabled ? "true" : "false");
-  updateCountSoundToggle();
-  if (state.countSoundEnabled) playCountConfirmBeep({ soft: true });
-}
-
-function playCountConfirmBeep(options = {}) {
-  try {
-    const audio = state._countConfirmAudio || new Audio("count-confirm-ding.mp3");
-    state._countConfirmAudio = audio;
-    audio.preload = "auto";
-    audio.volume = 1;
-    audio.currentTime = 0;
-    const playPromise = audio.play();
-    if (playPromise?.catch) playPromise.catch(() => {});
-  } catch (_) {}
-}
-
 function openCountSetupModal() {
   els.countDateInput.value = new Date().toISOString().slice(0, 10);
-  // Instant Start UI: open the setup modal first, then populate heavy dropdowns
-  // after paint so slower tablets/Kindles feel responsive immediately.
+  populateCountSetupOptions();
+  // Always reset to "All" for a fresh count
+  els.countVendorInput.value = "";
+  els.countCategoryInput.value = "";
+  const statusEl = document.querySelector("#countStatusInput");
+  if (statusEl) statusEl.value = "";
+  if (els.countScopeSearchInput) els.countScopeSearchInput.value = "";
+  if (els.countAllowOutOfScopeInput) els.countAllowOutOfScopeInput.checked = false;
   els.countSetupModal.hidden = false;
   els.countDateInput.focus();
-  requestAnimationFrame(() => {
-    populateCountSetupOptions();
-    // Always reset to "All" for a fresh count after options exist.
-    els.countVendorInput.value = "";
-    els.countCategoryInput.value = "";
-    const statusEl = document.querySelector("#countStatusInput");
-    if (statusEl) statusEl.value = "";
-    if (els.countScopeSearchInput) els.countScopeSearchInput.value = "";
-    if (els.countAllowOutOfScopeInput) els.countAllowOutOfScopeInput.checked = false;
-  });
 }
 
 function closeCountSetupModal() {
@@ -4461,15 +4423,20 @@ function startCountSessionFromModal() {
     localSyncPending: true,
     entries: [],
   };
-  // Instant Start UI: create/open the count screen first. The read-only starting
-  // quantity snapshot is filled in right after paint so slow devices are not stuck
-  // before the workspace appears.
+  // Snapshot the starting quantities for this count scope. This is read-only report
+  // data so old/future reports calculate Qty Before correctly even after product
+  // stock changes later.
+  const startCandidates = currentCountSessionCandidates(session);
   session.countStartSnapshot = {};
+  startCandidates.forEach((item) => {
+    const key = codeKey(item.code);
+    if (key) session.countStartSnapshot[key] = Number(item.stock || 0);
+  });
 
   // FIX-B: Register in countSessions[] immediately with isActiveLive:true so Report History
   // shows it right away. activeCountSession points to the same object.
   // isActiveLive is read by countSessionStatusLabel() to show "Active / Live" in the table.
-  const liveSession = { ...session, isActiveLive: true, _instantStartLoading: true };
+  const liveSession = { ...session, isActiveLive: true };
   // V2.0: if another count was active on THIS device, set it aside (Paused) instead of
   // leaving a second "Active / Live" row in history. Single active session per device.
   const prevId = cleanCell(state.activeCountSession?.id);
@@ -4495,27 +4462,6 @@ function startCountSessionFromModal() {
   persistActiveCountSession();
   persistCountSessions({ scheduleSync: false });
   closeCountSetupModal();
-  requestAnimationFrame(() => {
-    setTimeout(() => {
-      const target = state.activeCountSession?.id === liveSession.id ? state.activeCountSession : liveSession;
-      if (!target || Object.keys(target.countStartSnapshot || {}).length) return;
-      const snapshot = {};
-      currentCountSessionCandidates(target).forEach((item) => {
-        const key = codeKey(item.code);
-        if (key) snapshot[key] = Number(item.stock || 0);
-      });
-      target.countStartSnapshot = snapshot;
-      target._instantStartLoading = false;
-      const stored = state.countSessions.find((s) => s.id === target.id);
-      if (stored) {
-        stored.countStartSnapshot = snapshot;
-        stored._instantStartLoading = false;
-      }
-      persistActiveCountSession();
-      persistCountSessions({ scheduleSync: false });
-      renderCountReviewPanel();
-    }, 40);
-  });
   // FIX-D: Build the search index lazily — defer until after the UI paints.
   // On Kindle this was a synchronous ~400ms block before the count screen appeared.
   // findCountMatch()/findAnyCountMatch() also auto-build on first use (lines 4307/4323).
@@ -4923,19 +4869,6 @@ function findAnyCountMatch(query) {
     || null;
 }
 
-function findCountExactMatch(query) {
-  const raw = cleanCell(query).trim();
-  if (!raw) return null;
-  const needle = raw.toLowerCase();
-  const normalizedNeedle = codeKey(raw);
-  if (!state._countSearchIndex || state._countIndexStamp !== state._dataCacheStamp) buildCountSearchIndex();
-  const exactMatch = state._countExactIndex?.get(normalizedNeedle)
-    || state._countExactIndex?.get(needle)
-    || null;
-  if (exactMatch && (countItemIsInScope(exactMatch) || countSessionAllowsOutOfScope())) return exactMatch;
-  return null;
-}
-
 function findCountMatch(query) {
   const raw = cleanCell(query).trim();
   if (!raw) return null;
@@ -5009,43 +4942,6 @@ function renderCountKeypadItemSummary() {
   summary.innerHTML = `<strong>${escapeHtml(item.product || "-")}</strong><span>Code ${escapeHtml(item.code || "-")} · PLU ${escapeHtml(item.plu || "-")}</span>`;
 }
 
-function handleCountAutoPlusLookup() {
-  if (!state.activeCountSession && !restoreContinuedCountSession()) {
-    showToast("Start a physical count first.", 3000, "warning");
-    return;
-  }
-  const query = cleanCell(els.countSearchInput?.value || "").trim();
-  if (!query) return;
-  const now = performanceNow();
-  const signature = `${query}|${state.activeCountSession?.id || ""}`;
-  if (state._countAutoLastCommitSig === signature && now - (state._countAutoLastCommitAt || 0) < 350) {
-    if (els.countSearchInput) els.countSearchInput.value = "";
-    focusCountSearch();
-    return;
-  }
-  const match = findCountExactMatch(query);
-  if (!match) {
-    // In +1 Auto, do not use partial/text search. A partial scanner burst or
-    // concatenated barcode must fail safely instead of committing a random item.
-    hideCountDropdown();
-    if (els.countSearchInput) {
-      els.countSearchInput.classList.add("count-search-error");
-      els.countSearchInput.value = "";
-      setTimeout(() => els.countSearchInput && els.countSearchInput.classList.remove("count-search-error"), 900);
-    }
-    showToast("Barcode not exact-matched. Nothing was added.", 1800, "warning");
-    focusCountSearch();
-    return;
-  }
-  state._countAutoLastCommitSig = signature;
-  state._countAutoLastCommitAt = now;
-  commitCountEntry(match, 1, "add", { autoPlus: true });
-  hideCountDropdown();
-  if (els.countSearchInput) els.countSearchInput.value = "";
-  state._replaceCountInputOnNextKey = false;
-  focusCountSearch();
-}
-
 function handleCountLookup() {
   if (!state.activeCountSession && !restoreContinuedCountSession()) {
     showToast("Start a physical count first.", 3000, "warning");
@@ -5085,7 +4981,11 @@ function handleCountLookup() {
     showToast("Manager override: this item is outside the selected count scope.", 4200, "warning");
   }
   if (state.countAutoPlusMode) {
-    handleCountAutoPlusLookup();
+    commitCountEntry(match, 1, "add", { autoPlus: true });
+    hideCountDropdown();
+    if (els.countSearchInput) els.countSearchInput.value = "";
+    state._replaceCountInputOnNextKey = false;
+    focusCountSearch();
     return;
   }
   state.selectedCountItemCode = match.code;
@@ -5148,9 +5048,26 @@ function closeDuplicateCountModal() {
 }
 
 function playInventoryCommitSound() {
-  // Use the uploaded ding asset for successful +1 Auto / Add Qty commits.
-  // Save/finish count intentionally stays silent.
-  playCountConfirmBeep();
+  try {
+    const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextCtor) return;
+    const ctx = state._countAudioContext || new AudioContextCtor();
+    state._countAudioContext = ctx;
+    if (ctx.state === "suspended") ctx.resume?.();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(880, ctx.currentTime);
+    gain.gain.setValueAtTime(0.001, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.08, ctx.currentTime + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.12);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + 0.13);
+  } catch (error) {
+    // Sound is optional; never block inventory entry if audio is unavailable.
+  }
 }
 
 function commitCountEntry(item, qty, mode, options = {}) {
@@ -5218,7 +5135,7 @@ function commitCountEntry(item, qty, mode, options = {}) {
   state.selectedCountItemCode = "";
   state.pendingDuplicateMode = null;
   persistActiveCountSession();
-  if (options.autoPlus || mode === "add") playInventoryCommitSound();
+  playInventoryCommitSound();
   // Fast path: prepend new row, update summary, reset UI - no full workspace rebuild
   renderCountEntryRows(true);
   renderSelectedCountItem();
@@ -5445,38 +5362,6 @@ function activeReportEntries(session = {}) {
   return filterUndoneCountEntries(normalized.entries || [], normalized);
 }
 
-
-function countInputLogDisplayRows(entries = []) {
-  const runningByCode = new Map();
-  const sorted = sortedCountEntries(entries);
-  const displayByEntryId = new Map();
-  sorted.forEach((entry) => {
-    const key = codeKey(entry?.code);
-    const prior = runningByCode.has(key) ? Number(runningByCode.get(key) || 0) : 0;
-    let displayBefore = Number(entry?.originalQty || 0);
-    let displayAfter = Number(entry?.countedQty || 0);
-    let displayVariance = displayAfter - displayBefore;
-    if (entry?.autoPlus === true) {
-      const delta = Math.max(0, Number(entry.inputQty ?? entry.qty ?? 1) || 0);
-      displayBefore = prior;
-      displayAfter = prior + delta;
-      displayVariance = delta;
-    }
-    if (key) runningByCode.set(key, displayAfter);
-    const row = {
-      ...entry,
-      inputLogQtyBefore: displayBefore,
-      inputLogQtyAfter: displayAfter,
-      inputLogVariance: displayVariance,
-    };
-    displayByEntryId.set(cleanCell(entry?.entryId || `${entry?.code || ''}|${entry?.recordedAt || entry?.timestamp || ''}`), row);
-  });
-  return entries.map((entry) => {
-    const id = cleanCell(entry?.entryId || `${entry?.code || ''}|${entry?.recordedAt || entry?.timestamp || ''}`);
-    return displayByEntryId.get(id) || entry;
-  });
-}
-
 function latestCountEntryByCode(entries = []) {
   const map = new Map();
   [...entries]
@@ -5700,12 +5585,12 @@ function exportCountReportPdf() {
   } else {
     tableHtml = `<table>
       <thead><tr><th>Code</th><th>PLU</th><th>Item</th><th>Vendor</th><th>Category</th><th class="num">Qty Before</th><th class="num">Counted</th><th class="num">Variance</th><th>Mode</th><th>Time</th></tr></thead>
-      <tbody>${countInputLogDisplayRows(entries).reverse().map((entry) => {
-        const variance = Number(entry.inputLogVariance ?? (Number(entry.countedQty || 0) - Number(entry.originalQty || 0)));
+      <tbody>${[...entries].reverse().map((entry) => {
+        const variance = Number(entry.countedQty || 0) - Number(entry.originalQty || 0);
         const cls = variance > 0 ? "var-up" : variance < 0 ? "var-down" : "";
         return `<tr class="${cls}"><td>${escapeHtml(entry.code)}</td><td>${escapeHtml(entry.plu || "-")}</td><td>${escapeHtml(entry.product)}</td><td>${escapeHtml(entry.vendor || "-")}</td><td>${escapeHtml(entry.category || "-")}</td>
-          <td class="num">${number.format(entry.inputLogQtyBefore ?? entry.originalQty ?? 0)}</td>
-          <td class="num">${number.format(entry.inputLogQtyAfter ?? entry.countedQty ?? 0)}</td>
+          <td class="num">${number.format(entry.originalQty || 0)}</td>
+          <td class="num">${number.format(entry.countedQty || 0)}</td>
           <td class="num">${variance > 0 ? `+${number.format(variance)}` : number.format(variance)}</td>
           <td>${escapeHtml(entry.mode || "set")}</td>
           <td>${escapeHtml(new Date(entry.recordedAt).toLocaleString())}</td></tr>`;
@@ -5777,15 +5662,15 @@ async function exportCountReportExcel() {
     ["Physical Count - Input Log", "", "", `Date: ${session.date || "-"}`, `Vendor: ${vendorLabel}`, `Category: ${session.category || "All"}`, syncNote],
     [],
     ["Code", "PLU", "Item", "Vendor", "Category", "Qty Before", "Counted", "Variance", "Mode", "Time"],
-    ...countInputLogDisplayRows(entries).reverse().map((entry) => {
-      const variance = Number(entry.inputLogVariance ?? (Number(entry.countedQty || 0) - Number(entry.originalQty || 0)));
-      return [entry.code, entry.plu || "", entry.product, entry.vendor || "", entry.category || "", entry.inputLogQtyBefore ?? entry.originalQty ?? 0, entry.inputLogQtyAfter ?? entry.countedQty ?? 0, variance, entry.mode || "set", new Date(entry.recordedAt).toLocaleString()];
+    ...[...entries].reverse().map((entry) => {
+      const variance = Number(entry.countedQty || 0) - Number(entry.originalQty || 0);
+      return [entry.code, entry.plu || "", entry.product, entry.vendor || "", entry.category || "", entry.originalQty || 0, entry.countedQty || 0, variance, entry.mode || "set", new Date(entry.recordedAt).toLocaleString()];
     }),
   ];
   const wsInput = xlsx.utils.aoa_to_sheet(inputData);
   wsInput["!cols"] = [12, 12, 32, 14, 14, 10, 10, 10, 8, 20].map((w) => ({ wch: w }));
-  countInputLogDisplayRows(entries).reverse().forEach((entry, i) => {
-    const variance = Number(entry.inputLogVariance ?? (Number(entry.countedQty || 0) - Number(entry.originalQty || 0)));
+  [...entries].reverse().forEach((entry, i) => {
+    const variance = Number(entry.countedQty || 0) - Number(entry.originalQty || 0);
     const fill = variance < 0 ? "FDE2E2" : variance > 0 ? "DBEAFE" : "FFFFFF";
     if (variance !== 0) applyCountReportCellFill(wsInput, i + 3, 7, fill);
   });
@@ -5842,9 +5727,9 @@ function countReportSortValue(row, key, mode) {
   if (key === "item") return cleanCell(entry.product);
   if (key === "vendor") return cleanCell(entry.vendor);
   if (key === "category") return cleanCell(entry.category);
-  if (key === "originalQty") return Number(entry.inputLogQtyBefore ?? entry.originalQty ?? 0);
-  if (key === "finalQty") return Number(entry.inputLogQtyAfter ?? entry.countedQty ?? 0);
-  if (key === "qtyDiff") return Number(entry.inputLogVariance ?? (Number(entry.countedQty || 0) - Number(entry.originalQty || 0)));
+  if (key === "originalQty") return Number(entry.originalQty || 0);
+  if (key === "finalQty") return Number(entry.countedQty || 0);
+  if (key === "qtyDiff") return Number(entry.countedQty || 0) - Number(entry.originalQty || 0);
   if (key === "mode") return cleanCell(entry.mode || "set");
   if (key === "time") return new Date(entry.recordedAt || entry.timestamp || 0).getTime() || 0;
   return "";
@@ -5932,11 +5817,10 @@ function renderCountReportRows(session, mode = state.countReportMode || "input")
     return;
   }
   markCountReportSortHeaders();
-  const displayEntries = countInputLogDisplayRows(entries);
-  const inputRows = state.countReportSort?.key ? sortCountReportRows(displayEntries, "input") : displayEntries.slice().reverse();
+  const inputRows = state.countReportSort?.key ? sortCountReportRows(entries, "input") : entries.slice().reverse();
   els.countReportBody.innerHTML = inputRows
     .map((entry) => {
-      const variance = Number(entry.inputLogVariance ?? (Number(entry.countedQty || 0) - Number(entry.originalQty || 0)));
+      const variance = Number(entry.countedQty || 0) - Number(entry.originalQty || 0);
       const varianceClass = variance > 0 ? "variance-up" : variance < 0 ? "variance-down" : "variance-flat";
       const varianceLabel = variance > 0 ? `+${number.format(variance)}` : number.format(variance);
       return `
@@ -5946,8 +5830,8 @@ function renderCountReportRows(session, mode = state.countReportMode || "input")
           <td>${escapeHtml(entry.product || "-")}</td>
           <td>${escapeHtml(entry.vendor || "-")}</td>
           <td>${escapeHtml(entry.category || "-")}</td>
-          <td class="num">${number.format(entry.inputLogQtyBefore ?? entry.originalQty ?? 0)}</td>
-          <td class="num">${number.format(entry.inputLogQtyAfter ?? entry.countedQty ?? 0)}</td>
+          <td class="num">${number.format(entry.originalQty || 0)}</td>
+          <td class="num">${number.format(entry.countedQty || 0)}</td>
           <td class="num ${varianceClass}">${varianceLabel}</td>
           <td>${escapeHtml(entry.mode || "set")}</td>
           <td>${escapeHtml(new Date(entry.recordedAt).toLocaleString())}</td>
@@ -6179,11 +6063,6 @@ function renderCountReviewPanel() {
   if (!session || !state._countSessionOpen) {
     els.countReviewBody.innerHTML = `<tr><td colspan="6" class="empty-cell">Start or continue a count to see the live review list.</td></tr>`;
     if (els.countReviewBadges) els.countReviewBadges.innerHTML = "";
-    return;
-  }
-  if (session._instantStartLoading) {
-    els.countReviewBody.innerHTML = `<tr><td colspan="6" class="empty-cell">Opening count now... loading the scope list in the background.</td></tr>`;
-    if (els.countReviewBadges) els.countReviewBadges.innerHTML = `<span class="review-badge">Loading</span>`;
     return;
   }
   const rows = computeCountReviewRows(session);
@@ -12114,12 +11993,6 @@ async function syncSharedDataToSupabase(options = {}) {
 async function initApp() {
   const bootStartedAt = performanceNow();
   console.info("[AppPerf] app boot start");
-  try {
-    state._countConfirmAudio = new Audio("count-confirm-ding.mp3");
-    state._countConfirmAudio.preload = "auto";
-    state._countConfirmAudio.volume = 1;
-    state._countConfirmAudio.load?.();
-  } catch (_) {}
   mountInventoryQuickTools();
   if (ENABLE_SHARED_SYNC) {
     refreshUsersFromSupabase({ silent: true }).catch(() => {});
