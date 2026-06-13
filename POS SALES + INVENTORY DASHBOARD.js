@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "20260613-pass12-auto-sort-3col";
+  const VERSION = "20260613-pass14-tablet-history-ding";
 
   function makeSearchEditable() {
     const search = document.querySelector("#searchInput");
