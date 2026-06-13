@@ -1144,21 +1144,27 @@ body {
 }
 
 .variance-up {
-  color: #156f4b;
-  background: rgba(22, 131, 91, 0.08);
+  color: #1d4ed8;
+  background: #dbeafe;
   font-weight: 900;
 }
 
 .variance-down {
-  color: #b3362c;
-  background: rgba(232, 95, 76, 0.08);
+  color: #991b1b;
+  background: #fde2e2;
   font-weight: 900;
 }
 
 .variance-flat {
   color: var(--ink);
-  background: rgba(28, 35, 32, 0.04);
+  background: transparent;
   font-weight: 800;
+}
+
+.variance-null {
+  color: #6b7280;
+  background: #eeeeee;
+  font-weight: 900;
 }
 
 .rules-box {
@@ -7426,17 +7432,17 @@ body.scan-mode-active.scan-performance-medium .scan-mode-panel * {
   }
 }
 
-/* Pass 9: manager report color coding only. */
-.count-report-table tr.count-report-row-zero td { background: #ffffff; color: inherit; }
-.count-report-table tr.count-report-row-negative td { background: #fde2e2; color: #991b1b; font-weight: 700; }
-.count-report-table tr.count-report-row-positive td { background: #dbeafe; color: #1d4ed8; font-weight: 700; }
-.count-report-table tr.count-report-row-null td { background: #eeeeee; color: #6b7280; font-weight: 700; }
-.count-report-table tr.count-report-row-negative td .count-diff-badge { background: #fee2e2; color: #991b1b; }
-.count-report-table tr.count-report-row-positive td .count-diff-badge { background: #dbeafe; color: #1d4ed8; }
-.count-report-table tr.count-report-row-null td .count-diff-badge { background: #e5e7eb; color: #4b5563; }
+/* Report cell color coding only: negative red, positive blue, null gray. */
+.count-report-table td.variance-down { background: #fde2e2; color: #991b1b; font-weight: 900; }
+.count-report-table td.variance-up { background: #dbeafe; color: #1d4ed8; font-weight: 900; }
+.count-report-table td.variance-null { background: #eeeeee; color: #6b7280; font-weight: 900; }
+.count-report-table td.variance-flat { background: transparent; color: inherit; }
+.count-report-table th[data-count-report-sort] { cursor: pointer; user-select: none; white-space: nowrap; }
+.count-report-table th[data-count-report-sort]::after { content: " ⇅"; opacity: 0.35; font-size: 0.8em; }
+.count-report-table th[data-count-report-sort].is-sorted[data-sort-dir="asc"]::after { content: " ↑"; opacity: 1; }
+.count-report-table th[data-count-report-sort].is-sorted[data-sort-dir="desc"]::after { content: " ↓"; opacity: 1; }
 @media print {
-  .count-report-table tr.count-report-row-zero td,
-  .count-report-table tr.count-report-row-negative td,
-  .count-report-table tr.count-report-row-positive td,
-  .count-report-table tr.count-report-row-null td { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .count-report-table td.variance-down,
+  .count-report-table td.variance-up,
+  .count-report-table td.variance-null { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 }
