@@ -5454,17 +5454,32 @@ function countInputLogDisplayRows(entries = []) {
   const displayByEntryId = new Map();
   sorted.forEach((entry) => {
     const key = codeKey(entry?.code);
-    const prior = runningByCode.has(key) ? Number(runningByCode.get(key) || 0) : 0;
-    let displayBefore = Number(entry?.originalQty || 0);
-    let displayAfter = Number(entry?.countedQty || 0);
+    const priorSessionAdd = runningByCode.has(key) ? Number(runningByCode.get(key) || 0) : 0;
+    const originalQty = Number(entry?.originalQty || 0);
+    const countedQty = Number(entry?.countedQty || 0);
+    let displayBefore = originalQty;
+    let displayAfter = countedQty;
     let displayVariance = displayAfter - displayBefore;
-    if (entry?.autoPlus === true) {
-      const delta = Math.max(0, Number(entry.inputQty ?? entry.qty ?? 1) || 0);
-      displayBefore = prior;
-      displayAfter = prior + delta;
+
+    // Input Log display only: Add / Auto +1 entries are stored as cumulative
+    // countedQty against the item's real stock. For the audit view, show the
+    // session add action itself: 0 -> 1, 1 -> 2, etc. This does NOT affect
+    // comparison/final inventory math.
+    const mode = String(entry?.mode || "").toLowerCase();
+    const isAddAction = entry?.autoPlus === true || mode === "add";
+    if (isAddAction) {
+      const cumulativeAdded = Math.max(0, countedQty - originalQty);
+      let delta = Number(entry.inputQty ?? entry.qty ?? 0) || 0;
+      if (!delta) delta = Math.max(1, cumulativeAdded - priorSessionAdd);
+      displayBefore = priorSessionAdd;
+      displayAfter = priorSessionAdd + delta;
       displayVariance = delta;
     }
-    if (key) runningByCode.set(key, displayAfter);
+
+    if (key) {
+      const nextRunning = isAddAction ? displayAfter : Math.max(0, countedQty - originalQty);
+      runningByCode.set(key, nextRunning);
+    }
     const row = {
       ...entry,
       inputLogQtyBefore: displayBefore,
