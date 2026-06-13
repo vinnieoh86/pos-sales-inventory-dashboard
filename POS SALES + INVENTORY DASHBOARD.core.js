@@ -5318,6 +5318,62 @@ function countReportStatus(entry, qtyDiff) {
   return Number(qtyDiff || 0) === 0 ? "PASS" : "QTY DIFF";
 }
 
+// REPORT RECALC SAFETY:
+// Build comparison rows from the saved session entries first, then fill in any
+// unscanned in-scope items from the current item master. This lets older saved
+// counts re-open with corrected PASS/QTY DIFF logic without mutating the saved
+// session or touching sync/session flow.
+function countReportComparisonRows(session = {}) {
+  const normalized = normalizeCountSession(session, "synced");
+  const entries = activeReportEntries(normalized);
+  const firstByCode = new Map();
+  const latestByCode = latestCountEntryByCode(entries);
+  entries.forEach((entry) => {
+    const key = codeKey(entry.code);
+    if (key && !firstByCode.has(key)) firstByCode.set(key, entry);
+  });
+
+  const itemByCode = new Map();
+  currentCountSessionCandidates(normalized).forEach((item) => {
+    const key = codeKey(item.code);
+    if (key) itemByCode.set(key, item);
+  });
+
+  // Ensure scanned items are always visible even if the current product snapshot
+  // no longer matches the old session filter or the item changed later.
+  entries.forEach((entry) => {
+    const key = codeKey(entry.code);
+    if (!key || itemByCode.has(key)) return;
+    itemByCode.set(key, {
+      code: entry.code,
+      plu: entry.plu || entry.itemNumber || "",
+      itemNumber: entry.itemNumber || "",
+      product: entry.product || "",
+      vendor: entry.vendor || "",
+      category: entry.category || "",
+      stock: Number(entry.originalQty || 0),
+      unitCost: Number(entry.unitCost || 0),
+    });
+  });
+
+  return [...itemByCode.values()].map((item) => {
+    const key = codeKey(item.code);
+    const entry = latestByCode.get(key);
+    const firstEntry = firstByCode.get(key);
+    const originalQty = Number(firstEntry?.originalQty ?? item.stock ?? 0);
+    const finalQty = entry ? Number(entry.countedQty ?? entry.inputQty ?? 0) : 0;
+    const isNull = !entry;
+    const qtyDiff = finalQty - originalQty;
+    const unitCost = Number(entry?.unitCost ?? item.unitCost ?? 0);
+    const costDiff = qtyDiff * unitCost;
+    return { item, entry, firstEntry, originalQty, finalQty, isNull, qtyDiff, costDiff, status: countReportStatus(entry, qtyDiff) };
+  }).sort((a, b) => {
+    // Wrong / missing items first for manager review, PASS last.
+    const rank = (row) => row.isNull ? 0 : row.qtyDiff !== 0 ? 1 : 2;
+    return rank(a) - rank(b) || Math.abs(b.qtyDiff) - Math.abs(a.qtyDiff) || String(a.item.product || "").localeCompare(String(b.item.product || ""));
+  });
+}
+
 function openCountReport(sessionId = state.activeCountSession?.id, mode = state.countReportMode || "input") {
   const session = findCountSessionById(sessionId);
   if (!session) {
@@ -5373,25 +5429,18 @@ function exportCountReportPdf() {
 
   let tableHtml = "";
   if (mode === "comparison") {
-    const allItems = currentCountSessionCandidates(session);
-    const latestByCode = latestCountEntryByCode(entries);
+    const comparisonRows = countReportComparisonRows(session);
     tableHtml = `<table>
       <thead><tr><th>Code</th><th>PLU</th><th>Item</th><th>Vendor</th><th>Category</th><th class="num">Qty Before</th><th class="num">Qty After</th><th>NULL</th><th class="num">Qty Diff</th><th class="num">Cost Diff</th><th>Status</th></tr></thead>
-      <tbody>${allItems.map((item) => {
-        const entry = latestByCode.get(codeKey(item.code));
-        const orig = Number(item.stock || 0);
-        const final = entry ? Number(entry.countedQty || 0) : 0;
-        const isNull = !entry;
-        const diff = final - orig;
-        const costDiff = diff * Number(item.unitCost || 0);
-        const cls = diff > 0 ? "var-up" : diff < 0 ? "var-down" : "";
+      <tbody>${comparisonRows.map(({ item, entry, originalQty, finalQty, isNull, qtyDiff, costDiff, status }) => {
+        const cls = qtyDiff > 0 ? "var-up" : qtyDiff < 0 ? "var-down" : "";
         return `<tr class="${cls}"><td>${escapeHtml(item.code)}</td><td>${escapeHtml(item.plu || entry?.plu || "-")}</td><td>${escapeHtml(item.product)}</td><td>${escapeHtml(item.vendor || "-")}</td><td>${escapeHtml(item.category || "-")}</td>
-          <td class="num">${number.format(orig)}</td>
-          <td class="num">${number.format(final)}</td>
+          <td class="num">${number.format(originalQty)}</td>
+          <td class="num">${entry ? number.format(finalQty) : "-"}</td>
           <td>${isNull ? "NULL" : ""}</td>
-          <td class="num">${diff > 0 ? `+${number.format(diff)}` : number.format(diff)}</td>
+          <td class="num">${qtyDiff > 0 ? `+${number.format(qtyDiff)}` : number.format(qtyDiff)}</td>
           <td class="num">${currency.format(costDiff)}</td>
-          <td>${countReportStatus(entry, diff)}</td></tr>`;
+          <td>${status}</td></tr>`;
       }).join("")}</tbody></table>`;
   } else {
     tableHtml = `<table>
@@ -5473,20 +5522,13 @@ async function exportCountReportExcel() {
   xlsx.utils.book_append_sheet(wb, wsInput, "Input Log");
 
   // Comparison sheet
-  const allItems = currentCountSessionCandidates(session);
-  const latestByCode = latestCountEntryByCode(entries);
+  const comparisonRows = countReportComparisonRows(session);
   const compData = [
     ["Physical Count - Comparison", "", "", `Date: ${session.date || "-"}`, `Vendor: ${vendorLabel}`, `Category: ${session.category || "All"}`, syncNote],
     [],
     ["Code", "PLU", "Item", "Vendor", "Category", "Qty Before", "Qty After", "NULL", "Qty Diff", "Cost Diff", "Status"],
-    ...allItems.map((item) => {
-      const entry = latestByCode.get(codeKey(item.code));
-      const orig = Number(item.stock || 0);
-      const final = entry ? Number(entry.countedQty || 0) : 0;
-      const isNull = !entry;
-      const diff = final - orig;
-      const costDiff = diff * Number(item.unitCost || 0);
-      return [item.code, item.plu || entry?.plu || "", item.product, item.vendor || "", item.category || "", orig, final, isNull ? "NULL" : "", diff, costDiff, countReportStatus(entry, diff)];
+    ...comparisonRows.map(({ item, entry, originalQty, finalQty, isNull, qtyDiff, costDiff, status }) => {
+      return [item.code, item.plu || entry?.plu || "", item.product, item.vendor || "", item.category || "", originalQty, entry ? finalQty : "", isNull ? "NULL" : "", qtyDiff, costDiff, status];
     }),
   ];
   const wsComp = xlsx.utils.aoa_to_sheet(compData);
@@ -5494,29 +5536,27 @@ async function exportCountReportExcel() {
   xlsx.utils.book_append_sheet(wb, wsComp, "Comparison");
 
   xlsx.writeFile(wb, `PhysicalCount_${session.date || "report"}.xlsx`);
-  showToast(`Count report exported - ${entries.length} entries, ${allItems.length} items in scope`, 3200, "success");
+  showToast(`Count report exported - ${entries.length} entries, ${comparisonRows.length} comparison rows`, 3200, "success");
 }
 
 function renderCountReportRows(session, mode = state.countReportMode || "input") {
   if (!els.countReportBody) return;
   const entries = activeReportEntries(session || {});
   if (mode === "comparison") {
-    const allItems = currentCountSessionCandidates(session);
-    if (!allItems.length) {
+    const comparisonRows = countReportComparisonRows(session);
+    if (!comparisonRows.length) {
       els.countReportBody.innerHTML = `<tr><td colspan="11" class="empty-cell">No items matched this count criteria.</td></tr>`;
       return;
     }
-    const latestByCode = latestCountEntryByCode(entries);
-    els.countReportBody.innerHTML = allItems
-      .map((item) => {
-        const entry = latestByCode.get(codeKey(item.code));
-        const originalQty = Number(item.stock || 0);
-        const finalQty = entry ? Number(entry.countedQty || 0) : 0;
-        const isNull = !entry;
-        const qtyDiff = finalQty - originalQty;
-        const costDiff = qtyDiff * Number(item.unitCost || 0);
+    els.countReportBody.innerHTML = comparisonRows
+      .map(({ item, entry, originalQty, finalQty, isNull, qtyDiff, costDiff, status }) => {
         const qtyClass = qtyDiff > 0 ? "variance-up" : qtyDiff < 0 ? "variance-down" : "variance-flat";
         const costClass = costDiff > 0 ? "variance-up" : costDiff < 0 ? "variance-down" : "variance-flat";
+        const statusHtml = !entry
+          ? `<span class="muted">Not scanned</span>`
+          : status === "PASS"
+            ? `<span class="count-pass-badge">PASS</span> <span class="muted">${escapeHtml(new Date(entry.recordedAt).toLocaleString())}</span>`
+            : `<span class="count-diff-badge">QTY DIFF</span> <span class="muted">${escapeHtml(new Date(entry.recordedAt).toLocaleString())}</span>`;
         return `
           <tr>
             <td>${escapeHtml(item.code || "-")}</td>
@@ -5525,11 +5565,11 @@ function renderCountReportRows(session, mode = state.countReportMode || "input")
             <td>${escapeHtml(item.vendor || "-")}</td>
             <td>${escapeHtml(item.category || "-")}</td>
             <td class="num">${number.format(originalQty)}</td>
-            <td class="num">${number.format(finalQty)}</td>
+            <td class="num">${entry ? number.format(finalQty) : "-"}</td>
             <td>${isNull ? `<span class="muted">NULL</span>` : ""}</td>
             <td class="num ${qtyClass}">${qtyDiff > 0 ? `+${number.format(qtyDiff)}` : number.format(qtyDiff)}</td>
             <td class="${costClass}">${currency.format(costDiff)}</td>
-            <td>${entry ? (qtyDiff === 0 ? `<span class="count-pass-badge">PASS</span>` : `<span class="count-diff-badge">QTY DIFF</span>`) + ` <span class="muted">${escapeHtml(new Date(entry.recordedAt).toLocaleString())}</span>` : `<span class="muted">Not scanned</span>`}</td>
+            <td>${statusHtml}</td>
           </tr>`;
       })
       .join("");
