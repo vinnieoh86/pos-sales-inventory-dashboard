@@ -7762,3 +7762,60 @@ body.scan-mode-active.scan-performance-medium .scan-mode-panel * {
     box-sizing: border-box !important;
   }
 }
+
+/* 2026-06-17 tablet count cutoff ONLY: stop forcing 3 desktop columns on tablet.
+   Scan/Search stays full-width so the input/keypad cannot be pushed off-screen. */
+@media (min-width: 620px) and (max-width: 1280px) and (pointer: coarse) {
+  #countSessionModal.count-modal:not([hidden]) {
+    padding: 0 !important;
+    overflow-x: hidden !important;
+    overflow-y: auto !important;
+  }
+
+  #countSessionModal .count-modal__dialog--workspace {
+    width: 100vw !important;
+    max-width: 100vw !important;
+    min-width: 0 !important;
+    margin: 0 !important;
+    padding: 0.55rem !important;
+    box-sizing: border-box !important;
+    overflow-x: hidden !important;
+  }
+
+  #countSessionModal .count-workspace,
+  #countSessionModal .count-workspace__grid,
+  #countSessionModal .count-workspace__left,
+  #countSessionModal .count-workspace__entries,
+  #countSessionModal .count-review-panel,
+  #countSessionModal .count-panel {
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+    box-sizing: border-box !important;
+  }
+
+  #countSessionModal .count-workspace__grid {
+    display: grid !important;
+    grid-template-areas:
+      "countLookup"
+      "countHistory"
+      "countReview" !important;
+    grid-template-columns: minmax(0, 1fr) !important;
+    gap: 0.7rem !important;
+    align-items: start !important;
+    overflow-x: hidden !important;
+  }
+
+  #countSessionModal .count-workspace__left { grid-area: countLookup !important; }
+  #countSessionModal .count-workspace__entries { grid-area: countHistory !important; }
+  #countSessionModal .count-review-panel { grid-area: countReview !important; }
+
+  #countSessionModal .count-search-label input,
+  #countSessionModal .count-search-actions,
+  #countSessionModal .count-auto-actions,
+  #countSessionModal .count-keypad {
+    width: 100% !important;
+    max-width: 100% !important;
+    box-sizing: border-box !important;
+  }
+}
