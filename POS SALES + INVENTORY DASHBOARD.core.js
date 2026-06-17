@@ -928,6 +928,11 @@ els.countStartButton?.addEventListener("click", (event) => {
 els.countCancelButton?.addEventListener("click", closeCountSetupModal);
 els.countSetupModal?.addEventListener("click", (event) => {
   if (event.target === els.countSetupModal) closeCountSetupModal();
+  const addButton = event.target.closest?.("[data-count-add-filter]");
+  if (addButton) {
+    event.preventDefault();
+    addCountSetupFilter(addButton.getAttribute("data-count-add-filter"));
+  }
 });
 els.countSearchButton?.addEventListener("click", handleCountLookup);
 els.countClearSearchButton?.addEventListener("click", clearCountLookup);
@@ -4308,25 +4313,28 @@ function allCountCandidateRows() {
 
 function filteredCountCandidateRows(session = state.activeCountSession) {
   if (!session) return allCountCandidateRows();
-  const cacheKey = [session.id, session.vendor, session.department, session.category, session.status, session.searchFilter, state._dataCacheStamp].join("|");
+  const cacheKey = [session.id, session.vendor, session.department, session.category, JSON.stringify(session.vendorFilters || []), JSON.stringify(session.categoryFilters || []), session.status, session.searchFilter, state._dataCacheStamp].join("|");
   if (state._filteredCountCache && state._filteredCountCacheKey === cacheKey) {
     return state._filteredCountCache;
   }
   const statusFilter = (session.status || "").trim().toLowerCase();
   const sourceRows = allCountCandidateRows();
   const rows = sourceRows.filter((item) => {
-    const vendorFilter = (session.vendor || session.department || "").trim().toUpperCase();
-    if (vendorFilter && (item.vendor || "").trim().toUpperCase() !== vendorFilter) return false;
-    const catFilter = (session.category || "").trim().toUpperCase();
-    if (catFilter && (item.category || "").trim().toUpperCase() !== catFilter) return false;
+    const vendorFilters = countSessionFilterList(session, "vendor", "vendorFilters").map((value) => value.toUpperCase());
+    if (vendorFilters.length && !vendorFilters.includes((item.vendor || "").trim().toUpperCase())) return false;
+    const catFilters = countSessionFilterList(session, "category", "categoryFilters").map((value) => value.toUpperCase());
+    if (catFilters.length && !catFilters.includes((item.category || "").trim().toUpperCase())) return false;
     if (statusFilter && (item.state || "").trim().toLowerCase() !== statusFilter) return false;
-    const scopeNeedle = cleanCell(session.searchFilter || "").toLowerCase();
-    if (scopeNeedle) {
-      const scopeCodeNeedle = codeKey(scopeNeedle);
+    const scopeTerms = countScopeTerms(session.searchFilter || "");
+    if (scopeTerms.length) {
       const scopeHaystack = [item.product, item.plu, item.itemNumber, item.code]
         .map((value) => String(value || "").toLowerCase()).join("|");
       const scopeCodeHaystack = [item.plu, item.itemNumber, item.code].map((value) => codeKey(value)).join("|");
-      if (!scopeHaystack.includes(scopeNeedle) && !(scopeCodeNeedle && scopeCodeHaystack.includes(scopeCodeNeedle))) return false;
+      const matchesAnyScope = scopeTerms.some((scopeNeedle) => {
+        const scopeCodeNeedle = codeKey(scopeNeedle);
+        return scopeHaystack.includes(scopeNeedle) || (scopeCodeNeedle && scopeCodeHaystack.includes(scopeCodeNeedle));
+      });
+      if (!matchesAnyScope) return false;
     }
     return true;
   });
@@ -4337,8 +4345,11 @@ function filteredCountCandidateRows(session = state.activeCountSession) {
 
 function countSessionLabel(session) {
   if (!session) return "Physical count";
-  const vendorLabel = session.vendor || session.department || "All vendors";
-  const parts = [session.date || "No date", vendorLabel, session.category || "All categories"];
+  const vendorList = countSessionFilterList(session, "vendor", "vendorFilters");
+  const categoryList = countSessionFilterList(session, "category", "categoryFilters");
+  const vendorLabel = vendorList.length ? vendorList.join(", ") : (session.department || "All vendors");
+  const categoryLabel = categoryList.length ? categoryList.join(", ") : "All categories";
+  const parts = [session.date || "No date", vendorLabel, categoryLabel];
   if (session.searchFilter) parts.push(`Filter: ${session.searchFilter}`);
   return parts.join("  -  ");
 }
@@ -4399,6 +4410,7 @@ function playCountConfirmBeep(options = {}) {
 
 function openCountSetupModal() {
   els.countDateInput.value = new Date().toISOString().slice(0, 10);
+  resetCountSetupExtraFilters();
   // Instant Start UI: open the setup modal first, then populate heavy dropdowns
   // after paint so slower tablets/Kindles feel responsive immediately.
   els.countSetupModal.hidden = false;
@@ -4419,18 +4431,89 @@ function closeCountSetupModal() {
   els.countSetupModal.hidden = true;
 }
 
+function countFilterValues(kind) {
+  const selector = kind === "category" ? ".count-category-select" : ".count-vendor-select";
+  const seen = new Set();
+  return [...document.querySelectorAll(selector)]
+    .map((select) => cleanCell(select.value || ""))
+    .filter((value) => {
+      if (!value) return false;
+      const key = value.toUpperCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+function countSessionFilterList(session, field, pluralField) {
+  const explicit = Array.isArray(session?.[pluralField]) ? session[pluralField] : [];
+  const values = explicit.length ? explicit : String(session?.[field] || "").split(/[,|]/);
+  const seen = new Set();
+  return values
+    .map((value) => cleanCell(value || ""))
+    .filter((value) => {
+      if (!value) return false;
+      const key = value.toUpperCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+function countScopeTerms(searchFilter) {
+  const seen = new Set();
+  return String(searchFilter || "")
+    .split(",")
+    .map((value) => cleanCell(value).toLowerCase())
+    .filter((value) => {
+      if (!value) return false;
+      if (seen.has(value)) return false;
+      seen.add(value);
+      return true;
+    });
+}
+
+function fillCountSetupSelects(kind) {
+  const values = kind === "category" ? (state._countCategoryOptions || []) : (state._countVendorOptions || []);
+  const selector = kind === "category" ? ".count-category-select" : ".count-vendor-select";
+  document.querySelectorAll(selector).forEach((select) => {
+    const current = select.value || "";
+    fillSelect(select, values);
+    if (current && [...select.options].some((option) => option.value === current)) select.value = current;
+  });
+}
+
+function addCountSetupFilter(kind) {
+  const group = document.querySelector(kind === "category" ? "#countCategoryFilterGroup" : "#countVendorFilterGroup");
+  if (!group) return;
+  const select = document.createElement("select");
+  select.className = kind === "category" ? "count-category-select count-extra-filter" : "count-vendor-select count-extra-filter";
+  select.setAttribute("aria-label", kind === "category" ? "Additional category" : "Additional vendor");
+  group.appendChild(select);
+  fillCountSetupSelects(kind);
+  select.focus();
+}
+
+function resetCountSetupExtraFilters() {
+  document.querySelectorAll(".count-extra-filter").forEach((node) => node.remove());
+}
+
 function populateCountSetupOptions() {
   // FIX-D: Cache vendor/category/status lists keyed to the data stamp.
   // Previously this rebuilt from the full inventory Map on every renderCountsWorkspace call.
   // On Kindle (10k+ items) that was 100-300ms of synchronous work on each poll tick.
   if (state._countSetupCacheStamp === state._dataCacheStamp && state._countSetupCached) {
+    fillCountSetupSelects("vendor");
+    fillCountSetupSelects("category");
     return; // lists are still current
   }
   const allRows = [...state.latestInventory.values()];
   const excelRows = [...state.excelItems.values()];
   const combined = allRows.length ? allRows : excelRows;
-  fillSelect(els.countVendorInput, unique(combined.map((r) => r.vendor).filter(Boolean)));
-  fillSelect(els.countCategoryInput, unique(combined.map((r) => r.category).filter(Boolean)));
+  state._countVendorOptions = unique(combined.map((r) => r.vendor).filter(Boolean));
+  state._countCategoryOptions = unique(combined.map((r) => r.category).filter(Boolean));
+  fillCountSetupSelects("vendor");
+  fillCountSetupSelects("category");
   const statusEl = document.querySelector("#countStatusInput");
   if (statusEl) {
     const knownStates = ["Active", "Disabled", "Discontinued", "Force Order"];
@@ -4446,11 +4529,15 @@ function populateCountSetupOptions() {
 function startCountSessionFromModal() {
   const statusEl = document.querySelector("#countStatusInput");
   const deviceId = countDeviceId();
+  const vendorFilters = countFilterValues("vendor");
+  const categoryFilters = countFilterValues("category");
   const session = {
     id: makeCountIdentifier("count"),
     date: els.countDateInput.value || new Date().toISOString().slice(0, 10),
-    vendor: els.countVendorInput.value || "",
-    category: els.countCategoryInput.value || "",
+    vendor: vendorFilters.join(", "),
+    vendorFilters,
+    category: categoryFilters.join(", "),
+    categoryFilters,
     status: statusEl ? (statusEl.value || "") : "",
     searchFilter: cleanCell(els.countScopeSearchInput?.value || ""),
     startedAt: new Date().toISOString(),

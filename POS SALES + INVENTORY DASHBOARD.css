@@ -7711,3 +7711,54 @@ body.scan-mode-active.scan-performance-medium .scan-mode-panel * {
     overflow-wrap: anywhere !important;
   }
 }
+
+
+/* 2026-06-17 focused patch: tablet count visibility + multi start-count filters */
+.count-filter-group {
+  display: grid;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+  font-weight: 800;
+}
+.count-filter-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.count-filter-add {
+  width: 2.1rem;
+  min-height: 2.1rem;
+  border-radius: 10px;
+  padding: 0;
+  font-size: 1.25rem;
+  line-height: 1;
+}
+.count-extra-filter {
+  margin-top: 0.25rem;
+}
+@media (min-width: 641px) and (max-width: 1180px), (pointer: coarse) {
+  #countSessionModal.count-modal:not([hidden]) {
+    padding-left: 0.25rem !important;
+    padding-right: 0.25rem !important;
+  }
+  #countSessionModal .count-modal__dialog--workspace {
+    width: calc(100vw - 0.5rem) !important;
+    max-width: calc(100vw - 0.5rem) !important;
+    margin-left: 0.25rem !important;
+    margin-right: 0.25rem !important;
+  }
+  #countSessionModal .count-panel--keypad,
+  #countSessionModal .count-panel--keypad.keypad-open {
+    margin-left: 0 !important;
+    margin-right: 0 !important;
+    max-width: 100% !important;
+    box-sizing: border-box !important;
+  }
+  #countSessionModal .count-search-label input,
+  #countSessionModal .count-keypad {
+    width: 100% !important;
+    max-width: 100% !important;
+    box-sizing: border-box !important;
+  }
+}

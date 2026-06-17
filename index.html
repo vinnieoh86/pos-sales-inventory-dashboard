@@ -679,8 +679,14 @@
         </div>
         <div class="count-modal__form">
           <label>Date <input id="countDateInput" type="date" /></label>
-          <label>Vendor <select id="countVendorInput"></select></label>
-          <label>Category <select id="countCategoryInput"></select></label>
+          <div class="count-filter-group" id="countVendorFilterGroup">
+            <div class="count-filter-label-row"><span>Vendor</span><button type="button" class="count-filter-add" data-count-add-filter="vendor" aria-label="Add vendor filter">+</button></div>
+            <select id="countVendorInput" class="count-vendor-select"></select>
+          </div>
+          <div class="count-filter-group" id="countCategoryFilterGroup">
+            <div class="count-filter-label-row"><span>Category</span><button type="button" class="count-filter-add" data-count-add-filter="category" aria-label="Add category filter">+</button></div>
+            <select id="countCategoryInput" class="count-category-select"></select>
+          </div>
           <label>Item Status <select id="countStatusInput"></select></label>
           <label class="count-refine-label">Refine by Name / PLU / Item #
             <input id="countScopeSearchInput" type="search" placeholder="Optional: Adore, SH006, 113866..." autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" />
