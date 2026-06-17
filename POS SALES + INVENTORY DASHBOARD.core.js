@@ -2202,7 +2202,9 @@ async function loadExcelFile(file) {
       const item = normalizeExcelRow(row);
       addExcelIndex(item);
     });
-    seedItemMetaFromExcelRows([...state.excelItems.values()]);
+    const excelRows = [...state.excelItems.values()];
+    seedItemMetaFromExcelRows(excelRows);
+    applyExcelStateToCurrentInventoryRows(excelRows);
     state._loadedFileSignatures.add(signature);
     ensureVendorRulesFromData();
     updateFilterOptions();
@@ -2646,7 +2648,11 @@ function seedItemMetaFromExcelRows(rows = []) {
     const merged = {
       ...existing,
       addDate: excelAddDate || (seededInventoryDate ? "" : existingAddDate) || "",
-      state: existing.stateManual ? existingState : (excelState || ((existingState === "Active" && !existing.stateManual) ? "" : existingState) || ""),
+      // Data-file imports are the source of truth for item state.  Previously,
+      // an old/manual Active value could block a later Disabled/Discontinued
+      // value from the uploaded data file, leaving Products and count scope stale.
+      state: excelState || (existing.stateManual ? existingState : ((existingState === "Active" && !existing.stateManual) ? "" : existingState) || ""),
+      ...(excelState ? { stateManual: false } : {}),
       caseSize: hasExplicitExcelCaseSize ? excelCaseSize : (existing.caseSizeManual ? existingCaseSize : ((excelCaseSize > 1 || existingCaseSize <= 1) ? excelCaseSize : existingCaseSize)),
     };
     if (JSON.stringify(existing) !== JSON.stringify(merged)) {
@@ -2655,6 +2661,29 @@ function seedItemMetaFromExcelRows(rows = []) {
     }
   });
   if (changed) saveItemMeta();
+}
+
+function applyExcelStateToCurrentInventoryRows(rows = []) {
+  let changed = false;
+  rows.forEach((item) => {
+    const key = codeKey(item.code);
+    const excelState = normalizeItemState(item.state || "");
+    if (!key || !excelState) return;
+    const inventory = state.latestInventory.get(key);
+    if (inventory && normalizeItemState(inventory.state || "") !== excelState) {
+      inventory.state = excelState;
+      changed = true;
+    }
+    state.inventories.forEach((snapshotRows) => {
+      snapshotRows.forEach((row) => {
+        if (codeKey(row.code) === key && normalizeItemState(row.state || "") !== excelState) {
+          row.state = excelState;
+          changed = true;
+        }
+      });
+    });
+  });
+  return changed;
 }
 
 function registerInventorySnapshotMeta(snapshotDate, rows = [], previousCodes = new Set()) {
