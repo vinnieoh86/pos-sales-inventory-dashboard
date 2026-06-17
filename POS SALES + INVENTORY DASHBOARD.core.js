@@ -2664,23 +2664,36 @@ function seedItemMetaFromExcelRows(rows = []) {
 }
 
 function applyExcelStateToCurrentInventoryRows(rows = []) {
-  let changed = false;
+  // STATE-IMPORT PERF FIX ONLY:
+  // The uploaded data workbook can contain 80k+ rows. The old version looped
+  // every Excel row through every inventory snapshot row, which could lock the
+  // tablet/browser and prevent the state update from finishing. Keep the same
+  // behavior, but index the data-file states once and update matching inventory
+  // rows in a single pass.
+  const stateByCode = new Map();
   rows.forEach((item) => {
     const key = codeKey(item.code);
     const excelState = normalizeItemState(item.state || "");
-    if (!key || !excelState) return;
-    const inventory = state.latestInventory.get(key);
-    if (inventory && normalizeItemState(inventory.state || "") !== excelState) {
+    if (key && excelState) stateByCode.set(key, excelState);
+  });
+  if (!stateByCode.size) return false;
+
+  let changed = false;
+  state.latestInventory.forEach((inventory, key) => {
+    const excelState = stateByCode.get(key);
+    if (excelState && normalizeItemState(inventory.state || "") !== excelState) {
       inventory.state = excelState;
       changed = true;
     }
-    state.inventories.forEach((snapshotRows) => {
-      snapshotRows.forEach((row) => {
-        if (codeKey(row.code) === key && normalizeItemState(row.state || "") !== excelState) {
-          row.state = excelState;
-          changed = true;
-        }
-      });
+  });
+
+  state.inventories.forEach((snapshotRows) => {
+    snapshotRows.forEach((row) => {
+      const excelState = stateByCode.get(codeKey(row.code));
+      if (excelState && normalizeItemState(row.state || "") !== excelState) {
+        row.state = excelState;
+        changed = true;
+      }
     });
   });
   return changed;
