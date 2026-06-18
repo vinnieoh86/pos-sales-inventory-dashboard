@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "20260613-pass15-report-state-tablet-3col";
+  const VERSION = "20260618-largeqty-keypad-tablet";
 
   function makeSearchEditable() {
     const search = document.querySelector("#searchInput");

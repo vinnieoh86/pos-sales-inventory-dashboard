@@ -4841,11 +4841,8 @@ function openCountKeypadPanel() {
   renderCountKeypadItemSummary();
   els.countKeypadPanel.classList.add("keypad-open");
   els.countKeypadPanel.removeAttribute("aria-hidden");
-  if (isCompactCountKeypadMode()) {
-    setTimeout(() => {
-      try { els.countKeypadPanel.scrollIntoView({ block: "nearest", behavior: "smooth" }); } catch (_) {}
-    }, 0);
-  }
+  // Tablet/Kindle qty entry should behave like a popup, not a bottom panel.
+  // Do not scroll the workspace down after scan; CSS centers the keypad modal.
 }
 
 function closeCountKeypadPanel() {
@@ -4870,7 +4867,8 @@ function syncCountKeypadVisibility() {
 function enforceCountQtyLimit(nextValue) {
   const numeric = Number(nextValue || 0);
   if (!Number.isFinite(numeric)) return { ok: false, value: "0" };
-  if (numeric > 99) return { ok: false, value: "99" };
+  // No hard 99 cap: allow real bulk counts/cases. Scanner safety is handled
+  // separately by the large-quantity confirmation before committing.
   return { ok: true, value: String(nextValue) };
 }
 
@@ -4951,8 +4949,7 @@ function handleCountKey(key) {
   } else {
     const next = state.countQtyBuffer === "0" ? key : `${state.countQtyBuffer}${key}`;
     const limited = enforceCountQtyLimit(next);
-    state.countQtyBuffer = limited.ok ? limited.value : "99";
-    if (!limited.ok) showToast("Qty limit is 99 per entry. Use multiple entries only if you intentionally need more.", 2600, "warning");
+    state.countQtyBuffer = limited.value;
   }
   renderCountQuantity();
 }
@@ -5301,11 +5298,15 @@ function commitCountEntry(item, qty, mode, options = {}) {
     : mode === "add"
       ? Math.max(0, Number(existing?.countedQty || 0) + qty)
       : qty;
-  if (countedQty > 99) {
-    state.countQtyBuffer = "99";
-    renderCountQuantity();
-    openCountKeypadPanel();
-    showToast("Qty limit is 99. This entry would exceed 99.", 3000, "warning");
+  if (qty > 99 && !options.largeQtyConfirmed) {
+    const currentQty = mode === "add" ? Number(existing?.countedQty || 0) : 0;
+    showAppConfirm({
+      title: "⚠ Large Quantity",
+      message: `Item: ${item.product} | Current Qty: ${number.format(currentQty)} | Adding: ${number.format(qty)} | New Total: ${number.format(countedQty)}. Confirm?`,
+      cancelText: "Cancel",
+      confirmText: "Confirm",
+      onConfirm: () => commitCountEntry(item, qty, mode, { ...options, largeQtyConfirmed: true }),
+    });
     return;
   }
   const entryId = makeCountIdentifier("entry");
@@ -5395,13 +5396,7 @@ function applyCountEntry() {
     showToast("Search and select an item first.", 3000, "warning");
     return;
   }
-  const qty = Math.max(0, Math.min(99, Number(state.countQtyBuffer || "0")));
-  if (Number(state.countQtyBuffer || "0") > 99) {
-    state.countQtyBuffer = "99";
-    renderCountQuantity();
-    showToast("Qty limit is 99 per entry.", 2400, "warning");
-    return;
-  }
+  const qty = Math.max(0, Number(state.countQtyBuffer || "0"));
   const existing = state.activeCountSession.entries?.filter((entry) => codeKey(entry.code) === codeKey(item.code)).at(-1);
   if (existing) {
     // In +1 Auto mode, repeated scans are continuous additions.
