@@ -5810,10 +5810,28 @@ function closeCountReport() {
   els.countReportModal.hidden = true;
 }
 
+function currentCountReportSessionForExport() {
+  // Export the report the manager is actually viewing.
+  // The old order used activeCountSession / first history row, which could grab
+  // a blank duplicate session instead of the open 3:41 scanned session.
+  const preferredIds = [
+    state.countReportOpenId,
+    state.activeCountSession?.id,
+    state._continuingCountId,
+  ].map(cleanCell).filter(Boolean);
+  for (const id of preferredIds) {
+    const session = findCountSessionById(id);
+    if (session) return session;
+  }
+  return state.countSessions.find((session) => !countSessionIsDeleted(session?.id) && (session.entries || []).length)
+    || state.countSessions.find((session) => !countSessionIsDeleted(session?.id))
+    || null;
+}
+
 function exportCountReportPdf() {
-  const sessionId = state.activeCountSession?.id || state.countSessions[0]?.id;
-  const session = findCountSessionById(sessionId);
+  const session = currentCountReportSessionForExport();
   if (!session) { showToast("No count report to export.", 3000, "warning"); return; }
+  state.countReportOpenId = session.id;
   const mode = state.countReportMode || "input";
   const dateStr = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
   const vendorLabel = session.vendor || session.department || "All vendors";
@@ -5892,9 +5910,9 @@ function exportCountReportPdf() {
 }
 
 async function exportCountReportExcel() {
-  const sessionId = state.activeCountSession?.id || state.countSessions[0]?.id;
-  const session = findCountSessionById(sessionId);
+  const session = currentCountReportSessionForExport();
   if (!session) { showToast("No count report to export.", 3000, "warning"); return; }
+  state.countReportOpenId = session.id;
   const xlsx = await ensureXlsxReader();
   if (!xlsx) { showToast("Excel library not available.", 3000, "warning"); return; }
 
