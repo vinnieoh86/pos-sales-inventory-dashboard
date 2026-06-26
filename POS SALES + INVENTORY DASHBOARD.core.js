@@ -7719,6 +7719,12 @@ function renderInventory() {
     search: els.searchInput?.value || "",
     state: els.inventoryStateFilter?.value || "",
     quick: els.inventoryQuickFilter?.value || "",
+    department: els.departmentFilter?.value || "",
+    category: els.categoryFilter?.value || "",
+    vendor: els.vendorFilter?.value || "",
+    color: els.colorFilter?.value || "",
+    start: els.startDate?.value || "",
+    end: els.endDate?.value || "",
     order: state.columnOrder,
     sort: state.inventorySort,
   });
@@ -7740,9 +7746,11 @@ function renderInventory() {
 
   // Chunked rendering - build DOM in batches via requestAnimationFrame so the
   // browser stays responsive. Tooltip HTML is deferred until mouseover.
-  const CHUNK = 80;
-  const visibleLimit = Math.max(200, Math.min(rows.length, state._inventoryVisibleLimit || 200));
-  const visible = rows.slice(0, visibleLimit);
+  const CHUNK = 120;
+  // Render every filtered Product row. The old 200-row viewport cap depended on
+  // an inner table scroll event, so users scrolling the page or searching often
+  // saw only a partial product list.
+  const visible = rows;
   let offset = 0;
 
   function renderChunk() {
@@ -7762,7 +7770,6 @@ function renderInventory() {
       els.inventoryBody.querySelectorAll("tr[data-item-code]").forEach((entry) => wireInventoryRowInteractions(entry));
       applyColumnVisibility();
       applyInventoryColumnWidths();
-      wireInventoryInfiniteScroll();
       syncInventoryHeaderOffset();
       clearAppLoadStatus("Building product index");
       logPerformanceEnd("products table render", productsRenderStartedAt, { rows: visible.length, available: rows.length });
@@ -8425,9 +8432,16 @@ function buildInventoryRows(options = {}) {
     const inventoryIndex = state.latestInventory;
     const salesByCode = new Map(buildSkuRows({ ignoreQuery: true, ignoreFilters: true }).map((sku) => [codeKey(sku.code), sku]));
     const hasCurrentInventory = inventoryIndex.size > 0;
-    const codes = hasCurrentInventory
-      ? new Set([...inventoryIndex.keys()])
-      : new Set([...state.excelItems.values()].map((item) => item.code).filter(Boolean).concat([...salesByCode.values()].map((sku) => sku.code)));
+    // Products page must be a TRUE item master: include current inventory rows,
+    // Excel/product-master rows, AND any items that appear in loaded daily sales.
+    // Previous logic used only latestInventory whenever any inventory existed,
+    // which made product search look partial (ex: sold NEWPORT SKUs missing
+    // unless they were also present in the current inventory file).
+    const codes = new Set([
+      ...inventoryIndex.keys(),
+      ...[...state.excelItems.values()].map((item) => item.code).filter(Boolean).map(codeKey),
+      ...[...salesByCode.values()].map((sku) => sku.code).filter(Boolean).map(codeKey),
+    ].filter(Boolean));
 
     state._inventoryCache = [...codes].map((code) => {
       const inventory = inventoryIndex.get(codeKey(code)) || {};

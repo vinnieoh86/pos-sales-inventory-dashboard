@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "20260619-report-export-open-session";
+  const VERSION = "20260626-products-full-list-search-fix";
 
   function makeSearchEditable() {
     const search = document.querySelector("#searchInput");
