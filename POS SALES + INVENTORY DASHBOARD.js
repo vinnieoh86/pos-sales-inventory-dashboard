@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "20260626-products-full-list-search-fix";
+  const VERSION = "20260924-gkpos-inventory-autoload";
 
   function makeSearchEditable() {
     const search = document.querySelector("#searchInput");

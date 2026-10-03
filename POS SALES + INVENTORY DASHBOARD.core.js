@@ -11786,22 +11786,54 @@ async function restoreSharedProductsOnlyFromSupabase(options = {}) {
   if (!ENABLE_SHARED_SYNC) return false;
   const { silent = false } = options;
   try {
-    // Pull the shared product snapshot, not only the first few changed rows.
-    // Products can have 25k+ rows; limiting this to 500 made the Kindle miss
-    // many current-inventory / physical-count stock changes even though Scan Mode
-    // was reading the updated backend value.
-    let productMetaRows = await supabaseSelectRowsSafe("product_meta", {
-      select: "*",
-      order: "updated_at.desc",
-    });
+    // The GKPOS PowerShell bridge writes live inventory facts to `products` while
+    // the app keeps operator-managed ordering fields in `product_meta`. Pull and
+    // merge both tables so a CSV delta can update stock/name/price without
+    // overwriting case-size rules, min/max overrides, or other app edits.
+    const [productRows, productMetaRows] = await Promise.all([
+      supabaseSelectRowsSafe("products", {
+        select: "*",
+        order: "updated_at.desc",
+      }),
+      supabaseSelectRowsSafe("product_meta", {
+        select: "*",
+        order: "updated_at.desc",
+      }),
+    ]);
     if (!productMetaRows.length && SHARED_PRODUCT_META_PULL_LIMIT) {
-      productMetaRows = await supabaseSelectRowsSafe("product_meta", {
+      const limitedMetaRows = await supabaseSelectRowsSafe("product_meta", {
         select: "*",
         order: "updated_at.desc",
         limit: String(SHARED_PRODUCT_META_PULL_LIMIT),
       });
+      productMetaRows.push(...limitedMetaRows);
     }
-    const changedCodes = applySharedProductMetaRowsLight(productMetaRows);
+    const liveProductsByCode = new Map(productRows.map((row) => [codeKey(row.code), row]));
+    const mergedRows = mergeSharedProductRows(productRows, productMetaRows).map((row) => {
+      const live = liveProductsByCode.get(codeKey(row.code));
+      if (!live) return row;
+      // GKPOS is authoritative for live product/inventory facts. Ordering-rule
+      // overrides still come from product_meta through mergeSharedProductRows().
+      return {
+        ...row,
+        product: live.product ?? row.product,
+        plu: live.plu ?? row.plu,
+        item_number: live.item_number ?? row.item_number,
+        vendor: live.vendor ?? row.vendor,
+        category: live.category ?? row.category,
+        department: live.department ?? row.department,
+        color: live.color ?? row.color,
+        state: live.state ?? row.state,
+        stock: live.stock ?? row.stock,
+        price: live.price ?? row.price,
+        unit_cost: live.unit_cost ?? row.unit_cost,
+        case_size: live.case_size ?? row.case_size,
+        add_date: live.add_date ?? row.add_date,
+        snapshot_date: live.snapshot_date ?? row.snapshot_date,
+        updated_at: live.updated_at ?? row.updated_at,
+      };
+    });
+    const changedCodes = applySharedProductMetaRowsLight(mergedRows);
     if (!changedCodes.length) return false;
     if (!state.activeCountSession) {
       if (activeTabName() === "inventory") {
@@ -15215,5 +15247,3 @@ if (!state.authRequired || !loadUsers().length) {
   };
   schedule(SHARED_SYNC_INITIAL_DELAY_MS);
 })();
-
-
