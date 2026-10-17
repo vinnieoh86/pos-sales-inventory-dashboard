@@ -1,5 +1,5 @@
 (function () {
-  const VERSION = "20261017-sales-studio-v9";
+  const VERSION = "20261017-sales-studio-v10";
   const DAY_MS = 86400000;
   const GKPOS_DEPARTMENT_ORDER = ["GENERAL", "HAIR", "BEAUTY PRODUCTS", "COSMETIC", "ELECTRIC", "JEWELRY", "GROCERY"];
   const GKPOS_CATEGORY_DEPARTMENTS = new Map(Object.entries({
@@ -113,8 +113,11 @@
           <div class="sales-item-toolbar">
             <label>From<input type="date" id="salesItemsStart" /></label>
             <label>To<input type="date" id="salesItemsEnd" /></label>
-            <input type="search" id="salesItemSearch" placeholder="Search product, UPC, vendor, or category" />
-            <select id="salesItemSort"><option value="sales">Highest sales</option><option value="units">Most units</option><option value="profit">Highest profit</option><option value="cost">Highest total cost</option><option value="product">Product A-Z</option></select>
+            <label>Department<select id="salesItemDepartment"><option value="">All departments</option></select></label>
+            <label>Category<select id="salesItemCategory"><option value="">All categories</option></select></label>
+            <label>Vendor<select id="salesItemVendor"><option value="">All vendors</option></select></label>
+            <input type="search" id="salesItemSearch" placeholder="Search product or UPC" />
+            <select id="salesItemSort" aria-label="Sort items"><option value="sales">Highest sales</option><option value="units">Most units</option><option value="profit">Highest profit</option><option value="cost">Highest total cost</option><option value="product">Product A-Z</option></select>
           </div>
           <div class="sales-item-totals" id="salesItemsTotals"></div>
           <div class="sales-table-wrap"><table class="sales-item-table"><thead><tr>
@@ -604,7 +607,8 @@
     target.innerHTML = departments.length ? departments.map((department) => {
       const departmentRows = rows.filter((row) => (cleanCell(row.department) || "Unassigned") === department.name);
       const categories = salesAggregateGroup(departmentRows, "category").sort((a, b) => b.sales - a.sales);
-      return `<details class="sales-department">
+      const tone = Math.min(departmentRank(department.name) + 1, GKPOS_DEPARTMENT_ORDER.length + 1);
+      return `<details class="sales-department department-tone-${tone}">
         <summary><span><b>${escapeHtml(department.name)}</b><small>${number.format(department.units)} units</small></span><strong>${currency.format(department.sales)}</strong></summary>
         <div class="sales-category-branches">${categories.map((category) => {
           const categoryRows = departmentRows.filter((row) => (cleanCell(row.category) || "Unassigned") === category.name);
@@ -777,6 +781,9 @@
     const range = document.querySelector("#salesItemsRange");
     if (range) range.textContent = start && end ? `${start} through ${end}` : "Choose a date range.";
     const query = cleanCell(document.querySelector("#salesItemSearch")?.value).toLowerCase();
+    const departmentSelect = document.querySelector("#salesItemDepartment");
+    const categorySelect = document.querySelector("#salesItemCategory");
+    const vendorSelect = document.querySelector("#salesItemVendor");
     const sortSelect = document.querySelector("#salesItemSort");
     const sort = salesUi.itemSort || sortSelect?.value || "sales";
     if (sortSelect && sortSelect.value !== sort && [...sortSelect.options].some((option) => option.value === sort)) sortSelect.value = sort;
@@ -787,15 +794,37 @@
       current.units += Number(row.units || 0); current.sales += Number(row.sales || 0); current.cost += Number(row.cost || 0); current.profit += Number(row.profit || 0);
       map.set(key, current);
     });
-    let rows = [...map.values()].map((row) => ({ ...row, price: row.units ? row.sales / row.units : 0, unitCost: row.units ? row.cost / row.units : 0 }))
-      .filter((row) => !query || [row.code, row.product, row.department, row.category, row.vendor].join(" ").toLowerCase().includes(query));
+    const setFilterOptions = (select, values, allLabel) => {
+      if (!select) return "";
+      const current = select.value;
+      const options = [...new Set(values.map((value) => cleanCell(value) || "Unassigned"))].sort((a, b) => a.localeCompare(b));
+      select.innerHTML = `<option value="">${allLabel}</option>${options.map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`).join("")}`;
+      select.value = options.includes(current) ? current : "";
+      return select.value;
+    };
+    const allRows = [...map.values()].map((row) => ({ ...row, price: row.units ? row.sales / row.units : 0, unitCost: row.units ? row.cost / row.units : 0 }));
+    const departmentOrder = (name) => {
+      const index = GKPOS_DEPARTMENT_ORDER.indexOf(cleanCell(name).toUpperCase());
+      return index === -1 ? GKPOS_DEPARTMENT_ORDER.length : index;
+    };
+    const departments = [...new Set(allRows.map((row) => cleanCell(row.department) || "Unassigned"))]
+      .sort((a, b) => departmentOrder(a) - departmentOrder(b) || a.localeCompare(b));
+    const department = setFilterOptions(departmentSelect, departments, "All departments");
+    const departmentRows = allRows.filter((row) => !department || (cleanCell(row.department) || "Unassigned") === department);
+    const category = setFilterOptions(categorySelect, departmentRows.map((row) => row.category), "All categories");
+    const categoryRows = departmentRows.filter((row) => !category || (cleanCell(row.category) || "Unassigned") === category);
+    const vendor = setFilterOptions(vendorSelect, categoryRows.map((row) => row.vendor), "All vendors");
+    let rows = categoryRows
+      .filter((row) => !vendor || (cleanCell(row.vendor) || "Unassigned") === vendor)
+      .filter((row) => !query || [row.code, row.product].join(" ").toLowerCase().includes(query));
     const direction = salesUi.itemSortDirection === "asc" ? 1 : -1;
     rows.sort((a, b) => ["product", "department", "category", "vendor"].includes(sort)
       ? direction * cleanCell(a[sort]).localeCompare(cleanCell(b[sort]))
       : direction * (Number(a[sort] || 0) - Number(b[sort] || 0)));
     const totals = salesTotals(rows);
     const finalizedDays = await salesFetchRollups("DAY", start, end);
-    const finalizedSubtotal = finalizedDays.length ? salesTotals(finalizedDays).sales : totals.sales;
+    const hasItemFilters = Boolean(department || category || vendor || query);
+    const finalizedSubtotal = !hasItemFilters && finalizedDays.length ? salesTotals(finalizedDays).sales : totals.sales;
     const totalTarget = document.querySelector("#salesItemsTotals");
     if (totalTarget) totalTarget.innerHTML = `<span><small>Products</small><b>${number.format(rows.length)}</b></span><span><small>Units</small><b>${number.format(totals.units)}</b></span><span><small>Item sales</small><b>${currency.format(totals.sales)}</b></span><span><small>Total cost</small><b>${currency.format(totals.cost)}</b></span><span><small>Final subtotal</small><b>${currency.format(finalizedSubtotal)}</b></span><span><small>Total profit</small><b>${currency.format(totals.profit)}</b></span>`;
     document.querySelectorAll("[data-item-sort]").forEach((button) => {
@@ -880,6 +909,18 @@
     void renderSalesTrend();
   });
   document.querySelector("#salesItemSearch")?.addEventListener("input", renderSalesItems);
+  document.querySelector("#salesItemDepartment")?.addEventListener("change", () => {
+    const category = document.querySelector("#salesItemCategory"), vendor = document.querySelector("#salesItemVendor");
+    if (category) category.value = "";
+    if (vendor) vendor.value = "";
+    void renderSalesItems();
+  });
+  document.querySelector("#salesItemCategory")?.addEventListener("change", () => {
+    const vendor = document.querySelector("#salesItemVendor");
+    if (vendor) vendor.value = "";
+    void renderSalesItems();
+  });
+  document.querySelector("#salesItemVendor")?.addEventListener("change", () => { void renderSalesItems(); });
   document.querySelector("#salesItemSort")?.addEventListener("change", (event) => {
     salesUi.itemSort = event.target.value;
     salesUi.itemSortDirection = salesUi.itemSort === "product" ? "asc" : "desc";
