@@ -1,5 +1,5 @@
 (function () {
-  const VERSION = "20261017-sales-studio-v7";
+  const VERSION = "20261017-sales-studio-v8";
   const DAY_MS = 86400000;
   const GKPOS_DEPARTMENT_ORDER = ["GENERAL", "HAIR", "BEAUTY PRODUCTS", "COSMETIC", "ELECTRIC", "JEWELRY", "GROCERY"];
 
