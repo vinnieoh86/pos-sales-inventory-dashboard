@@ -1,11 +1,11 @@
 /* Sales dashboard add-on. It deliberately does not alter Products, Scan Mode,
    Inventory, Counts, Ordering, Reports, Vendors, or Settings. */
-body[data-active-tab="dashboard"] .metrics-hover-zone {
+body:has(.tab-view[data-tab-view="dashboard"].active) .metrics-hover-zone {
   padding: 0.7rem 1rem 0;
   background: var(--paper);
 }
-body[data-active-tab="dashboard"] .metrics-peek-bar { display: none; }
-body[data-active-tab="dashboard"] .metrics-dropdown {
+body:has(.tab-view[data-tab-view="dashboard"].active) .metrics-peek-bar { display: none; }
+body:has(.tab-view[data-tab-view="dashboard"].active) .metrics-dropdown {
   display: grid !important;
   position: static;
   grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -14,12 +14,12 @@ body[data-active-tab="dashboard"] .metrics-dropdown {
   box-shadow: none;
   animation: none;
 }
-body[data-active-tab="dashboard"] .metrics article {
+body:has(.tab-view[data-tab-view="dashboard"].active) .metrics article {
   min-height: 5.6rem;
   border-color: #d5e3dc;
   box-shadow: 0 10px 28px rgba(28, 35, 32, 0.07);
 }
-body[data-active-tab="dashboard"] .dashboard-layout {
+body:has(.tab-view[data-tab-view="dashboard"].active) .dashboard-layout {
   grid-template-areas: "overview overview" "trend segments" "compare compare";
 }
 .dashboard-layout #dashboardOverview { grid-area: overview; }
@@ -62,24 +62,24 @@ body[data-active-tab="dashboard"] .dashboard-layout {
   font-weight: 900;
 }
 @media (max-width: 980px) {
-  body[data-active-tab="dashboard"] .metrics-dropdown { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  body:has(.tab-view[data-tab-view="dashboard"].active) .metrics-dropdown { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .dashboard-overview { align-items: flex-start; flex-direction: column; }
   .dashboard-overview__status { min-width: 0; text-align: left; }
   .dashboard-sync-badge { justify-self: start; }
 }
 @media (max-width: 560px) {
-  body[data-active-tab="dashboard"] .metrics-dropdown { grid-template-columns: 1fr; }
+  body:has(.tab-view[data-tab-view="dashboard"].active) .metrics-dropdown { grid-template-columns: 1fr; }
 }
 
 /* Sales Studio navigation and workspace */
-body[data-active-tab="dashboard"] .sticky-filters,
-body[data-active-tab="dashboard"] #datePresets,
-body[data-active-tab="dashboard"] .dashboard-layout > #trend,
-body[data-active-tab="dashboard"] .dashboard-layout > #segments,
-body[data-active-tab="dashboard"] .dashboard-layout > #periodComparePanel {
+body:has(.tab-view[data-tab-view="dashboard"].active) .sticky-filters,
+body:has(.tab-view[data-tab-view="dashboard"].active) #datePresets,
+body:has(.tab-view[data-tab-view="dashboard"].active) .dashboard-layout > #trend,
+body:has(.tab-view[data-tab-view="dashboard"].active) .dashboard-layout > #segments,
+body:has(.tab-view[data-tab-view="dashboard"].active) .dashboard-layout > #periodComparePanel {
   display: none !important;
 }
-body[data-active-tab="dashboard"] .dashboard-layout {
+body:has(.tab-view[data-tab-view="dashboard"].active) .dashboard-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   grid-template-areas: "overview" "modes" "workspace";
@@ -268,7 +268,7 @@ body[data-active-tab="dashboard"] .dashboard-layout {
   .sales-overview-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 760px) {
-  body[data-active-tab="dashboard"] .metrics-hover-zone { display: none; }
+  body:has(.tab-view[data-tab-view="dashboard"].active) .metrics-hover-zone { display: none; }
   .dashboard-overview { padding: 1rem; }
   .dashboard-overview__copy { display: none; }
   .dashboard-overview h1 { font-size: 1.55rem; }
