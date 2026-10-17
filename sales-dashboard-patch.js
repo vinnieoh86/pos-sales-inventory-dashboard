@@ -1,6 +1,7 @@
 (function () {
-  const VERSION = "20261017-sales-studio-v6";
+  const VERSION = "20261017-sales-studio-v7";
   const DAY_MS = 86400000;
+  const GKPOS_DEPARTMENT_ORDER = ["GENERAL", "HAIR", "BEAUTY PRODUCTS", "COSMETIC", "ELECTRIC", "JEWELRY", "GROCERY"];
 
   state._remoteSalesLoadedStart = state._remoteSalesLoadedStart || "";
   state._remoteSalesLoadedEnd = state._remoteSalesLoadedEnd || "";
@@ -569,7 +570,15 @@
   function renderSalesDepartmentTree(rows) {
     const target = document.querySelector("#salesOverviewCategories");
     if (!target) return;
-    const departments = salesAggregateGroup(rows, "department").sort((a, b) => b.sales - a.sales);
+    const departmentRank = (name) => {
+      const normalized = cleanCell(name).toUpperCase().replace(/^BEAUTY PRODUCT$/, "BEAUTY PRODUCTS");
+      const index = GKPOS_DEPARTMENT_ORDER.indexOf(normalized);
+      return index === -1 ? GKPOS_DEPARTMENT_ORDER.length : index;
+    };
+    const departments = salesAggregateGroup(rows, "department").sort((a, b) => {
+      const rankDifference = departmentRank(a.name) - departmentRank(b.name);
+      return rankDifference || a.name.localeCompare(b.name);
+    });
     target.innerHTML = departments.length ? departments.map((department) => {
       const departmentRows = rows.filter((row) => (cleanCell(row.department) || "Unassigned") === department.name);
       const categories = salesAggregateGroup(departmentRows, "category").sort((a, b) => b.sales - a.sales);
