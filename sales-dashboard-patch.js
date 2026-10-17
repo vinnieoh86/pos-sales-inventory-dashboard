@@ -1,7 +1,28 @@
 (function () {
-  const VERSION = "20261017-sales-studio-v8";
+  const VERSION = "20261017-sales-studio-v9";
   const DAY_MS = 86400000;
   const GKPOS_DEPARTMENT_ORDER = ["GENERAL", "HAIR", "BEAUTY PRODUCTS", "COSMETIC", "ELECTRIC", "JEWELRY", "GROCERY"];
+  const GKPOS_CATEGORY_DEPARTMENTS = new Map(Object.entries({
+    "BODY OIL": "BEAUTY PRODUCTS", "CHEMICAL": "BEAUTY PRODUCTS", "SKIN CARE": "BEAUTY PRODUCTS",
+    "BRONZER": "COSMETIC", "CONCEALER": "COSMETIC", "COSMETIC ETC": "COSMETIC", "DEODORANT": "COSMETIC",
+    "EYELASHES": "COSMETIC", "EYELINER": "COSMETIC", "EYESHADOW": "COSMETIC", "LIPGLOSS": "COSMETIC",
+    "LIPLINER": "COSMETIC", "LIPSTICK": "COSMETIC", "LIQUID MAKE-UP": "COSMETIC",
+    "MAKE UP SPONGE / BRUSH": "COSMETIC", "MASCARA": "COSMETIC", "NAIL CARE": "COSMETIC",
+    "NAIL POLISH": "COSMETIC", "POWDER MAKE UP": "COSMETIC",
+    "CLIPPER": "ELECTRIC", "CURLING IRON": "ELECTRIC", "DRYER": "ELECTRIC", "ELECTRIC ETC": "ELECTRIC",
+    "ELECTRIC HAIR ROLLER": "ELECTRIC", "FLAT IRON": "ELECTRIC", "HEADPHONES": "ELECTRIC",
+    "STOVE": "ELECTRIC", "TRIMMER": "ELECTRIC",
+    "BAGS": "GENERAL", "BARBER ITEMS": "GENERAL", "CLOTHES": "GENERAL", "COMBS / BRUSHES": "GENERAL",
+    "GENERAL": "GENERAL", "HAIR ACCESSORIES": "GENERAL", "SCARF & BAND": "GENERAL", "SHOES": "GENERAL",
+    "SUNGLASS/GLASSES": "GENERAL", "WIG CAPS": "GENERAL",
+    "CANDY": "GROCERY", "DRINKS": "GROCERY", "FOOD": "GROCERY", "FROZEN": "GROCERY",
+    "HOUSE HOLD": "GROCERY", "MEDICINE": "GROCERY", "TOBACCO": "GROCERY",
+    "BRAIDING": "HAIR", "BUNDLES": "HAIR", "CLOSURE": "HAIR", "CROCHET": "HAIR", "EXTENSION": "HAIR",
+    "HAIR BUN": "HAIR", "HALF BUNDLE": "HAIR", "HUMAN HAIR": "HAIR", "HUMAN WIG": "HAIR",
+    "PONYTAIL": "HAIR", "SYNTH. HAIR": "HAIR", "WIGS": "HAIR",
+    "BODY JEWELRY": "JEWELRY", "BRACELET / ANKLET": "JEWELRY", "EARRING": "JEWELRY",
+    "JEWELRY ETC": "JEWELRY", "NECKLACE": "JEWELRY", "NOSE RINGS": "JEWELRY", "RINGS / TOE RINGS": "JEWELRY"
+  }));
 
   state._remoteSalesLoadedStart = state._remoteSalesLoadedStart || "";
   state._remoteSalesLoadedEnd = state._remoteSalesLoadedEnd || "";
@@ -383,9 +404,10 @@
   function salesHierarchyRow(row) {
     const inventory = salesHierarchyIndex().get(codeKey(row.code)) || {};
     const category = cleanCell(row.category) || cleanCell(inventory.category) || "Unassigned";
+    const mappedDepartment = GKPOS_CATEGORY_DEPARTMENTS.get(category.toUpperCase()) || "";
     const rowDepartment = cleanCell(row.department);
     const inventoryDepartment = cleanCell(inventory.department);
-    const department = inventoryDepartment || (rowDepartment && rowDepartment !== category ? rowDepartment : "Unassigned");
+    const department = mappedDepartment || inventoryDepartment || (rowDepartment && rowDepartment !== category ? rowDepartment : "Unassigned");
     return { ...row, department, category };
   }
 
@@ -747,7 +769,7 @@
     if (summary) summary.innerHTML = `<b>${formatter.format(currentTotal)}</b><span>selected period</span>${compare ? `<b class="${currentTotal >= priorTotal ? "up" : "down"}">${salesDeltaText(salesDelta(currentTotal, priorTotal))}</b><span>vs last year (${formatter.format(priorTotal)})</span>` : ""}`;
   }
 
-  function renderSalesItems() {
+  async function renderSalesItems() {
     const body = document.querySelector("#salesItemRows");
     if (!body) return;
     const start = document.querySelector("#salesItemsStart")?.value || els.startDate.value || state.dates[0] || "";
@@ -772,8 +794,10 @@
       ? direction * cleanCell(a[sort]).localeCompare(cleanCell(b[sort]))
       : direction * (Number(a[sort] || 0) - Number(b[sort] || 0)));
     const totals = salesTotals(rows);
+    const finalizedDays = await salesFetchRollups("DAY", start, end);
+    const finalizedSubtotal = finalizedDays.length ? salesTotals(finalizedDays).sales : totals.sales;
     const totalTarget = document.querySelector("#salesItemsTotals");
-    if (totalTarget) totalTarget.innerHTML = `<span><small>Products</small><b>${number.format(rows.length)}</b></span><span><small>Units</small><b>${number.format(totals.units)}</b></span><span><small>Total sales</small><b>${currency.format(totals.sales)}</b></span><span><small>Total cost</small><b>${currency.format(totals.cost)}</b></span><span><small>Total profit</small><b>${currency.format(totals.profit)}</b></span>`;
+    if (totalTarget) totalTarget.innerHTML = `<span><small>Products</small><b>${number.format(rows.length)}</b></span><span><small>Units</small><b>${number.format(totals.units)}</b></span><span><small>Item sales</small><b>${currency.format(totals.sales)}</b></span><span><small>Total cost</small><b>${currency.format(totals.cost)}</b></span><span><small>Final subtotal</small><b>${currency.format(finalizedSubtotal)}</b></span><span><small>Total profit</small><b>${currency.format(totals.profit)}</b></span>`;
     document.querySelectorAll("[data-item-sort]").forEach((button) => {
       const active = button.dataset.itemSort === sort;
       button.classList.toggle("active", active);
@@ -807,7 +831,7 @@
     if (salesUi.mode === "overview") void renderSalesOverview();
     else if (salesUi.mode === "calendar") void renderSalesCalendar();
     else if (salesUi.mode === "trends") { updateSalesTrendOptions(); void renderSalesTrend(); }
-    else if (salesUi.mode === "items") renderSalesItems();
+    else if (salesUi.mode === "items") void renderSalesItems();
   }
 
   document.querySelector("#salesModeTabs")?.addEventListener("click", (event) => {
