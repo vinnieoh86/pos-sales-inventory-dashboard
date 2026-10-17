@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "20260924-gkpos-inventory-autoload";
+  const VERSION = "20261017-sales-history-dashboard";
 
   function makeSearchEditable() {
     const search = document.querySelector("#searchInput");
@@ -33,6 +33,10 @@
   }
 
   loadScript(`POS SALES + INVENTORY DASHBOARD.core.js?v=${VERSION}`)
+    .then(() => {
+      makeSearchEditable();
+      return loadScript(`sales-dashboard-patch.js?v=${VERSION}`);
+    })
     .then(() => {
       makeSearchEditable();
       return loadScript(`rescue-usable.js?v=${VERSION}`);
