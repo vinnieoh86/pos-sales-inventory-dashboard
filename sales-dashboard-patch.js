@@ -1,5 +1,5 @@
 (function () {
-  const VERSION = "20261017-sales-studio-v3";
+  const VERSION = "20261017-sales-studio-v4";
   const DAY_MS = 86400000;
 
   state._remoteSalesLoadedStart = state._remoteSalesLoadedStart || "";
@@ -29,16 +29,16 @@
         </div>
       </section>
       <nav class="sales-mode-tabs" id="salesModeTabs" aria-label="Sales dashboard views">
-        <button type="button" class="active" data-sales-mode="overview">Overview</button>
-        <button type="button" data-sales-mode="calendar">Calendar</button>
+        <button type="button" data-sales-mode="overview">Overview</button>
+        <button type="button" class="active" data-sales-mode="calendar">Calendar</button>
         <button type="button" data-sales-mode="trends">Trends</button>
         <button type="button" data-sales-mode="items">Items</button>
       </nav>
       <section class="sales-workspace" id="salesWorkspace">
-        <section class="sales-mode-view active" data-sales-mode-view="overview">
+        <section class="sales-mode-view" data-sales-mode-view="overview" hidden>
           <div class="sales-section-heading">
             <div><p class="eyebrow">Year-over-year</p><h2>Business pulse</h2></div>
-            <small>Latest completed day, month, and year compared with last year.</small>
+            <small id="salesOverviewFocus">Selected day, month, and year compared with last year.</small>
           </div>
           <div class="yoy-card-grid" id="salesYoyCards"></div>
           <div class="sales-overview-grid">
@@ -47,13 +47,13 @@
               <canvas id="salesOverviewChart" height="210"></canvas>
             </article>
             <article class="sales-card">
-              <div class="sales-card__heading"><div><p class="eyebrow">Sales mix</p><h3>Top categories</h3></div></div>
-              <div class="sales-ranked-list" id="salesOverviewCategories"></div>
+              <div class="sales-card__heading"><div><p class="eyebrow">Sales mix</p><h3>Departments &amp; categories</h3></div></div>
+              <div class="sales-department-tree" id="salesOverviewCategories"></div>
             </article>
           </div>
         </section>
 
-        <section class="sales-mode-view" data-sales-mode-view="calendar" hidden>
+        <section class="sales-mode-view active" data-sales-mode-view="calendar">
           <div class="calendar-toolbar">
             <button type="button" class="sales-icon-button" id="salesCalendarPrev" aria-label="Previous month">&#8249;</button>
             <div><p class="eyebrow">Monthly sales</p><h2 id="salesCalendarTitle">Calendar</h2></div>
@@ -61,9 +61,6 @@
             <button type="button" class="sales-secondary-button" id="salesCalendarToday">Latest month</button>
           </div>
           <div class="sales-calendar" id="salesCalendar"></div>
-          <article class="sales-day-detail" id="salesDayDetail">
-            <div class="sales-empty">Click a date to see its category and item breakdown.</div>
-          </article>
         </section>
 
         <section class="sales-mode-view" data-sales-mode-view="trends" hidden>
@@ -95,9 +92,21 @@
             <label>From<input type="date" id="salesItemsStart" /></label>
             <label>To<input type="date" id="salesItemsEnd" /></label>
             <input type="search" id="salesItemSearch" placeholder="Search product, UPC, vendor, or category" />
-            <select id="salesItemSort"><option value="sales">Highest sales</option><option value="units">Most units</option><option value="profit">Highest profit</option><option value="product">Product A-Z</option></select>
+            <select id="salesItemSort"><option value="sales">Highest sales</option><option value="units">Most units</option><option value="profit">Highest profit</option><option value="cost">Highest total cost</option><option value="product">Product A-Z</option></select>
           </div>
-          <div class="sales-table-wrap"><table class="sales-item-table"><thead><tr><th>Product</th><th>Category</th><th>Vendor</th><th>Units</th><th>Sales</th><th>Profit</th></tr></thead><tbody id="salesItemRows"></tbody></table></div>
+          <div class="sales-item-totals" id="salesItemsTotals"></div>
+          <div class="sales-table-wrap"><table class="sales-item-table"><thead><tr>
+            <th><button type="button" data-item-sort="product">Product</button></th>
+            <th><button type="button" data-item-sort="department">Department</button></th>
+            <th><button type="button" data-item-sort="category">Category</button></th>
+            <th><button type="button" data-item-sort="vendor">Vendor</button></th>
+            <th><button type="button" data-item-sort="units">Units</button></th>
+            <th><button type="button" data-item-sort="price">Avg price</button></th>
+            <th><button type="button" data-item-sort="sales">Total sales</button></th>
+            <th><button type="button" data-item-sort="unitCost">Unit cost</button></th>
+            <th><button type="button" data-item-sort="cost">Total cost</button></th>
+            <th><button type="button" data-item-sort="profit">Total profit</button></th>
+          </tr></thead><tbody id="salesItemRows"></tbody></table></div>
         </section>
       </section>`);
   }
@@ -321,10 +330,12 @@
   });
 
   const salesUi = {
-    mode: "overview",
+    mode: "calendar",
     calendarMonth: "",
     selectedDate: "",
     chartType: "line",
+    itemSort: "sales",
+    itemSortDirection: "desc",
     trendRequest: 0,
     rollups: new Map(),
   };
@@ -509,7 +520,7 @@
     const previousYearStart = salesShiftYear(yearStart, -1);
     const total = (start, end) => salesTotals(rows.filter((row) => row.date >= start && row.date <= end));
     const cards = [
-      { label: "Latest day", current: total(latest, latest), prior: total(previousLatest, previousLatest), detail: latest },
+      { label: "Selected day", current: total(latest, latest), prior: total(previousLatest, previousLatest), detail: latest },
       { label: "Month to date", current: total(monthStart, latest), prior: total(previousMonthStart, previousLatest), detail: latestDate.toLocaleDateString("en-US", { month: "long", year: "numeric", timeZone: "UTC" }) },
       { label: "Year to date", current: total(yearStart, latest), prior: total(previousYearStart, previousLatest), detail: latest.slice(0, 4) },
     ];
@@ -525,33 +536,43 @@
     }).join("");
   }
 
-  function renderSalesCategoryList(rows) {
+  function renderSalesDepartmentTree(rows) {
     const target = document.querySelector("#salesOverviewCategories");
     if (!target) return;
-    const groups = salesAggregateGroup(rows, "category").sort((a, b) => b.sales - a.sales).slice(0, 10);
-    const max = Math.max(...groups.map((row) => row.sales), 1);
-    target.innerHTML = groups.length ? groups.map((row) => `<button type="button" data-open-trend="${escapeHtml(row.name)}">
-      <span><b>${escapeHtml(row.name)}</b><small>${number.format(row.units)} units</small></span>
-      <i><em style="width:${Math.max(2, (row.sales / max) * 100)}%"></em></i>
-      <strong>${currency.format(row.sales)}</strong>
-    </button>`).join("") : `<div class="sales-empty">Category totals will appear after sales load.</div>`;
+    const departments = salesAggregateGroup(rows, "department").sort((a, b) => b.sales - a.sales);
+    target.innerHTML = departments.length ? departments.map((department) => {
+      const departmentRows = rows.filter((row) => (cleanCell(row.department) || "Unassigned") === department.name);
+      const categories = salesAggregateGroup(departmentRows, "category").sort((a, b) => b.sales - a.sales);
+      return `<details class="sales-department">
+        <summary><span><b>${escapeHtml(department.name)}</b><small>${number.format(department.units)} units</small></span><strong>${currency.format(department.sales)}</strong></summary>
+        <div class="sales-category-branches">${categories.map((category) => {
+          const categoryRows = departmentRows.filter((row) => (cleanCell(row.category) || "Unassigned") === category.name);
+          const items = salesAggregateGroup(categoryRows.map((row) => ({ ...row, item: row.product || row.code })), "item").sort((a, b) => b.sales - a.sales);
+          return `<details class="sales-category-branch">
+            <summary><span><b>${escapeHtml(category.name)}</b><small>${number.format(category.units)} units</small></span><strong>${currency.format(category.sales)}</strong></summary>
+            <div class="sales-category-items">${items.slice(0, 100).map((item) => `<button type="button" data-open-item="${escapeHtml(item.name)}"><span><b>${escapeHtml(item.name)}</b><small>${number.format(item.units)} units</small></span><strong>${currency.format(item.sales)}</strong></button>`).join("")}</div>
+          </details>`;
+        }).join("")}</div>
+      </details>`;
+    }).join("") : `<div class="sales-empty">Department totals will appear after sales load.</div>`;
   }
 
   async function renderSalesOverview() {
     const latest = state._remoteSalesAvailableEnd || state.dates.at(-1) || "";
     if (!latest) return;
-    const previousYearStart = salesShiftYear(`${latest.slice(0, 4)}-01-01`, -1);
-    const rollups = await salesFetchRollups("DAY", previousYearStart, latest);
-    const fallback = salesAggregateDaily(salesRangeRows(previousYearStart, latest));
+    const focus = salesUi.selectedDate || latest;
+    const focusLabel = document.querySelector("#salesOverviewFocus");
+    if (focusLabel) focusLabel.textContent = `${salesDate(focus).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" })} with month/year comparisons.`;
+    const previousYearStart = salesShiftYear(`${focus.slice(0, 4)}-01-01`, -1);
+    const rollups = await salesFetchRollups("DAY", previousYearStart, focus);
+    const fallback = salesAggregateDaily(salesRangeRows(previousYearStart, focus));
     const daily = rollups.length ? rollups : fallback;
-    renderSalesYoyCards(daily, latest);
-    const recentStart = shiftIsoDate(latest, -13);
-    const recent = daily.filter((row) => row.date >= recentStart && row.date <= latest).map((row) => ({ label: row.date.slice(5), value: row.sales }));
+    renderSalesYoyCards(daily, focus);
+    const recentStart = shiftIsoDate(focus, -13);
+    const recent = daily.filter((row) => row.date >= recentStart && row.date <= focus).map((row) => ({ label: row.date.slice(5), value: row.sales }));
     salesDrawChart(document.querySelector("#salesOverviewChart"), recent, [], { type: "bar", height: 210 });
-    const monthStart = `${latest.slice(0, 7)}-01`;
-    const categoryRollups = await salesFetchRollups("CATEGORY__", monthStart, latest);
-    const categoryRows = categoryRollups.length ? categoryRollups : salesRangeRows(monthStart, latest);
-    renderSalesCategoryList(categoryRows);
+    await ensureRemoteSalesRange(focus, focus, { silent: true });
+    renderSalesDepartmentTree(salesRangeRows(focus, focus));
   }
 
   function renderSalesCalendarGrid(rows) {
@@ -571,7 +592,7 @@
       const iso = `${salesUi.calendarMonth}-${String(day).padStart(2, "0")}`;
       const row = daily.get(iso);
       const classes = ["sales-calendar__day", row ? "has-sales" : "", iso === salesUi.selectedDate ? "selected" : ""].filter(Boolean).join(" ");
-      cells.push(`<button type="button" class="${classes}" data-sales-date="${iso}"><span>${day}</span>${row ? `<strong>${compactCurrency(row.sales)}</strong><small>${number.format(row.units)} units</small>` : `<small>No sales</small>`}</button>`);
+      cells.push(`<button type="button" class="${classes}" data-sales-date="${iso}"><span>${day}</span>${row ? `<strong>${currency.format(row.sales)}</strong><small>${number.format(row.units)} units</small>` : `<small>No sales</small>`}</button>`);
     }
     target.innerHTML = cells.join("");
   }
@@ -689,17 +710,31 @@
     const range = document.querySelector("#salesItemsRange");
     if (range) range.textContent = start && end ? `${start} through ${end}` : "Choose a date range.";
     const query = cleanCell(document.querySelector("#salesItemSearch")?.value).toLowerCase();
-    const sort = document.querySelector("#salesItemSort")?.value || "sales";
+    const sortSelect = document.querySelector("#salesItemSort");
+    const sort = salesUi.itemSort || sortSelect?.value || "sales";
+    if (sortSelect && sortSelect.value !== sort && [...sortSelect.options].some((option) => option.value === sort)) sortSelect.value = sort;
     const map = new Map();
     salesRangeRows(start, end).forEach((row) => {
       const key = codeKey(row.code) || cleanCell(row.product).toLowerCase();
-      const current = map.get(key) || { code: row.code, product: row.product || row.code, category: row.category, vendor: row.vendor, units: 0, sales: 0, profit: 0 };
-      current.units += Number(row.units || 0); current.sales += Number(row.sales || 0); current.profit += Number(row.profit || 0);
+      const current = map.get(key) || { code: row.code, product: row.product || row.code, department: row.department, category: row.category, vendor: row.vendor, units: 0, sales: 0, cost: 0, profit: 0 };
+      current.units += Number(row.units || 0); current.sales += Number(row.sales || 0); current.cost += Number(row.cost || 0); current.profit += Number(row.profit || 0);
       map.set(key, current);
     });
-    let rows = [...map.values()].filter((row) => !query || [row.code, row.product, row.category, row.vendor].join(" ").toLowerCase().includes(query));
-    rows.sort((a, b) => sort === "product" ? a.product.localeCompare(b.product) : Number(b[sort] || 0) - Number(a[sort] || 0));
-    body.innerHTML = rows.slice(0, 500).map((row) => `<tr data-open-item="${escapeHtml(row.product)}"><td><b>${escapeHtml(row.product)}</b><small>${escapeHtml(row.code)}</small></td><td>${escapeHtml(row.category || "Unassigned")}</td><td>${escapeHtml(row.vendor || "Unassigned")}</td><td>${number.format(row.units)}</td><td>${currency.format(row.sales)}</td><td>${currency.format(row.profit)}</td></tr>`).join("") || `<tr><td colspan="6" class="sales-empty">No matching sales items.</td></tr>`;
+    let rows = [...map.values()].map((row) => ({ ...row, price: row.units ? row.sales / row.units : 0, unitCost: row.units ? row.cost / row.units : 0 }))
+      .filter((row) => !query || [row.code, row.product, row.department, row.category, row.vendor].join(" ").toLowerCase().includes(query));
+    const direction = salesUi.itemSortDirection === "asc" ? 1 : -1;
+    rows.sort((a, b) => ["product", "department", "category", "vendor"].includes(sort)
+      ? direction * cleanCell(a[sort]).localeCompare(cleanCell(b[sort]))
+      : direction * (Number(a[sort] || 0) - Number(b[sort] || 0)));
+    const totals = salesTotals(rows);
+    const totalTarget = document.querySelector("#salesItemsTotals");
+    if (totalTarget) totalTarget.innerHTML = `<span><small>Products</small><b>${number.format(rows.length)}</b></span><span><small>Units</small><b>${number.format(totals.units)}</b></span><span><small>Total sales</small><b>${currency.format(totals.sales)}</b></span><span><small>Total cost</small><b>${currency.format(totals.cost)}</b></span><span><small>Total profit</small><b>${currency.format(totals.profit)}</b></span>`;
+    document.querySelectorAll("[data-item-sort]").forEach((button) => {
+      const active = button.dataset.itemSort === sort;
+      button.classList.toggle("active", active);
+      button.dataset.direction = active ? salesUi.itemSortDirection : "";
+    });
+    body.innerHTML = rows.slice(0, 500).map((row) => `<tr data-open-item="${escapeHtml(row.product)}"><td><b>${escapeHtml(row.product)}</b><small>${escapeHtml(row.code)}</small></td><td>${escapeHtml(row.department || "Unassigned")}</td><td>${escapeHtml(row.category || "Unassigned")}</td><td>${escapeHtml(row.vendor || "Unassigned")}</td><td>${number.format(row.units)}</td><td>${currency.format(row.price)}</td><td>${currency.format(row.sales)}</td><td>${currency.format(row.unitCost)}</td><td>${currency.format(row.cost)}</td><td>${currency.format(row.profit)}</td></tr>`).join("") || `<tr><td colspan="10" class="sales-empty">No matching sales items.</td></tr>`;
   }
 
   function setSalesMode(mode) {
@@ -738,8 +773,10 @@
     const button = event.target.closest("[data-sales-date]");
     if (!button) return;
     salesUi.selectedDate = button.dataset.salesDate;
-    void renderSalesCalendar();
-    void renderSalesDayDetail(salesUi.selectedDate);
+    const startInput = document.querySelector("#salesItemsStart"), endInput = document.querySelector("#salesItemsEnd");
+    if (startInput) startInput.value = salesUi.selectedDate;
+    if (endInput) endInput.value = salesUi.selectedDate;
+    setSalesMode("overview");
   });
   document.querySelector("#salesCalendarPrev")?.addEventListener("click", () => {
     const bounds = salesMonthBounds(salesUi.calendarMonth);
@@ -773,7 +810,20 @@
     if (button) button.textContent = card?.classList.contains("expanded") ? "Close" : "Expand";
     void renderSalesTrend();
   });
-  ["#salesItemSearch", "#salesItemSort"].forEach((selector) => document.querySelector(selector)?.addEventListener(selector.includes("Search") ? "input" : "change", renderSalesItems));
+  document.querySelector("#salesItemSearch")?.addEventListener("input", renderSalesItems);
+  document.querySelector("#salesItemSort")?.addEventListener("change", (event) => {
+    salesUi.itemSort = event.target.value;
+    salesUi.itemSortDirection = salesUi.itemSort === "product" ? "asc" : "desc";
+    renderSalesItems();
+  });
+  document.querySelector(".sales-item-table thead")?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-item-sort]");
+    if (!button) return;
+    const next = button.dataset.itemSort;
+    if (salesUi.itemSort === next) salesUi.itemSortDirection = salesUi.itemSortDirection === "asc" ? "desc" : "asc";
+    else { salesUi.itemSort = next; salesUi.itemSortDirection = ["product", "department", "category", "vendor"].includes(next) ? "asc" : "desc"; }
+    renderSalesItems();
+  });
   ["#salesItemsStart", "#salesItemsEnd"].forEach((selector) => document.querySelector(selector)?.addEventListener("change", () => {
     const start = document.querySelector("#salesItemsStart")?.value;
     const end = document.querySelector("#salesItemsEnd")?.value;
@@ -796,6 +846,6 @@
   window.addEventListener("resize", () => { if (activeTabName() === "dashboard") renderSalesWorkspace(); });
 
   dashboardDataStatus();
-  setSalesMode("overview");
+  setSalesMode("calendar");
 })();
 
