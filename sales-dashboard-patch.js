@@ -1,5 +1,5 @@
 (function () {
-  const VERSION = "20261017-sales-studio-v5";
+  const VERSION = "20261017-sales-studio-v6";
   const DAY_MS = 86400000;
 
   state._remoteSalesLoadedStart = state._remoteSalesLoadedStart || "";
@@ -361,8 +361,38 @@
     return { start: salesIso(start), end: salesIso(end), year, month };
   }
 
+  let salesHierarchyStamp = "";
+  let salesHierarchyByCode = new Map();
+
+  function salesHierarchyIndex() {
+    const inventoryRows = state.inventoryRows?.length
+      ? state.inventoryRows
+      : [...(state.latestInventory?.values?.() || [])];
+    const stamp = `${state._dataCacheStamp || 0}|${inventoryRows.length}`;
+    if (stamp === salesHierarchyStamp) return salesHierarchyByCode;
+    salesHierarchyStamp = stamp;
+    salesHierarchyByCode = new Map();
+    inventoryRows.forEach((row) => {
+      const key = codeKey(row.code);
+      if (key && !salesHierarchyByCode.has(key)) salesHierarchyByCode.set(key, row);
+    });
+    return salesHierarchyByCode;
+  }
+
+  function salesHierarchyRow(row) {
+    const inventory = salesHierarchyIndex().get(codeKey(row.code)) || {};
+    const category = cleanCell(row.category) || cleanCell(inventory.category) || "Unassigned";
+    const rowDepartment = cleanCell(row.department);
+    const inventoryDepartment = cleanCell(inventory.department);
+    const department = inventoryDepartment || (rowDepartment && rowDepartment !== category ? rowDepartment : "Unassigned");
+    return { ...row, department, category };
+  }
+
   function salesRangeRows(start, end, predicate = null) {
-    return state.rawSales.filter((row) => row.date >= start && row.date <= end && (!predicate || predicate(row)));
+    return state.rawSales
+      .filter((row) => row.date >= start && row.date <= end)
+      .map(salesHierarchyRow)
+      .filter((row) => !predicate || predicate(row));
   }
 
   function salesTotals(rows) {
