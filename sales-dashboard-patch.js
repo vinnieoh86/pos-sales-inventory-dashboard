@@ -1,5 +1,5 @@
 (function () {
-  const VERSION = "20261017-sales-studio-v2";
+  const VERSION = "20261017-sales-studio-v3";
   const DAY_MS = 86400000;
 
   state._remoteSalesLoadedStart = state._remoteSalesLoadedStart || "";
