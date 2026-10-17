@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "20261017-sales-studio-v5";
+  const VERSION = "20261017-sales-studio-v6";
 
   function makeSearchEditable() {
     const search = document.querySelector("#searchInput");
