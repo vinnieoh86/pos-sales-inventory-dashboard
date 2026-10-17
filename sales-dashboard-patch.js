@@ -1,5 +1,5 @@
 (function () {
-  const VERSION = "20261017-sales-studio-v4";
+  const VERSION = "20261017-sales-studio-v5";
   const DAY_MS = 86400000;
 
   state._remoteSalesLoadedStart = state._remoteSalesLoadedStart || "";
@@ -600,9 +600,15 @@
   async function renderSalesCalendar() {
     const latest = state._remoteSalesAvailableEnd || state.dates.at(-1) || salesIso(new Date());
     if (!salesUi.calendarMonth) salesUi.calendarMonth = latest.slice(0, 7);
+    const requestedMonth = salesUi.calendarMonth;
     const bounds = salesMonthBounds(salesUi.calendarMonth);
     const rollups = await salesFetchRollups("DAY", bounds.start, bounds.end);
-    const rows = rollups.length ? rollups : salesRangeRows(bounds.start, bounds.end);
+    let rows = rollups;
+    if (!rows.length) {
+      await ensureRemoteSalesRange(bounds.start, bounds.end, { silent: true });
+      if (requestedMonth !== salesUi.calendarMonth) return;
+      rows = salesRangeRows(bounds.start, bounds.end);
+    }
     renderSalesCalendarGrid(rows);
   }
 
