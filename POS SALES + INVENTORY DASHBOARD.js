@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "20261017-sales-history-dashboard";
+  const VERSION = "20261017-sales-studio-v2";
 
   function makeSearchEditable() {
     const search = document.querySelector("#searchInput");
