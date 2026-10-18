@@ -1,5 +1,5 @@
 (function () {
-  const VERSION = "20261018-sales-studio-v21";
+  const VERSION = "20261018-sales-studio-v22";
   const DAY_MS = 86400000;
   const GKPOS_DEPARTMENT_ORDER = ["GENERAL", "HAIR", "BEAUTY PRODUCTS", "COSMETIC", "ELECTRIC", "JEWELRY", "GROCERY"];
   const GKPOS_CATEGORY_DEPARTMENTS = new Map(Object.entries({
@@ -173,8 +173,9 @@
 
     controls.classList.add("sales-master-controls");
     controls.innerHTML = `
-      <label>View<select id="salesTrendPeriod"><option value="day">Daily</option><option value="week">Weekly</option><option value="month" selected>Monthly</option><option value="quarter">Quarterly</option><option value="half">Bi-annual</option><option value="year">Annual</option></select></label>
-      <div class="sales-period-nav"><button type="button" class="sales-icon-button" id="salesTrendPrev" aria-label="Previous period">&#8249;</button><label>Period date<input type="date" id="salesTrendDate" /></label><button type="button" class="sales-icon-button" id="salesTrendNext" aria-label="Next period">&#8250;</button></div>
+      <label>Range<select id="salesTrendRange"><option value="3">3 months</option><option value="6" selected>6 months</option><option value="9">9 months</option><option value="12">12 months</option></select></label>
+      <label>Trend by<select id="salesTrendBucket"><option value="week">Weekly</option><option value="month" selected>Monthly</option></select></label>
+      <div class="sales-period-nav"><button type="button" class="sales-icon-button" id="salesTrendPrev" aria-label="Previous range">&#8249;</button><label>Through date<input type="date" id="salesTrendDate" /></label><button type="button" class="sales-icon-button" id="salesTrendNext" aria-label="Next range">&#8250;</button></div>
       <details class="sales-vendor-picker" id="salesVendorPicker"><summary>Vendors <span id="salesVendorCount">All</span></summary><div><input type="search" id="salesVendorSearch" placeholder="Find vendor" autocomplete="off" data-lpignore="true"/><div id="salesVendorOptions"></div></div></details>
       <button type="button" class="sales-secondary-button" id="salesVendorCompare">Compare vendors</button>
       <label>Metric<select id="salesTrendMetric"><option value="sales">Net sales $</option><option value="units">Units</option><option value="profit">Profit</option><option value="margin">Margin %</option></select></label>
@@ -228,7 +229,7 @@
       const heading = itemsView.querySelector("h2");
       if (heading) heading.textContent = "Items sold in this selection";
       const itemToolbar = itemsView.querySelector(".sales-item-toolbar");
-      if (itemToolbar) itemToolbar.innerHTML = `<label class="sales-item-search">Search sold items<input type="search" id="salesItemSearch" list="salesSoldItems" placeholder="Product, UPC or item number" autocomplete="off" name="salesSoldItemLookup" data-lpignore="true" data-1p-ignore="true" data-form-type="other"/><datalist id="salesSoldItems"></datalist></label><label>Sort<select id="salesItemSort" aria-label="Sort items"><option value="sales">Highest sales</option><option value="units">Most units</option><option value="profit">Highest profit</option><option value="cost">Highest total cost</option><option value="product">Product A-Z</option></select></label><button type="button" class="sales-secondary-button" id="salesItemsClear">Clear search</button>`;
+      if (itemToolbar) itemToolbar.innerHTML = `<label class="sales-item-search">Search sold items<input type="search" id="salesItemSearch" list="salesSoldItems" placeholder="Product, UPC or item number" autocomplete="off" name="salesSoldItemLookup" data-lpignore="true" data-1p-ignore="true" data-form-type="other"/><datalist id="salesSoldItems"></datalist></label><label class="sales-item-history-range" hidden>History<select id="salesItemHistoryRange"><option value="12">Last 12 months</option><option value="24" selected>Last 24 months</option></select></label><label>Sort<select id="salesItemSort" aria-label="Sort items"><option value="sales">Highest sales</option><option value="units">Most units</option><option value="profit">Highest profit</option><option value="cost">Highest total cost</option><option value="product">Product A-Z</option></select></label><button type="button" class="sales-secondary-button" id="salesItemsClear">Clear search</button>`;
       const headRow = itemsView.querySelector(".sales-item-table thead tr");
       if (headRow) headRow.id = "salesItemHeadRow";
       overview.append(itemsView);
@@ -248,6 +249,15 @@
     if (!iso || !/^\d{4}-\d{2}-\d{2}$/.test(String(iso).slice(0, 10))) return cleanCell(iso);
     const [year, month, day] = String(iso).slice(0, 10).split("-");
     return `${month}/${day}/${year}`;
+  }
+
+  function salesDisplayTime(value) {
+    const raw = cleanCell(value);
+    if (!raw) return "Daily total";
+    const date = new Date(raw);
+    if (Number.isFinite(date.getTime())) return date.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+    const match = raw.match(/(?:^|\s)(\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM)?)/i);
+    return match ? match[1].toUpperCase() : raw;
   }
 
   function dashboardDataStatus() {
@@ -391,7 +401,16 @@
       DEPARTMENT: row.DEPARTMENT || row.Department,
       CODE: row.CODE || row.Code,
     };
-    return originalNormalizeSalesRow(patched, date);
+    const normalized = originalNormalizeSalesRow(patched, date);
+    const timestamp = cleanCell(row.Timestamp || row.TIMESTAMP || row.DateTime || row.DATETIME || row.SaleTime || row.SALE_TIME || row.Time || row.TIME);
+    return timestamp ? { ...normalized, timestamp } : normalized;
+  };
+
+  const originalHydrateSalesFromSupabase = hydrateSalesFromSupabase;
+  hydrateSalesFromSupabase = function patchedHydrateSalesFromSupabase(row) {
+    const hydrated = originalHydrateSalesFromSupabase(row);
+    const timestamp = cleanCell(row.sale_timestamp || row.sales_timestamp || row.sold_at || row.sale_time || row.timestamp);
+    return timestamp ? { ...hydrated, timestamp } : hydrated;
   };
 
   const originalDateFromRows = dateFromRows;
@@ -575,6 +594,9 @@
     drill: { department: "", category: "", item: "" },
     vendors: new Set(),
     vendorCompare: false,
+    trendRangeMonths: 6,
+    trendBucket: "month",
+    itemHistoryMonths: 24,
     trendRequest: 0,
     rollups: new Map(),
     healthLoadedAt: 0,
@@ -666,7 +688,7 @@
     const cached = salesUi.rollups.get(key);
     if (!options.force && cached && Date.now() - cached.at < 60000) return cached.promise;
     const promise = directSelectRows("daily_sales", {
-      select: "sales_date,code,product,vendor,category,department,qty,sales,cost_sold,profit",
+      select: "*",
       and: `(sales_date.gte.${start},sales_date.lte.${end})`,
       code: salesRollupCode(kind),
       order: "sales_date.asc",
@@ -848,6 +870,138 @@
       prior: prior[index] || null,
     }));
     bindSalesChartHover(canvas, hoverPoints, options);
+  }
+
+  const SALES_TREND_COLORS = ["#16835b", "#4f6f91", "#8b5fb5", "#d16b43", "#c39a24", "#168b91", "#b54f73", "#637a36", "#805e49", "#667085"];
+
+  function salesTrendBucketKey(iso, bucket) {
+    if (bucket === "month") return iso.slice(0, 7);
+    const date = salesDate(iso);
+    const day = date.getUTCDay();
+    date.setUTCDate(date.getUTCDate() + (day === 0 ? -6 : 1 - day));
+    return salesIso(date);
+  }
+
+  function salesTrendBucketLabel(key, bucket) {
+    if (bucket === "month") return salesDate(`${key}-01`).toLocaleDateString("en-US", { month: "short", year: "2-digit", timeZone: "UTC" });
+    return salesDate(key).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+  }
+
+  function salesTrendBucketKeys(dates, bucket) {
+    const keys = [];
+    if (bucket === "month") {
+      let cursor = `${dates.start.slice(0, 7)}-01`;
+      const last = `${dates.end.slice(0, 7)}-01`;
+      while (cursor <= last) {
+        keys.push(cursor.slice(0, 7));
+        const date = salesDate(cursor); date.setUTCMonth(date.getUTCMonth() + 1); cursor = `${salesIso(date).slice(0, 7)}-01`;
+      }
+      return keys;
+    }
+    let cursor = salesTrendBucketKey(dates.start, "week");
+    const last = salesTrendBucketKey(dates.end, "week");
+    while (cursor <= last) { keys.push(cursor); cursor = shiftIsoDate(cursor, 7); }
+    return keys;
+  }
+
+  function salesTrendSeries(rows, priorRows, metric, bucket, dimension, fallbackName, dates, compare) {
+    const keys = salesTrendBucketKeys(dates, bucket);
+    const groupName = (row) => dimension ? (cleanCell(row[dimension]) || "Unassigned") : fallbackName;
+    const totals = new Map();
+    rows.forEach((row) => {
+      const name = groupName(row);
+      const current = totals.get(name) || 0;
+      totals.set(name, current + (metric === "margin" ? Number(row.sales || 0) : salesMetricValue(row, metric)));
+    });
+    let names = [...totals.keys()];
+    if (dimension === "department") names.sort((a, b) => {
+      const ai = GKPOS_DEPARTMENT_ORDER.indexOf(a.toUpperCase()), bi = GKPOS_DEPARTMENT_ORDER.indexOf(b.toUpperCase());
+      return (ai < 0 ? 999 : ai) - (bi < 0 ? 999 : bi) || a.localeCompare(b);
+    });
+    else names.sort((a, b) => Number(totals.get(b) || 0) - Number(totals.get(a) || 0));
+    names = names.slice(0, dimension === "category" || dimension === "vendor" ? 10 : 12);
+
+    const build = (source, prior = false) => names.map((name, index) => {
+      const buckets = new Map();
+      source.filter((row) => groupName(row) === name).forEach((row) => {
+        let key = salesTrendBucketKey(row.date, bucket);
+        if (prior) key = salesTrendBucketKey(salesShiftYear(row.date, 1), bucket);
+        const current = buckets.get(key) || { sales: 0, profit: 0, units: 0 };
+        current.sales += Number(row.sales || 0); current.profit += Number(row.profit || 0); current.units += Number(row.units || row.qty || 0);
+        buckets.set(key, current);
+      });
+      return {
+        name,
+        color: SALES_TREND_COLORS[index % SALES_TREND_COLORS.length],
+        prior,
+        values: keys.map((key) => {
+          const value = buckets.get(key) || { sales: 0, profit: 0, units: 0 };
+          return metric === "margin" ? (value.sales ? (value.profit / value.sales) * 100 : 0) : Number(value[metric] || 0);
+        }),
+      };
+    });
+    return { labels: keys.map((key) => salesTrendBucketLabel(key, bucket)), series: [...(compare ? build(priorRows, true) : []), ...build(rows, false)] };
+  }
+
+  function bindSalesMultiChartHover(canvas, labels, series, xPositions, options = {}) {
+    if (!canvas) return;
+    let tooltip = document.querySelector("#salesChartTooltip");
+    if (!tooltip) { tooltip = document.createElement("div"); tooltip.id = "salesChartTooltip"; tooltip.className = "sales-chart-tooltip"; tooltip.hidden = true; document.body.append(tooltip); }
+    canvas.onmousemove = (event) => {
+      if (!xPositions.length) { tooltip.hidden = true; return; }
+      const rect = canvas.getBoundingClientRect();
+      const pointerX = event.clientX - rect.left;
+      let index = 0;
+      xPositions.forEach((x, candidate) => { if (Math.abs(x - pointerX) < Math.abs(xPositions[index] - pointerX)) index = candidate; });
+      const formatter = options.percent ? { format: (value) => `${Number(value || 0).toFixed(1)}%` } : (options.currency === false ? number : currency);
+      const rows = series.map((item) => ({ ...item, value: Number(item.values[index] || 0) })).filter((item) => item.value !== 0).sort((a, b) => b.value - a.value);
+      tooltip.innerHTML = `<strong>${escapeHtml(labels[index] || "")}</strong>${rows.slice(0, 12).map((item) => `<br><span style="display:inline-block;width:.55rem;height:.55rem;margin-right:.35rem;border-radius:50%;background:${item.color};opacity:${item.prior ? .45 : 1}"></span>${escapeHtml(item.name)}${item.prior ? " (prior)" : ""}: <b>${formatter.format(item.value)}</b>`).join("") || "<br>No sales"}`;
+      tooltip.hidden = false;
+      tooltip.style.left = `${Math.min(event.clientX + 14, window.innerWidth - 310)}px`;
+      tooltip.style.top = `${Math.max(8, event.clientY - 130)}px`;
+    };
+    canvas.onmouseleave = () => { tooltip.hidden = true; };
+  }
+
+  function salesDrawMultiSeriesChart(canvas, labels, series, options = {}) {
+    const setup = salesSetCanvas(canvas, Number(options.height || 350));
+    if (!setup) return;
+    const { ctx, width, height } = setup;
+    const left = 58, right = width - 18, top = 20, bottom = height - 42;
+    const values = series.flatMap((item) => item.values).map(Number);
+    const max = Math.max(...values, 1);
+    ctx.strokeStyle = "#dfe7e3"; ctx.fillStyle = "#6d7773"; ctx.font = "11px Arial";
+    for (let i = 0; i < 5; i += 1) {
+      const y = top + ((bottom - top) * i) / 4;
+      ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(right, y); ctx.stroke();
+      const value = max * (1 - i / 4);
+      ctx.fillText(options.percent ? `${value.toFixed(0)}%` : (options.currency === false ? number.format(value) : compactCurrency(value)), 4, y + 4);
+    }
+    if (!labels.length || !series.length) { ctx.textAlign = "center"; ctx.fillText("No data for this selection yet.", width / 2, height / 2); ctx.textAlign = "left"; return; }
+    const count = labels.length;
+    const slot = (right - left) / Math.max(count, 1);
+    const xPositions = labels.map((_, index) => left + slot * index + slot / 2);
+    const yFor = (value) => bottom - ((bottom - top) * Number(value || 0)) / max;
+    if (options.type === "bar") {
+      const bar = Math.max(2, Math.min(16, slot * .78 / Math.max(series.length, 1)));
+      series.forEach((item, seriesIndex) => item.values.forEach((value, index) => {
+        const x = xPositions[index] - (bar * series.length) / 2 + seriesIndex * bar;
+        const y = yFor(value);
+        ctx.globalAlpha = item.prior ? .35 : .92; ctx.fillStyle = item.color; ctx.fillRect(x, y, Math.max(1, bar - 1), bottom - y);
+      }));
+      ctx.globalAlpha = 1;
+    } else {
+      series.forEach((item) => {
+        ctx.strokeStyle = item.color; ctx.globalAlpha = item.prior ? .38 : 1; ctx.lineWidth = item.prior ? 1.6 : 2.5; ctx.setLineDash(item.prior ? [6, 5] : []);
+        ctx.beginPath(); item.values.forEach((value, index) => { const x = xPositions[index], y = yFor(value); if (!index) ctx.moveTo(x, y); else ctx.lineTo(x, y); }); ctx.stroke();
+      });
+      ctx.globalAlpha = 1; ctx.setLineDash([]);
+    }
+    ctx.fillStyle = "#6d7773"; ctx.font = "11px Arial"; ctx.textAlign = "center";
+    const step = Math.max(1, Math.ceil(labels.length / 12));
+    labels.forEach((label, index) => { if (index % step === 0 || index === labels.length - 1) ctx.fillText(label, xPositions[index], height - 12); });
+    ctx.textAlign = "left";
+    bindSalesMultiChartHover(canvas, labels, series, xPositions, options);
   }
 
   function compactCurrency(value) {
@@ -1082,37 +1236,13 @@
     </div>`;
   }
 
-  function salesTrendDates(period, anchor, latest) {
-    const date = salesDate(anchor || latest);
-    const year = date.getUTCFullYear();
-    const month = date.getUTCMonth();
-    let startDate = new Date(Date.UTC(year, month, date.getUTCDate(), 12));
-    let endDate = new Date(startDate);
-    if (period === "week") {
-      const day = startDate.getUTCDay();
-      const mondayOffset = day === 0 ? -6 : 1 - day;
-      startDate.setUTCDate(startDate.getUTCDate() + mondayOffset);
-      endDate = new Date(startDate);
-      endDate.setUTCDate(endDate.getUTCDate() + 6);
-    } else if (period === "month") {
-      startDate = new Date(Date.UTC(year, month, 1, 12));
-      endDate = new Date(Date.UTC(year, month + 1, 0, 12));
-    } else if (period === "quarter") {
-      const firstMonth = Math.floor(month / 3) * 3;
-      startDate = new Date(Date.UTC(year, firstMonth, 1, 12));
-      endDate = new Date(Date.UTC(year, firstMonth + 3, 0, 12));
-    } else if (period === "half") {
-      const firstMonth = month < 6 ? 0 : 6;
-      startDate = new Date(Date.UTC(year, firstMonth, 1, 12));
-      endDate = new Date(Date.UTC(year, firstMonth + 6, 0, 12));
-    } else if (period === "year") {
-      startDate = new Date(Date.UTC(year, 0, 1, 12));
-      endDate = new Date(Date.UTC(year, 11, 31, 12));
-    }
-    const start = salesIso(startDate);
+  function salesTrendDates(monthCount, anchor, latest) {
+    const endDate = salesDate(anchor || latest);
+    const months = Math.max(1, Number(monthCount || 6));
+    const startDate = new Date(Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth() - months + 1, 1, 12));
     let end = salesIso(endDate);
-    if (latest && start <= latest && end > latest) end = latest;
-    return { start, end };
+    if (latest && end > latest) end = latest;
+    return { start: salesIso(startDate), end };
   }
 
   let salesMasterCatalogStamp = "";
@@ -1303,8 +1433,7 @@
 
   function salesChartDimension(filters) {
     if (salesUi.vendorCompare) return "vendor";
-    if (filters.item) return "date";
-    if (filters.category) return "product";
+    if (filters.item || filters.category) return "";
     if (filters.department) return "category";
     return "department";
   }
@@ -1360,15 +1489,15 @@
     const margin = current.sales ? (current.profit / current.sales) * 100 : 0;
     const priorMargin = prior.sales ? (prior.profit / prior.sales) * 100 : 0;
     const delta = salesDelta(current.sales, prior.sales);
-    const periodName = { day: "Selected day", week: "Selected week", month: "Selected month", quarter: "Selected quarter", half: "Selected half-year", year: "Selected year" }[period] || "Selected period";
+    const periodName = { day: "Selected day", week: "Selected week", month: "Selected month", quarter: "Selected quarter", half: "Selected half-year", year: "Selected year", range: "Selected range" }[period] || "Selected period";
     const range = dates.start === dates.end ? salesDisplayDate(dates.start) : `${salesDisplayDate(dates.start)}–${salesDisplayDate(dates.end)}`;
     const priorYear = priorDates.end.slice(0, 4);
     const hasAdjustments = adjustments?.available;
     target.innerHTML = `
       <article><small>${periodName} subtotal</small><b>${currency.format(current.sales)}</b><span>${escapeHtml(range)}</span></article>
-      <article><small>Gross sales</small><b>${hasAdjustments ? currency.format(adjustments.gross) : "—"}</b><span>${hasAdjustments ? "Before discounts & returns" : "Rebuild pending"}</span></article>
-      <article><small>Discounts</small><b>${hasAdjustments ? currency.format(adjustments.discount) : "—"}</b><span>${hasAdjustments ? "GKPOS discount total" : "Rebuild pending"}</span></article>
-      <article><small>Returns</small><b>${hasAdjustments ? currency.format(adjustments.returns) : "—"}</b><span>${hasAdjustments ? "GKPOS return total" : "Rebuild pending"}</span></article>
+      <article><small>Gross sales</small><b>${hasAdjustments ? currency.format(adjustments.gross) : "—"}</b><span>${hasAdjustments ? (adjustments.allocated ? "Allocated to this selection" : "Before discounts & returns") : "Rebuild pending"}</span></article>
+      <article><small>Discounts</small><b>${hasAdjustments ? currency.format(adjustments.discount) : "—"}</b><span>${hasAdjustments ? (adjustments.allocated ? "Allocated by sales share" : "GKPOS discount total") : "Rebuild pending"}</span></article>
+      <article><small>Returns</small><b>${hasAdjustments ? currency.format(adjustments.returns) : "—"}</b><span>${hasAdjustments ? (adjustments.allocated ? "Allocated by sales share" : "GKPOS return total") : "Rebuild pending"}</span></article>
       <article><small>Prior-year sales</small><b>${currency.format(prior.sales)}</b><span class="${delta != null && delta < 0 ? "down" : "up"}">${salesDeltaText(delta)} · ${currency.format(current.sales - prior.sales)}</span></article>
       <article><small>Units</small><b>${number.format(current.units)}</b><span>${number.format(prior.units)} in ${priorYear}</span></article>
       <article><small>Total cost</small><b>${currency.format(current.cost)}</b><span>Cost for this selection</span></article>
@@ -1380,23 +1509,29 @@
     const request = ++salesUi.trendRequest;
     const filters = salesMasterFilters();
     const metric = document.querySelector("#salesTrendMetric")?.value || "sales";
-    const period = document.querySelector("#salesTrendPeriod")?.value || "month";
+    const rangeMonths = Number(document.querySelector("#salesTrendRange")?.value || salesUi.trendRangeMonths || 6);
+    const bucket = document.querySelector("#salesTrendBucket")?.value || salesUi.trendBucket || "month";
+    salesUi.trendRangeMonths = rangeMonths;
+    salesUi.trendBucket = bucket;
     const compare = !!document.querySelector("#salesTrendCompare")?.checked;
     const latest = state._remoteSalesAvailableEnd || state.dates.at(-1) || "";
     const anchor = document.querySelector("#salesTrendDate")?.value || salesUi.selectedDate || latest;
     if (!latest || !anchor) return;
-    const requestedDates = salesTrendDates(period, anchor, latest);
-    const dates = filters.item ? { start: shiftIsoDate(requestedDates.end, -364), end: requestedDates.end } : requestedDates;
+    const requestedDates = salesTrendDates(rangeMonths, anchor, latest);
+    const historyMonths = Number(document.querySelector("#salesItemHistoryRange")?.value || salesUi.itemHistoryMonths || 24);
+    salesUi.itemHistoryMonths = historyMonths;
+    const dates = filters.item ? salesTrendDates(historyMonths, anchor, latest) : requestedDates;
     const priorDates = { start: salesShiftYear(dates.start, -1), end: salesShiftYear(dates.end, -1) };
     const currentYtdStart = `${dates.end.slice(0, 4)}-01-01`;
     const priorYtdStart = salesShiftYear(currentYtdStart, -1);
-    const fetchStart = compare ? priorYtdStart : currentYtdStart;
+    const fetchStart = [dates.start, currentYtdStart, ...(compare ? [priorDates.start, priorYtdStart] : [])].sort()[0];
     const title = document.querySelector("#salesTrendTitle");
     const kicker = document.querySelector("#salesTrendKicker");
     const dimension = salesChartDimension(filters);
-    const dimensionLabel = { department: "Departments", category: "Categories", product: "Items", vendor: "Vendors", date: "Sales history" }[dimension];
-    if (kicker) kicker.textContent = filters.item ? "Up to 12 months of sold dates" : `${dimensionLabel} · ${period}`;
-    if (title) title.textContent = filters.item ? filters.item : filters.category ? `${filters.category} items` : filters.department ? `${filters.department} categories` : salesUi.vendorCompare ? "Vendor comparison" : "Department performance";
+    const dimensionLabel = { department: "Departments", category: "Categories", vendor: "Vendors", "": "Category" }[dimension];
+    if (kicker) kicker.textContent = filters.item ? `${historyMonths}-month item history` : `${rangeMonths}-month ${bucket === "week" ? "weekly" : "monthly"} trend`;
+    if (title) title.textContent = filters.item ? `${filters.item} sales history` : filters.category ? `${filters.category} trend` : filters.department ? `${filters.department} category trends` : salesUi.vendorCompare ? "Vendor trends" : "Department trends";
+    document.body.classList.toggle("sales-item-history-active", !!filters.item);
     const summary = document.querySelector("#salesTrendSummary");
     if (summary) summary.innerHTML = `<span>Loading ${escapeHtml(salesDisplayDate(dates.start))} through ${escapeHtml(salesDisplayDate(dates.end))}…</span>`;
 
@@ -1406,27 +1541,33 @@
     const priorRows = compare ? rows.filter((row) => row.date >= priorDates.start && row.date <= priorDates.end) : [];
     const ytdCurrentRows = rows.filter((row) => row.date >= currentYtdStart && row.date <= dates.end);
     const ytdPriorRows = compare ? rows.filter((row) => row.date >= priorYtdStart && row.date <= priorDates.end) : [];
-    const aligned = salesDimensionSeries(currentRows, priorRows, metric, dimension);
-    const current = aligned.current;
-    const prior = compare ? aligned.prior : [];
     const currentYear = dates.end.slice(0, 4);
     const priorYear = String(Number(currentYear) - 1);
+    const fallbackName = filters.category || filters.department || salesFilterTitle(filters);
+    const trend = salesTrendSeries(currentRows, priorRows, metric, bucket, dimension, fallbackName, dates, compare);
     const legend = document.querySelector("#salesTrendLegend");
-    if (legend) legend.innerHTML = `${compare ? `<span><i class="prior"></i>${priorYear}</span>` : ""}<span><i class="current"></i>${currentYear}</span>`;
-    salesDrawChart(document.querySelector("#salesTrendExplorerChart"), current, prior, { type: salesUi.chartType, height: filters.item ? 300 : 350, currency: metric !== "units" && metric !== "margin", percent: metric === "margin", currentLabel: currentYear, priorLabel: priorYear });
+    if (legend) legend.innerHTML = filters.item ? "" : `${trend.series.filter((item) => !item.prior).map((item) => `<span><i style="background:${item.color}"></i>${escapeHtml(item.name)}</span>`).join("")}${compare ? `<span class="sales-prior-key">Faded = ${priorYear}</span>` : ""}`;
+    if (!filters.item) salesDrawMultiSeriesChart(document.querySelector("#salesTrendExplorerChart"), trend.labels, trend.series, { type: salesUi.chartType, height: 350, currency: metric !== "units" && metric !== "margin", percent: metric === "margin" });
     const currentTotals = salesTotals(currentRows);
     const priorTotals = salesTotals(priorRows);
     const currentTotal = metric === "margin" ? (currentTotals.sales ? (currentTotals.profit / currentTotals.sales) * 100 : 0) : salesMetricValue(currentTotals, metric);
     const priorTotal = metric === "margin" ? (priorTotals.sales ? (priorTotals.profit / priorTotals.sales) * 100 : 0) : salesMetricValue(priorTotals, metric);
     const formatter = metric === "units" ? number : metric === "margin" ? { format: (value) => `${Number(value || 0).toFixed(1)}%` } : currency;
     if (summary) summary.innerHTML = `<b>${formatter.format(currentTotal)}</b><span>${salesDisplayDate(dates.start)}–${salesDisplayDate(dates.end)}</span>${compare ? `<b class="${currentTotal >= priorTotal ? "up" : "down"}">${salesDeltaText(salesDelta(currentTotal, priorTotal))}</b><span>vs ${priorYear} (${formatter.format(priorTotal)})</span>` : ""}`;
-    const adjustments = await salesFetchAdjustments(dates.start, dates.end);
+    let adjustments = await salesFetchAdjustments(dates.start, dates.end);
+    const scoped = Boolean(filters.department || filters.category || filters.item || filters.vendors.length);
+    if (scoped && adjustments.available) {
+      const allStoreRows = await salesFetchRollups("DAY", dates.start, dates.end);
+      const allStoreSales = salesTotals(allStoreRows).sales;
+      const ratio = allStoreSales ? currentTotals.sales / allStoreSales : 0;
+      adjustments = { ...adjustments, gross: adjustments.gross * ratio, discount: adjustments.discount * ratio, returns: adjustments.returns * ratio, allocated: true };
+    }
     if (request !== salesUi.trendRequest) return;
-    renderSalesPeriodKpis(currentRows, priorRows, ytdCurrentRows, ytdPriorRows, dates, priorDates, period, adjustments);
+    renderSalesPeriodKpis(currentRows, priorRows, ytdCurrentRows, ytdPriorRows, dates, priorDates, "range", adjustments);
 
-    await ensureRemoteSalesRange(dates.start, dates.end, { silent: true });
+    if (!filters.item) await ensureRemoteSalesRange(dates.start, dates.end, { silent: true });
     if (request !== salesUi.trendRequest) return;
-    const rawCurrent = salesRangeRows(dates.start, dates.end).filter((row) => salesRowsMatchFilters(row, filters));
+    const rawCurrent = filters.item ? currentRows : salesRangeRows(dates.start, dates.end).filter((row) => salesRowsMatchFilters(row, filters));
     renderSalesDepartmentTree(rawCurrent.length ? rawCurrent : currentRows);
     await renderSalesItems(dates, filters, rawCurrent);
   }
@@ -1436,10 +1577,10 @@
     if (!body) return;
     const latest = state._remoteSalesAvailableEnd || state.dates.at(-1) || "";
     const anchor = document.querySelector("#salesTrendDate")?.value || latest;
-    const period = document.querySelector("#salesTrendPeriod")?.value || "month";
+    const rangeMonths = Number(document.querySelector("#salesTrendRange")?.value || salesUi.trendRangeMonths || 6);
     const calendarMode = salesUi.mode === "day";
     const calendarDay = salesUi.selectedDate || latest;
-    const dates = calendarMode ? { start: calendarDay, end: calendarDay } : (selectedDates || salesTrendDates(period, anchor, latest));
+    const dates = calendarMode ? { start: calendarDay, end: calendarDay } : (selectedDates || salesTrendDates(rangeMonths, anchor, latest));
     const start = dates.start;
     const end = dates.end;
     const filters = calendarMode ? {
@@ -1453,6 +1594,9 @@
     if (range) range.textContent = calendarMode ? `${salesDisplayDate(start)} only` : (start && end ? `${salesDisplayDate(start)} through ${salesDisplayDate(end)}` : "Choose a date range.");
     const searchQuery = cleanCell(document.querySelector("#salesItemSearch")?.value).toLowerCase();
     const exactHistory = calendarMode ? "" : cleanCell(filters.item);
+    document.querySelector(".sales-items-inline")?.classList.toggle("item-history-view", !!exactHistory);
+    const historyRange = document.querySelector(".sales-item-history-range");
+    if (historyRange) historyRange.hidden = !exactHistory;
     const query = exactHistory.toLowerCase() || searchQuery;
     const sortSelect = document.querySelector("#salesItemSort");
     const sort = exactHistory ? (salesUi.itemSort === "product" ? "date" : salesUi.itemSort) : (salesUi.itemSort || sortSelect?.value || "sales");
@@ -1461,8 +1605,9 @@
       .filter((row) => !searchQuery || `${cleanCell(row.product)} ${cleanCell(row.code)}`.toLowerCase().includes(searchQuery));
     const map = new Map();
     matchedSource.forEach((row) => {
-      const key = exactHistory ? row.date : (codeKey(row.code) || cleanCell(row.product).toLowerCase());
-      const current = map.get(key) || { code: row.code, product: row.product || row.code, department: row.department, category: row.category, vendor: row.vendor, units: 0, sales: 0, cost: 0, profit: 0 };
+      const timestamp = cleanCell(row.timestamp || row.saleTime || row.time);
+      const key = exactHistory ? `${row.date}|${timestamp || "daily"}` : (codeKey(row.code) || cleanCell(row.product).toLowerCase());
+      const current = map.get(key) || { code: row.code, product: row.product || row.code, department: row.department, category: row.category, vendor: row.vendor, timestamp, units: 0, sales: 0, cost: 0, profit: 0 };
       current.date = exactHistory ? row.date : "";
       current.units += Number(row.units || 0); current.sales += Number(row.sales || 0); current.cost += Number(row.cost || 0); current.profit += Number(row.profit || 0);
       map.set(key, current);
@@ -1483,7 +1628,7 @@
     if (totalTarget) totalTarget.innerHTML = `<span><small>Products</small><b>${number.format(rows.length)}</b></span><span><small>Units</small><b>${number.format(totals.units)}</b></span><span><small>Item sales</small><b>${currency.format(totals.sales)}</b></span><span class="${zeroCostCount ? "warning" : ""}"><small>Total cost</small><b>${currency.format(totals.cost)}</b>${zeroCostCount ? `<em>${number.format(zeroCostCount)} missing-cost item${zeroCostCount === 1 ? "" : "s"}</em>` : ""}</span><span><small>Final subtotal</small><b>${currency.format(finalizedSubtotal)}</b></span><span><small>Total profit</small><b>${currency.format(totals.profit)}</b></span>`;
     const head = document.querySelector("#salesItemHeadRow");
     if (head) head.innerHTML = exactHistory
-      ? `<th><button type="button" data-item-sort="date">Sold date</button></th><th>Product</th><th>Vendor</th><th><button type="button" data-item-sort="units">Units</button></th><th><button type="button" data-item-sort="price">Avg net price</button></th><th><button type="button" data-item-sort="sales">Net sales</button></th><th><button type="button" data-item-sort="unitCost">Unit cost</button></th><th><button type="button" data-item-sort="cost">Total cost</button></th><th><button type="button" data-item-sort="profit">Profit</button></th><th>Margin</th>`
+      ? `<th><button type="button" data-item-sort="date">Sold date</button></th><th>Time</th><th>Product</th><th>Vendor</th><th><button type="button" data-item-sort="units">Qty</button></th><th><button type="button" data-item-sort="price">Avg net price</button></th><th><button type="button" data-item-sort="sales">Net sales</button></th><th><button type="button" data-item-sort="unitCost">Unit cost</button></th><th><button type="button" data-item-sort="cost">Total cost</button></th><th><button type="button" data-item-sort="profit">Profit</button></th><th>Margin</th>`
       : `<th><button type="button" data-item-sort="product">Product</button></th><th><button type="button" data-item-sort="department">Department</button></th><th><button type="button" data-item-sort="category">Category</button></th><th><button type="button" data-item-sort="vendor">Vendor</button></th><th><button type="button" data-item-sort="units">Units</button></th><th><button type="button" data-item-sort="price">Avg net price</button></th><th><button type="button" data-item-sort="sales">Net sales</button></th><th><button type="button" data-item-sort="unitCost">Unit cost</button></th><th><button type="button" data-item-sort="cost">Total cost</button></th><th><button type="button" data-item-sort="profit">Profit</button></th>`;
     document.querySelectorAll("[data-item-sort]").forEach((button) => {
       const active = button.dataset.itemSort === sort;
@@ -1491,7 +1636,7 @@
       button.dataset.direction = active ? salesUi.itemSortDirection : "";
     });
     body.innerHTML = rows.slice(0, 500).map((row) => exactHistory
-      ? `<tr><td><b>${salesDisplayDate(row.date)}</b></td><td><b>${escapeHtml(row.product)}</b><small>${escapeHtml(row.code)}</small></td><td>${escapeHtml(row.vendor || "Unassigned")}</td><td>${number.format(row.units)}</td><td>${currency.format(row.price)}</td><td>${currency.format(row.sales)}</td><td>${currency.format(row.unitCost)}</td><td>${currency.format(row.cost)}</td><td>${currency.format(row.profit)}</td><td>${row.sales ? `${((row.profit / row.sales) * 100).toFixed(1)}%` : "—"}</td></tr>`
+      ? `<tr><td><b>${salesDisplayDate(row.date)}</b></td><td>${escapeHtml(salesDisplayTime(row.timestamp))}</td><td><b>${escapeHtml(row.product)}</b><small>${escapeHtml(row.code)}</small></td><td>${escapeHtml(row.vendor || "Unassigned")}</td><td>${number.format(row.units)}</td><td>${currency.format(row.price)}</td><td>${currency.format(row.sales)}</td><td>${currency.format(row.unitCost)}</td><td>${currency.format(row.cost)}</td><td>${currency.format(row.profit)}</td><td>${row.sales ? `${((row.profit / row.sales) * 100).toFixed(1)}%` : "—"}</td></tr>`
       : `<tr data-open-item="${escapeHtml(row.product)}"><td><b>${escapeHtml(row.product)}</b><small>${escapeHtml(row.code)}</small></td><td>${escapeHtml(row.department || "Unassigned")}</td><td>${escapeHtml(row.category || "Unassigned")}</td><td>${escapeHtml(row.vendor || "Unassigned")}</td><td>${number.format(row.units)}</td><td>${currency.format(row.price)}</td><td>${currency.format(row.sales)}</td><td>${currency.format(row.unitCost)}</td><td>${currency.format(row.cost)}</td><td>${currency.format(row.profit)}</td></tr>`).join("") || `<tr><td colspan="10" class="sales-empty">No matching sales items.</td></tr>`;
   }
 
@@ -1559,9 +1704,9 @@
     salesUi.calendarCategory = "";
     void renderSalesCalendar();
   });
-  ["#salesTrendMetric", "#salesTrendPeriod", "#salesTrendCompare", "#salesTrendDate"].forEach((selector) => document.querySelector(selector)?.addEventListener("change", () => { void renderSalesTrend(); }));
+  ["#salesTrendMetric", "#salesTrendRange", "#salesTrendBucket", "#salesTrendCompare", "#salesTrendDate"].forEach((selector) => document.querySelector(selector)?.addEventListener("change", () => { void renderSalesTrend(); }));
   document.querySelector("#salesTrendClear")?.addEventListener("click", () => {
-    const metric = document.querySelector("#salesTrendMetric"), period = document.querySelector("#salesTrendPeriod"), compare = document.querySelector("#salesTrendCompare");
+    const metric = document.querySelector("#salesTrendMetric"), range = document.querySelector("#salesTrendRange"), bucket = document.querySelector("#salesTrendBucket"), compare = document.querySelector("#salesTrendCompare");
     salesUi.drill = { department: "", category: "", item: "" };
     salesUi.vendors.clear();
     salesUi.vendorCompare = false;
@@ -1569,7 +1714,8 @@
     const itemSearch = document.querySelector("#salesItemSearch"); if (itemSearch) itemSearch.value = "";
     if (metric) metric.value = "sales";
     const date = document.querySelector("#salesTrendDate");
-    if (period) period.value = "month";
+    if (range) range.value = "6";
+    if (bucket) bucket.value = "month";
     if (date) date.value = state._remoteSalesAvailableEnd || state.dates.at(-1) || "";
     if (compare) compare.checked = true;
     salesUi.chartType = "bar";
@@ -1579,15 +1725,9 @@
   });
   function shiftSalesAnchor(direction) {
     const input = document.querySelector("#salesTrendDate");
-    const period = document.querySelector("#salesTrendPeriod")?.value || "month";
     if (!input?.value) return;
     const date = salesDate(input.value);
-    if (period === "day") date.setUTCDate(date.getUTCDate() + direction);
-    else if (period === "week") date.setUTCDate(date.getUTCDate() + (7 * direction));
-    else if (period === "month") date.setUTCMonth(date.getUTCMonth() + direction);
-    else if (period === "quarter") date.setUTCMonth(date.getUTCMonth() + (3 * direction));
-    else if (period === "half") date.setUTCMonth(date.getUTCMonth() + (6 * direction));
-    else date.setUTCFullYear(date.getUTCFullYear() + direction);
+    date.setUTCMonth(date.getUTCMonth() + direction);
     const latest = state._remoteSalesAvailableEnd || state.dates.at(-1) || salesIso(new Date());
     input.value = salesIso(date) > latest ? latest : salesIso(date);
     void renderSalesTrend();
@@ -1688,6 +1828,10 @@
     salesUi.itemSortDirection = salesUi.itemSort === "product" ? "asc" : "desc";
     renderSalesItems();
   });
+  document.querySelector("#salesItemHistoryRange")?.addEventListener("change", (event) => {
+    salesUi.itemHistoryMonths = Number(event.target.value || 24);
+    void renderSalesTrend();
+  });
   document.querySelector(".sales-item-table thead")?.addEventListener("click", (event) => {
     const button = event.target.closest("[data-item-sort]");
     if (!button) return;
@@ -1720,7 +1864,6 @@
     }
     const item = event.target.closest("[data-open-item]");
     if (item) {
-      if (salesUi.mode === "day") return;
       setSalesMode("overview");
       const catalogItem = salesMasterCatalog().find((row) => row.product === item.dataset.openItem);
       if (catalogItem) salesUi.drill = { department: catalogItem.department, category: catalogItem.category, item: catalogItem.product };
