@@ -1,5 +1,5 @@
 (function () {
-  const VERSION = "20261017-sales-studio-v11";
+  const VERSION = "20261017-sales-studio-v12";
   const DAY_MS = 86400000;
   const GKPOS_DEPARTMENT_ORDER = ["GENERAL", "HAIR", "BEAUTY PRODUCTS", "COSMETIC", "ELECTRIC", "JEWELRY", "GROCERY"];
   const GKPOS_CATEGORY_DEPARTMENTS = new Map(Object.entries({
@@ -71,9 +71,10 @@
             <small id="salesOverviewFocus">Selected day, month, and year compared with last year.</small>
           </div>
           <div class="yoy-card-grid" id="salesYoyCards"></div>
+          <div class="sales-executive-grid" id="salesExecutiveSummary"></div>
           <div class="sales-overview-grid">
             <article class="sales-card">
-              <div class="sales-card__heading"><div><p class="eyebrow">Monthly performance</p><h3 id="salesOverviewChartTitle">Daily sales by date</h3></div></div>
+              <div class="sales-card__heading"><div><p class="eyebrow">Monthly performance</p><h3 id="salesOverviewChartTitle">Daily sales by date</h3></div><div class="sales-chart-legend" id="salesOverviewLegend"></div></div>
               <canvas id="salesOverviewChart" height="210"></canvas>
             </article>
             <article class="sales-card">
@@ -86,7 +87,7 @@
         <section class="sales-mode-view active" data-sales-mode-view="calendar">
           <div class="calendar-toolbar">
             <button type="button" class="sales-icon-button" id="salesCalendarPrev" aria-label="Previous month">&#8249;</button>
-            <div><p class="eyebrow">Monthly sales</p><h2 id="salesCalendarTitle">Calendar</h2></div>
+            <div><p class="eyebrow">Monthly sales</p><h2 id="salesCalendarTitle">Calendar</h2><div class="calendar-month-summary" id="salesCalendarMonthSummary"></div></div>
             <button type="button" class="sales-icon-button" id="salesCalendarNext" aria-label="Next month">&#8250;</button>
             <button type="button" class="sales-secondary-button" id="salesCalendarToday">Latest month</button>
           </div>
@@ -108,7 +109,7 @@
             <button type="button" class="sales-secondary-button sales-clear-button" id="salesTrendClear">Clear all</button>
           </div>
           <article class="sales-card sales-trend-card" id="salesTrendCard">
-            <div class="sales-card__heading"><div><p class="eyebrow" id="salesTrendKicker">Category trend</p><h3 id="salesTrendTitle">Choose a category</h3></div><button type="button" class="sales-secondary-button" id="salesTrendExpand">Expand</button></div>
+            <div class="sales-card__heading"><div><p class="eyebrow" id="salesTrendKicker">Category trend</p><h3 id="salesTrendTitle">Choose a category</h3></div><div class="sales-chart-actions"><div class="sales-chart-legend" id="salesTrendLegend"></div><button type="button" class="sales-secondary-button" id="salesTrendExpand">Expand</button></div></div>
             <canvas id="salesTrendExplorerChart" height="300"></canvas>
             <div class="sales-chart-summary" id="salesTrendSummary"></div>
           </article>
@@ -213,7 +214,7 @@
       for (let iso = scanStart; iso <= expectedEnd; iso = shiftIsoDate(iso, 1)) {
         if (salesDate(iso).getUTCDay() !== 0 && !availableDates.has(iso)) missing.push(iso);
       }
-      const latestSales = cleanCell(sync.latest_sales_date) || [...availableDates].sort().at(-1) || "";
+      const latestSales = [cleanCell(sync.latest_sales_date), ...availableDates].filter(Boolean).sort().at(-1) || "";
       const inventoryDate = cleanCell(sync.latest_inventory_date);
       const productUpdatedAt = newestProducts[0]?.updated_at || "";
       const salesState = missing.length ? "warning" : "ok";
@@ -223,7 +224,7 @@
       const deltaState = productAgeHours > 24 ? "warning" : "ok";
       target.innerHTML = `
         <article class="sales-health-card ${salesState}"><small>Sales</small><b>${latestSales ? `Through ${escapeHtml(latestSales)}` : "No successful upload"}</b><span>${missing.length ? `${missing.length} missing business day${missing.length === 1 ? "" : "s"}` : "Last 30 days complete"}</span></article>
-        <article class="sales-health-card ${inventoryState}"><small>Full inventory</small><b>${inventoryDate ? escapeHtml(inventoryDate.slice(0, 10)) : "Not reported"}</b><span>${inventoryAge > 1 ? "Recovery snapshot needed" : "Current snapshot available"}</span></article>
+        <article class="sales-health-card ${inventoryState}" title="A full inventory snapshot is the complete product and quantity file. The recovery watchdog repairs an overdue snapshot during business hours."><small>Full inventory</small><b>${inventoryDate ? escapeHtml(inventoryDate.slice(0, 10)) : "Not reported"}</b><span>${inventoryAge > 1 ? `Full snapshot overdue by ${number.format(inventoryAge)} days` : "Current full snapshot available"}</span></article>
         <article class="sales-health-card ${deltaState}"><small>Inventory updates</small><b>${escapeHtml(formatHealthStamp(productUpdatedAt))}</b><span>${deltaState === "ok" ? "Recent product sync" : "No recent delta upload"}</span></article>`;
       if (missing.length) {
         const preview = missing.slice(-8).join(", ");
@@ -525,12 +526,13 @@
   }
 
   function salesRollupCode(kind) {
-    return `like.__ROLLUP__${kind}*`;
+    return kind === "DAY" ? "eq.__ROLLUP__DAY" : `like.__ROLLUP__${kind}*`;
   }
 
-  async function salesFetchRollups(kind, start, end) {
+  async function salesFetchRollups(kind, start, end, options = {}) {
     const key = `${kind}|${start}|${end}`;
-    if (salesUi.rollups.has(key)) return salesUi.rollups.get(key);
+    const cached = salesUi.rollups.get(key);
+    if (!options.force && cached && Date.now() - cached.at < 60000) return cached.promise;
     const promise = directSelectRows("daily_sales", {
       select: "sales_date,code,product,vendor,category,department,qty,sales,cost_sold,profit",
       and: `(sales_date.gte.${start},sales_date.lte.${end})`,
@@ -547,8 +549,12 @@
       sales: Number(row.sales || 0),
       cost: Number(row.cost_sold || 0),
       profit: Number(row.profit || 0),
-    }))).catch(() => []);
-    salesUi.rollups.set(key, promise);
+    }))).catch((error) => {
+      salesUi.rollups.delete(key);
+      console.warn("Sales rollup request failed", { kind, start, end, error });
+      return [];
+    });
+    salesUi.rollups.set(key, { at: Date.now(), promise });
     return promise;
   }
 
@@ -602,21 +608,32 @@
       tooltip.hidden = true;
       document.body.append(tooltip);
     }
+    let hoverFrame = 0;
     canvas.onmousemove = (event) => {
+      cancelAnimationFrame(hoverFrame);
+      const clientX = event.clientX;
+      const clientY = event.clientY;
+      hoverFrame = requestAnimationFrame(() => {
       if (!points.length) { tooltip.hidden = true; return; }
       const rect = canvas.getBoundingClientRect();
-      const pointerX = event.clientX - rect.left;
+      const pointerX = clientX - rect.left;
       const closest = points.reduce((best, point) => Math.abs(point.x - pointerX) < Math.abs(best.x - pointerX) ? point : best, points[0]);
       const threshold = Math.max(12, rect.width / Math.max(points.length, 1) / 2);
       if (Math.abs(closest.x - pointerX) > threshold) { tooltip.hidden = true; return; }
-      const value = options.currency === false ? number.format(closest.row.value) : currency.format(closest.row.value);
-      const units = closest.row.units == null ? "" : `<br>${number.format(closest.row.units)} units`;
-      tooltip.innerHTML = `<b>${escapeHtml(closest.row.tooltipLabel || closest.row.label || "")}</b><br>${value}${units}`;
+      const formatter = options.currency === false ? number : currency;
+      const current = closest.current;
+      const prior = closest.prior;
+      const label = current?.tooltipLabel || current?.label || prior?.tooltipLabel || prior?.label || "";
+      const currentText = current ? `<span class="current-dot"></span>${escapeHtml(options.currentLabel || "Current")}: <b>${formatter.format(current.value)}</b>${current.units == null ? "" : ` · ${number.format(current.units)} units`}` : "";
+      const priorText = prior ? `<span class="prior-dot"></span>${escapeHtml(options.priorLabel || "Prior year")}: <b>${formatter.format(prior.value)}</b>${prior.units == null ? "" : ` · ${number.format(prior.units)} units`}` : "";
+      const delta = current && prior && Number(prior.value) ? salesDelta(Number(current.value), Number(prior.value)) : null;
+      tooltip.innerHTML = `<strong>${escapeHtml(label)}</strong>${currentText ? `<br>${currentText}` : ""}${priorText ? `<br>${priorText}` : ""}${delta == null ? "" : `<br><em class="${delta < 0 ? "down" : "up"}">${salesDeltaText(delta)} vs prior year</em>`}`;
       tooltip.hidden = false;
-      tooltip.style.left = `${Math.min(event.clientX + 14, window.innerWidth - 190)}px`;
-      tooltip.style.top = `${Math.max(8, event.clientY - 72)}px`;
+      tooltip.style.left = `${Math.min(clientX + 14, window.innerWidth - 270)}px`;
+      tooltip.style.top = `${Math.max(8, clientY - 100)}px`;
+      });
     };
-    canvas.onmouseleave = () => { tooltip.hidden = true; };
+    canvas.onmouseleave = () => { cancelAnimationFrame(hoverFrame); tooltip.hidden = true; };
   }
 
   function salesDrawChart(canvas, current, prior = [], options = {}) {
@@ -669,7 +686,12 @@
       ctx.fillText(row.label || "", xFor(index), height - 10);
     });
     ctx.textAlign = "left";
-    bindSalesChartHover(canvas, current.map((row, index) => ({ row, x: xFor(index), y: yFor(row.value) })), options);
+    const hoverPoints = Array.from({ length: count }, (_, index) => ({
+      x: xFor(index),
+      current: current[index] || null,
+      prior: prior[index] || null,
+    }));
+    bindSalesChartHover(canvas, hoverPoints, options);
   }
 
   function compactCurrency(value) {
@@ -697,13 +719,46 @@
     target.innerHTML = cards.map((card) => {
       const delta = salesDelta(card.current.sales, card.prior.sales);
       const hasPrior = card.prior.sales || card.prior.units;
+      const difference = card.current.sales - card.prior.sales;
+      const margin = card.current.sales ? (card.current.profit / card.current.sales) * 100 : 0;
       return `<article class="yoy-card">
         <div class="yoy-card__top"><span>${escapeHtml(card.label)}</span><small>${escapeHtml(card.detail)}</small></div>
         <strong>${currency.format(card.current.sales)}</strong>
-        <div class="yoy-card__compare ${delta != null && delta < 0 ? "down" : "up"}">${hasPrior ? salesDeltaText(delta) : "Awaiting prior-year history"}</div>
-        <small>${hasPrior ? `${currency.format(card.prior.sales)} last year` : `${number.format(card.current.units)} units`}</small>
+        <div class="yoy-card__compare ${delta != null && delta < 0 ? "down" : "up"}">${hasPrior ? `${salesDeltaText(delta)} · ${difference >= 0 ? "+" : "−"}${currency.format(Math.abs(difference))}` : "No prior-year match"}</div>
+        <div class="yoy-card__foot"><span><small>Prior year</small><b>${hasPrior ? currency.format(card.prior.sales) : "—"}</b></span><span><small>Units</small><b>${number.format(card.current.units)}</b></span><span><small>Margin</small><b>${margin.toFixed(1)}%</b></span></div>
       </article>`;
     }).join("");
+    renderSalesExecutiveSummary(rows, latest);
+  }
+
+  function salesOperatingDays(start, end) {
+    let count = 0;
+    for (let iso = start; iso <= end; iso = shiftIsoDate(iso, 1)) {
+      if (salesDate(iso).getUTCDay() !== 0) count += 1;
+    }
+    return count;
+  }
+
+  function renderSalesExecutiveSummary(rows, latest) {
+    const target = document.querySelector("#salesExecutiveSummary");
+    if (!target || !latest) return;
+    const yearStart = `${latest.slice(0, 4)}-01-01`;
+    const monthStart = `${latest.slice(0, 7)}-01`;
+    const monthEnd = salesMonthBounds(latest.slice(0, 7)).end;
+    const yearRows = rows.filter((row) => row.date >= yearStart && row.date <= latest);
+    const monthRows = rows.filter((row) => row.date >= monthStart && row.date <= latest);
+    const ytd = salesTotals(yearRows);
+    const mtd = salesTotals(monthRows);
+    const sellingDays = Math.max(1, monthRows.filter((row) => Number(row.sales || 0) !== 0).length);
+    const totalOperatingDays = salesOperatingDays(monthStart, monthEnd);
+    const projection = (mtd.sales / sellingDays) * totalOperatingDays;
+    const avgDay = ytd.sales / Math.max(1, yearRows.filter((row) => Number(row.sales || 0) !== 0).length);
+    const grossMargin = ytd.sales ? (ytd.profit / ytd.sales) * 100 : 0;
+    target.innerHTML = `
+      <article><small>YTD gross profit</small><b>${currency.format(ytd.profit)}</b><span>${grossMargin.toFixed(1)}% gross margin</span></article>
+      <article><small>Average selling day</small><b>${currency.format(avgDay)}</b><span>${number.format(yearRows.filter((row) => Number(row.sales || 0) !== 0).length)} completed days</span></article>
+      <article><small>Month-end projection</small><b>${currency.format(projection)}</b><span>Based on ${number.format(sellingDays)} completed selling days</span></article>
+      <article><small>YTD total cost</small><b>${currency.format(ytd.cost)}</b><span>Finalized cost of goods sold</span></article>`;
   }
 
   function renderSalesDepartmentTree(rows) {
@@ -746,18 +801,36 @@
     const rollups = await salesFetchRollups("DAY", previousYearStart, focus);
     const fallback = salesAggregateDaily(salesRangeRows(previousYearStart, focus));
     const daily = rollups.length ? rollups : fallback;
+    const coverageStart = daily[0]?.date || "";
+    const serverShouldCoverComparison = state._remoteSalesAvailableStart && state._remoteSalesAvailableStart <= previousYearStart;
+    if (serverShouldCoverComparison && (!rollups.length || !coverageStart || coverageStart > shiftIsoDate(previousYearStart, 7))) {
+      const cards = document.querySelector("#salesYoyCards");
+      const executive = document.querySelector("#salesExecutiveSummary");
+      if (cards) cards.innerHTML = `<div class="sales-loading sales-history-warning">Loading complete year-over-year history… Partial totals are intentionally hidden.</div>`;
+      if (executive) executive.innerHTML = "";
+      salesDrawChart(document.querySelector("#salesOverviewChart"), [], [], { type: "bar", height: 210 });
+      return;
+    }
     renderSalesYoyCards(daily, focus);
     const monthBounds = salesMonthBounds(focus.slice(0, 7));
     const byDate = new Map(daily.filter((row) => row.date >= monthBounds.start && row.date <= monthBounds.end).map((row) => [row.date, row]));
     const monthSeries = [];
+    const priorMonthSeries = [];
     for (let day = 1; day <= Number(monthBounds.end.slice(8)); day += 1) {
       const iso = `${focus.slice(0, 7)}-${String(day).padStart(2, "0")}`;
       const row = byDate.get(iso) || {};
       monthSeries.push({ label: String(day), tooltipLabel: iso, value: Number(row.sales || 0), units: Number(row.units || 0) });
+      const priorIso = salesShiftYear(iso, -1);
+      const priorRow = daily.find((item) => item.date === priorIso) || {};
+      priorMonthSeries.push({ label: String(day), tooltipLabel: priorIso, value: Number(priorRow.sales || 0), units: Number(priorRow.units || 0) });
     }
     const chartTitle = document.querySelector("#salesOverviewChartTitle");
     if (chartTitle) chartTitle.textContent = `${salesDate(monthBounds.start).toLocaleDateString("en-US", { month: "long", year: "numeric", timeZone: "UTC" })} daily sales`;
-    salesDrawChart(document.querySelector("#salesOverviewChart"), monthSeries, [], { type: "bar", height: 210 });
+    const currentYear = focus.slice(0, 4);
+    const priorYear = String(Number(currentYear) - 1);
+    const legend = document.querySelector("#salesOverviewLegend");
+    if (legend) legend.innerHTML = `<span><i class="current"></i>${currentYear}</span><span><i class="prior"></i>${priorYear}</span>`;
+    salesDrawChart(document.querySelector("#salesOverviewChart"), monthSeries, priorMonthSeries, { type: "bar", height: 210, currentLabel: currentYear, priorLabel: priorYear });
     await ensureRemoteSalesRange(focus, focus, { silent: true });
     renderSalesDepartmentTree(salesRangeRows(focus, focus));
   }
@@ -789,7 +862,11 @@
     if (!salesUi.calendarMonth) salesUi.calendarMonth = latest.slice(0, 7);
     const requestedMonth = salesUi.calendarMonth;
     const bounds = salesMonthBounds(salesUi.calendarMonth);
-    const rollups = await salesFetchRollups("DAY", bounds.start, bounds.end);
+    const priorBounds = { start: salesShiftYear(bounds.start, -1), end: salesShiftYear(bounds.end, -1) };
+    const [rollups, priorRollups] = await Promise.all([
+      salesFetchRollups("DAY", bounds.start, bounds.end),
+      salesFetchRollups("DAY", priorBounds.start, priorBounds.end),
+    ]);
     let rows = rollups;
     if (!rows.length) {
       await ensureRemoteSalesRange(bounds.start, bounds.end, { silent: true });
@@ -797,6 +874,14 @@
       rows = salesRangeRows(bounds.start, bounds.end);
     }
     renderSalesCalendarGrid(rows);
+    const availableEnd = state._remoteSalesAvailableEnd || bounds.end;
+    const cutoff = availableEnd.slice(0, 7) === salesUi.calendarMonth ? availableEnd : bounds.end;
+    const priorCutoff = salesShiftYear(cutoff, -1);
+    const currentTotal = salesTotals(rows.filter((row) => row.date <= cutoff));
+    const priorTotal = salesTotals(priorRollups.filter((row) => row.date <= priorCutoff));
+    const delta = salesDelta(currentTotal.sales, priorTotal.sales);
+    const summary = document.querySelector("#salesCalendarMonthSummary");
+    if (summary) summary.innerHTML = `<b>${currency.format(currentTotal.sales)}</b><span>${cutoff === bounds.end ? "month total" : `through day ${Number(cutoff.slice(8))}`}</span><em class="${delta != null && delta < 0 ? "down" : "up"}">${priorTotal.sales ? `${salesDeltaText(delta)} vs ${Number(bounds.year) - 1} · ${currency.format(priorTotal.sales)}` : "No prior-year match"}</em>`;
   }
 
   async function renderSalesDayDetail(date) {
@@ -847,11 +932,38 @@
     const grouped = new Map();
     rows.forEach((row) => {
       const key = monthly ? row.date.slice(0, 7) : row.date;
-      const current = grouped.get(key) || { label: monthly ? key : row.date.slice(5), value: 0 };
+      const current = grouped.get(key) || { key, label: monthly ? key : row.date.slice(5), tooltipLabel: row.date, value: 0 };
       current.value += Number(row[metric] || 0);
       grouped.set(key, current);
     });
     return [...grouped.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, row]) => row);
+  }
+
+  function salesAlignedTrendSeries(currentRows, priorRows, metric, monthly, dates) {
+    const currentBuckets = salesBucketSeries(currentRows, metric, monthly);
+    const priorBuckets = salesBucketSeries(priorRows, metric, monthly);
+    const currentMap = new Map(currentBuckets.map((row) => [row.key, row.value]));
+    const priorMap = new Map(priorBuckets.map((row) => [salesShiftYear(`${row.key}${monthly ? "-01" : ""}`, 1).slice(0, monthly ? 7 : 10), row.value]));
+    const current = [];
+    const prior = [];
+    if (monthly) {
+      let cursor = `${dates.start.slice(0, 7)}-01`;
+      const last = `${dates.end.slice(0, 7)}-01`;
+      while (cursor <= last) {
+        const key = cursor.slice(0, 7);
+        current.push({ label: key, tooltipLabel: key, value: Number(currentMap.get(key) || 0) });
+        const priorKey = salesShiftYear(cursor, -1).slice(0, 7);
+        prior.push({ label: key, tooltipLabel: priorKey, value: Number(priorMap.get(key) || 0) });
+        const date = salesDate(cursor); date.setUTCMonth(date.getUTCMonth() + 1); cursor = salesIso(date).slice(0, 7) + "-01";
+      }
+    } else {
+      for (let iso = dates.start; iso <= dates.end; iso = shiftIsoDate(iso, 1)) {
+        current.push({ label: iso.slice(5), tooltipLabel: iso, value: Number(currentMap.get(iso) || 0) });
+        const priorIso = salesShiftYear(iso, -1);
+        prior.push({ label: iso.slice(5), tooltipLabel: priorIso, value: Number(priorMap.get(iso) || 0) });
+      }
+    }
+    return { current, prior };
   }
 
   async function renderSalesTrend() {
@@ -868,6 +980,8 @@
     if (title) title.textContent = group ? (entity || `Search for a ${group}`) : "Choose department, category, vendor, or item";
     if (!latest || !group || !entity) {
       const summary = document.querySelector("#salesTrendSummary");
+      const legend = document.querySelector("#salesTrendLegend");
+      if (legend) legend.innerHTML = "";
       if (summary) summary.innerHTML = `<span>No filter selected.</span>`;
       return salesDrawChart(document.querySelector("#salesTrendExplorerChart"), [], [], { height: 300 });
     }
@@ -894,9 +1008,14 @@
     const monthly = period === "365" || period === "ytd";
     const currentRows = rows.filter((row) => row.date >= dates.start && row.date <= dates.end);
     const priorRows = compare ? rows.filter((row) => row.date >= priorDates.start && row.date <= priorDates.end) : [];
-    const current = salesBucketSeries(currentRows, metric, monthly);
-    const prior = salesBucketSeries(priorRows, metric, monthly);
-    salesDrawChart(document.querySelector("#salesTrendExplorerChart"), current, prior, { type: salesUi.chartType, height: 300, currency: metric !== "units" });
+    const aligned = salesAlignedTrendSeries(currentRows, priorRows, metric, monthly, dates);
+    const current = aligned.current;
+    const prior = compare ? aligned.prior : [];
+    const currentYear = dates.end.slice(0, 4);
+    const priorYear = String(Number(currentYear) - 1);
+    const legend = document.querySelector("#salesTrendLegend");
+    if (legend) legend.innerHTML = `<span><i class="current"></i>${currentYear}</span>${compare ? `<span><i class="prior"></i>${priorYear}</span>` : ""}`;
+    salesDrawChart(document.querySelector("#salesTrendExplorerChart"), current, prior, { type: salesUi.chartType, height: 300, currency: metric !== "units", currentLabel: currentYear, priorLabel: priorYear });
     const currentTotal = current.reduce((sum, row) => sum + row.value, 0);
     const priorTotal = prior.reduce((sum, row) => sum + row.value, 0);
     const formatter = metric === "units" ? number : currency;
@@ -999,7 +1118,7 @@
     const button = event.target.closest("[data-sales-mode]");
     if (button) setSalesMode(button.dataset.salesMode);
   });
-  document.querySelector("#salesHealthRefresh")?.addEventListener("click", () => { salesUi.healthLoadedAt = 0; void renderSalesDataHealth(true); });
+  document.querySelector("#salesHealthRefresh")?.addEventListener("click", () => { salesUi.healthLoadedAt = 0; salesUi.rollups.clear(); void renderSalesDataHealth(true); });
   document.querySelector("#salesCalendar")?.addEventListener("click", (event) => {
     const button = event.target.closest("[data-sales-date]");
     if (!button) return;
