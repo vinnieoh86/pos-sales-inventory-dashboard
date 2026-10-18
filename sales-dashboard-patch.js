@@ -1,5 +1,5 @@
 (function () {
-  const VERSION = "20261018-sales-studio-v18";
+  const VERSION = "20261018-sales-studio-v19";
   const DAY_MS = 86400000;
   const GKPOS_DEPARTMENT_ORDER = ["GENERAL", "HAIR", "BEAUTY PRODUCTS", "COSMETIC", "ELECTRIC", "JEWELRY", "GROCERY"];
   const GKPOS_CATEGORY_DEPARTMENTS = new Map(Object.entries({
@@ -1445,7 +1445,7 @@
     const range = document.querySelector("#salesItemsRange");
     if (range) range.textContent = calendarMode ? `${salesDisplayDate(start)} only` : (start && end ? `${salesDisplayDate(start)} through ${salesDisplayDate(end)}` : "Choose a date range.");
     const searchQuery = cleanCell(document.querySelector("#salesItemSearch")?.value).toLowerCase();
-    const exactHistory = !calendarMode && cleanCell(filters.item);
+    const exactHistory = calendarMode ? "" : cleanCell(filters.item);
     const query = exactHistory.toLowerCase() || searchQuery;
     const sortSelect = document.querySelector("#salesItemSort");
     const sort = exactHistory ? (salesUi.itemSort === "product" ? "date" : salesUi.itemSort) : (salesUi.itemSort || sortSelect?.value || "sales");
@@ -1503,7 +1503,7 @@
     if (mode === "overview") void renderSalesOverview();
     if (mode === "calendar") void renderSalesCalendar();
     if (mode === "day") void renderSalesDayPage();
-    window.scrollTo({ top: 0, left: 0, behavior: "instant" });
+    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
   }
 
   function renderSalesWorkspace() {
