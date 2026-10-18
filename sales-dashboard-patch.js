@@ -1,5 +1,5 @@
 (function () {
-  const VERSION = "20261018-sales-studio-v14";
+  const VERSION = "20261018-sales-studio-v15";
   const DAY_MS = 86400000;
   const GKPOS_DEPARTMENT_ORDER = ["GENERAL", "HAIR", "BEAUTY PRODUCTS", "COSMETIC", "ELECTRIC", "JEWELRY", "GROCERY"];
   const GKPOS_CATEGORY_DEPARTMENTS = new Map(Object.entries({
@@ -565,18 +565,28 @@
       and: `(sales_date.gte.${start},sales_date.lte.${end})`,
       code: salesRollupCode(kind),
       order: "sales_date.asc",
-    }).then((rows) => rows.map((row) => ({
-      date: cleanCell(row.sales_date),
-      code: cleanCell(row.code),
-      product: cleanCell(row.product),
-      vendor: cleanCell(row.vendor) || "Unassigned",
-      category: cleanCell(row.category) || "Unassigned",
-      department: cleanCell(row.department) || cleanCell(row.category) || "Unassigned",
-      units: Number(row.qty || 0),
-      sales: Number(row.sales || 0),
-      cost: Number(row.cost_sold || 0),
-      profit: Number(row.profit || 0),
-    }))).catch((error) => {
+    }).then((rows) => {
+      const mapped = rows.map((row) => ({
+        date: cleanCell(row.sales_date),
+        code: cleanCell(row.code),
+        product: cleanCell(row.product),
+        vendor: cleanCell(row.vendor) || "Unassigned",
+        category: cleanCell(row.category) || "Unassigned",
+        department: cleanCell(row.department) || cleanCell(row.category) || "Unassigned",
+        units: Number(row.qty || 0),
+        sales: Number(row.sales || 0),
+        cost: Number(row.cost_sold || 0),
+        profit: Number(row.profit || 0),
+      }));
+      if (kind === "DAY" && mapped.length) {
+        const dates = mapped.map((row) => row.date).filter(Boolean).sort();
+        const first = dates[0], last = dates.at(-1);
+        if (first && (!state._remoteSalesAvailableStart || first < state._remoteSalesAvailableStart)) state._remoteSalesAvailableStart = first;
+        if (last && (!state._remoteSalesAvailableEnd || last > state._remoteSalesAvailableEnd)) state._remoteSalesAvailableEnd = last;
+        dashboardDataStatus();
+      }
+      return mapped;
+    }).catch((error) => {
       salesUi.rollups.delete(key);
       console.warn("Sales rollup request failed", { kind, start, end, error });
       return [];
