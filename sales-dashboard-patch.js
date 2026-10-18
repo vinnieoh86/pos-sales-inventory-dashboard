@@ -1,5 +1,5 @@
 (function () {
-  const VERSION = "20261018-sales-studio-v13";
+  const VERSION = "20261018-sales-studio-v14";
   const DAY_MS = 86400000;
   const GKPOS_DEPARTMENT_ORDER = ["GENERAL", "HAIR", "BEAUTY PRODUCTS", "COSMETIC", "ELECTRIC", "JEWELRY", "GROCERY"];
   const GKPOS_CATEGORY_DEPARTMENTS = new Map(Object.entries({
@@ -53,13 +53,12 @@
       <nav class="sales-mode-tabs" id="salesModeTabs" aria-label="Sales dashboard views">
         <button type="button" data-sales-mode="overview">Overview</button>
         <button type="button" class="active" data-sales-mode="calendar">Calendar</button>
-        <button type="button" data-sales-mode="trends">Trends</button>
         <button type="button" data-sales-mode="items">Items</button>
       </nav>
       <section class="sales-health-panel" id="salesDataHealth" aria-live="polite">
         <div class="sales-health-heading">
           <div><p class="eyebrow">Data health</p><h2>Sync &amp; recovery</h2></div>
-          <button type="button" class="sales-secondary-button" id="salesHealthRefresh">Refresh status</button>
+          <button type="button" class="sales-secondary-button" id="salesHealthRefresh">Repair &amp; refresh</button>
         </div>
         <div class="sales-health-grid" id="salesHealthGrid"><div class="sales-loading">Checking sales and inventory sync...</div></div>
         <div class="sales-health-alerts" id="salesHealthAlerts"></div>
@@ -67,16 +66,27 @@
       <section class="sales-workspace" id="salesWorkspace">
         <section class="sales-mode-view" data-sales-mode-view="overview" hidden>
           <div class="sales-section-heading">
-            <div><p class="eyebrow">Year-over-year</p><h2>Business pulse</h2></div>
-            <small id="salesOverviewFocus">Selected day, month, and year compared with last year.</small>
+            <div><p class="eyebrow">Executive analysis</p><h2>Business pulse</h2></div>
+            <small id="salesOverviewFocus">Current period compared with the same period last year.</small>
           </div>
+          <div class="trend-explorer-controls sales-overview-controls">
+            <label>Period<select id="salesTrendPeriod"><option value="day">Day</option><option value="month" selected>Month</option><option value="quarter">Quarter</option><option value="half">Half-year</option><option value="year">Year</option></select></label>
+            <label>Period date<input type="date" id="salesTrendDate" /></label>
+            <label>Analyze<select id="salesTrendGroup"><option value="" selected>Total sales</option><option value="department">Department</option><option value="category">Category</option><option value="vendor">Vendor</option><option value="item">Item</option></select></label>
+            <label>Selection<input id="salesTrendEntity" list="salesTrendEntities" placeholder="All sales" disabled /><datalist id="salesTrendEntities"></datalist></label>
+            <label>Metric<select id="salesTrendMetric"><option value="sales">Net sales $</option><option value="units">Units</option><option value="profit">Profit</option><option value="margin">Margin %</option></select></label>
+            <div class="sales-segmented" id="salesChartType"><button type="button" class="active" data-chart-type="line">Line</button><button type="button" data-chart-type="bar">Bar</button></div>
+            <label class="sales-check"><input type="checkbox" id="salesTrendCompare" checked /> Compare prior year</label>
+            <button type="button" class="sales-secondary-button sales-clear-button" id="salesTrendClear">Clear all</button>
+          </div>
+          <article class="sales-card sales-trend-card" id="salesTrendCard">
+            <div class="sales-card__heading"><div><p class="eyebrow" id="salesTrendKicker">Total sales</p><h3 id="salesTrendTitle">Monthly performance</h3></div><div class="sales-chart-actions"><div class="sales-chart-legend" id="salesTrendLegend"></div><button type="button" class="sales-secondary-button" id="salesTrendExpand">Expand</button></div></div>
+            <canvas id="salesTrendExplorerChart" height="320"></canvas>
+            <div class="sales-chart-summary" id="salesTrendSummary"></div>
+          </article>
           <div class="yoy-card-grid" id="salesYoyCards"></div>
           <div class="sales-executive-grid" id="salesExecutiveSummary"></div>
-          <div class="sales-overview-grid">
-            <article class="sales-card">
-              <div class="sales-card__heading"><div><p class="eyebrow">Monthly performance</p><h3 id="salesOverviewChartTitle">Daily sales by date</h3></div><div class="sales-chart-legend" id="salesOverviewLegend"></div></div>
-              <canvas id="salesOverviewChart" height="210"></canvas>
-            </article>
+          <div class="sales-overview-grid sales-overview-grid--single">
             <article class="sales-card">
               <div class="sales-card__heading"><div><p class="eyebrow">Sales mix</p><h3>Departments &amp; categories</h3></div></div>
               <div class="sales-department-tree" id="salesOverviewCategories"></div>
@@ -89,30 +99,10 @@
             <button type="button" class="sales-icon-button" id="salesCalendarPrev" aria-label="Previous month">&#8249;</button>
             <div><p class="eyebrow">Monthly sales</p><h2 id="salesCalendarTitle">Calendar</h2><div class="calendar-month-summary" id="salesCalendarMonthSummary"></div></div>
             <button type="button" class="sales-icon-button" id="salesCalendarNext" aria-label="Next month">&#8250;</button>
+            <label class="calendar-date-jump">Jump to date<input type="date" id="salesCalendarDatePicker" /></label>
             <button type="button" class="sales-secondary-button" id="salesCalendarToday">Latest month</button>
           </div>
           <div class="sales-calendar" id="salesCalendar"></div>
-        </section>
-
-        <section class="sales-mode-view" data-sales-mode-view="trends" hidden>
-          <div class="sales-section-heading">
-            <div><p class="eyebrow">Trend explorer</p><h2>Compare any category, vendor, or item</h2></div>
-            <small>Use line view for direction and bar view for period-to-period magnitude.</small>
-          </div>
-          <div class="trend-explorer-controls">
-            <label>Analyze<select id="salesTrendGroup"><option value="" selected>Choose filter</option><option value="department">Department</option><option value="category">Category</option><option value="vendor">Vendor</option><option value="item">Item</option></select></label>
-            <label>Search / selection<input id="salesTrendEntity" list="salesTrendEntities" placeholder="Select a filter first" disabled /><datalist id="salesTrendEntities"></datalist></label>
-            <label>Metric<select id="salesTrendMetric"><option value="sales">Sales $</option><option value="units">Units</option><option value="profit">Profit</option></select></label>
-            <label>Period<select id="salesTrendPeriod"><option value="30">30 days</option><option value="90">90 days</option><option value="365">12 months</option><option value="ytd">Year to date</option></select></label>
-            <div class="sales-segmented" id="salesChartType"><button type="button" class="active" data-chart-type="line">Line</button><button type="button" data-chart-type="bar">Bar</button></div>
-            <label class="sales-check"><input type="checkbox" id="salesTrendCompare" checked /> Compare last year</label>
-            <button type="button" class="sales-secondary-button sales-clear-button" id="salesTrendClear">Clear all</button>
-          </div>
-          <article class="sales-card sales-trend-card" id="salesTrendCard">
-            <div class="sales-card__heading"><div><p class="eyebrow" id="salesTrendKicker">Category trend</p><h3 id="salesTrendTitle">Choose a category</h3></div><div class="sales-chart-actions"><div class="sales-chart-legend" id="salesTrendLegend"></div><button type="button" class="sales-secondary-button" id="salesTrendExpand">Expand</button></div></div>
-            <canvas id="salesTrendExplorerChart" height="300"></canvas>
-            <div class="sales-chart-summary" id="salesTrendSummary"></div>
-          </article>
         </section>
 
         <section class="sales-mode-view" data-sales-mode-view="items" hidden>
@@ -154,6 +144,12 @@
     return date.toISOString().slice(0, 10);
   }
 
+  function salesDisplayDate(iso) {
+    if (!iso || !/^\d{4}-\d{2}-\d{2}$/.test(String(iso).slice(0, 10))) return cleanCell(iso);
+    const [year, month, day] = String(iso).slice(0, 10).split("-");
+    return `${month}/${day}/${year}`;
+  }
+
   function dashboardDataStatus() {
     const status = document.querySelector("#dashboardDataStatus");
     const range = document.querySelector("#dashboardDataRange");
@@ -165,10 +161,10 @@
       range.textContent = "The nightly sync will appear here after its first successful upload.";
       return;
     }
-    status.textContent = `Synced through ${latest}`;
+    status.textContent = `Synced through ${salesDisplayDate(latest)}`;
     range.textContent = earliest
-      ? `History available ${earliest} through ${latest}. Selected periods load on demand.`
-      : `Latest completed sales date: ${latest}.`;
+      ? `History available ${salesDisplayDate(earliest)} through ${salesDisplayDate(latest)}. Selected periods load on demand.`
+      : `Latest completed sales date: ${salesDisplayDate(latest)}.`;
   }
 
   function localIsoDate(date = new Date()) {
@@ -223,13 +219,15 @@
       const productAgeHours = productUpdatedAt ? (Date.now() - Date.parse(productUpdatedAt)) / 3600000 : 999;
       const deltaState = productAgeHours > 24 ? "warning" : "ok";
       target.innerHTML = `
-        <article class="sales-health-card ${salesState}"><small>Sales</small><b>${latestSales ? `Through ${escapeHtml(latestSales)}` : "No successful upload"}</b><span>${missing.length ? `${missing.length} missing business day${missing.length === 1 ? "" : "s"}` : "Last 30 days complete"}</span></article>
-        <article class="sales-health-card ${inventoryState}" title="A full inventory snapshot is the complete product and quantity file. The recovery watchdog repairs an overdue snapshot during business hours."><small>Full inventory</small><b>${inventoryDate ? escapeHtml(inventoryDate.slice(0, 10)) : "Not reported"}</b><span>${inventoryAge > 1 ? `Full snapshot overdue by ${number.format(inventoryAge)} days` : "Current full snapshot available"}</span></article>
+        <article class="sales-health-card ${salesState}"><small>Sales</small><b>${latestSales ? `Through ${escapeHtml(salesDisplayDate(latestSales))}` : "No successful upload"}</b><span>${missing.length ? `${missing.length} missing business day${missing.length === 1 ? "" : "s"}` : "Last 30 days complete"}</span></article>
+        <article class="sales-health-card ${inventoryState}" title="A full inventory snapshot is the complete product and quantity file. The recovery watchdog repairs an overdue snapshot during business hours."><small>Full inventory</small><b>${inventoryDate ? escapeHtml(salesDisplayDate(inventoryDate)) : "Not reported"}</b><span>${inventoryAge > 1 ? `Full snapshot overdue by ${number.format(inventoryAge)} days` : "Current full snapshot available"}</span></article>
         <article class="sales-health-card ${deltaState}"><small>Inventory updates</small><b>${escapeHtml(formatHealthStamp(productUpdatedAt))}</b><span>${deltaState === "ok" ? "Recent product sync" : "No recent delta upload"}</span></article>`;
       if (missing.length) {
-        const preview = missing.slice(-8).join(", ");
+        const preview = missing.slice(-8).map(salesDisplayDate).join(", ");
         alerts.className = "sales-health-alerts warning";
-        alerts.textContent = `Recovery needed for ${missing.length} sales date${missing.length === 1 ? "" : "s"}: ${preview}${missing.length > 8 ? " …" : ""}`;
+        alerts.textContent = sync.last_sync_kind === "recovery-requested"
+          ? `Recovery queued for ${missing.length} sales date${missing.length === 1 ? "" : "s"}: ${preview}${missing.length > 8 ? " …" : ""}`
+          : `Recovery needed for ${missing.length} sales date${missing.length === 1 ? "" : "s"}: ${preview}${missing.length > 8 ? " …" : ""}`;
       } else {
         alerts.className = "sales-health-alerts";
         alerts.textContent = "No missing sales dates detected in the last 30 business days.";
@@ -240,6 +238,35 @@
       alerts.textContent = "PowerShell recovery will continue independently.";
     }).finally(() => { salesUi.healthPromise = null; });
     return salesUi.healthPromise;
+  }
+
+  async function requestSalesRecovery() {
+    const button = document.querySelector("#salesHealthRefresh");
+    const alerts = document.querySelector("#salesHealthAlerts");
+    if (button) { button.disabled = true; button.textContent = "Queuing repair…"; }
+    try {
+      await supabaseUpsertRows("sync_state", [{
+        id: SYNC_STATE_ROW_ID,
+        last_sync_kind: "recovery-requested",
+        updated_at: new Date().toISOString(),
+      }], "id");
+      if (alerts) {
+        alerts.className = "sales-health-alerts warning";
+        alerts.textContent = "Recovery queued. The store sync computer will repair missing dates on its next 30-minute watchdog check.";
+      }
+      showToast("Recovery requested. Checking cloud data again…", 3200, "success");
+    } catch (error) {
+      if (alerts) {
+        alerts.className = "sales-health-alerts error";
+        alerts.textContent = "The recovery request could not be queued. The automatic watchdog will still retry.";
+      }
+      showToast("Recovery request could not be queued.", 3200, "warning");
+    } finally {
+      salesUi.healthLoadedAt = 0;
+      salesUi.rollups.clear();
+      await renderSalesDataHealth(true);
+      if (button) { button.disabled = false; button.textContent = "Repair & refresh"; }
+    }
   }
 
   const originalRender = render;
@@ -620,7 +647,7 @@
       const closest = points.reduce((best, point) => Math.abs(point.x - pointerX) < Math.abs(best.x - pointerX) ? point : best, points[0]);
       const threshold = Math.max(12, rect.width / Math.max(points.length, 1) / 2);
       if (Math.abs(closest.x - pointerX) > threshold) { tooltip.hidden = true; return; }
-      const formatter = options.currency === false ? number : currency;
+      const formatter = options.percent ? { format: (value) => `${Number(value || 0).toFixed(1)}%` } : (options.currency === false ? number : currency);
       const current = closest.current;
       const prior = closest.prior;
       const label = current?.tooltipLabel || current?.label || prior?.tooltipLabel || prior?.label || "";
@@ -650,7 +677,7 @@
       const y = top + ((bottom - top) * i) / 4;
       ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(right, y); ctx.stroke();
       const label = max * (1 - i / 4);
-      ctx.fillText(options.currency === false ? number.format(label) : compactCurrency(label), 4, y + 4);
+      ctx.fillText(options.percent ? `${label.toFixed(0)}%` : (options.currency === false ? number.format(label) : compactCurrency(label)), 4, y + 4);
     }
     if (!current.length) {
       bindSalesChartHover(canvas, [], options);
@@ -712,7 +739,7 @@
     const previousYearStart = salesShiftYear(yearStart, -1);
     const total = (start, end) => salesTotals(rows.filter((row) => row.date >= start && row.date <= end));
     const cards = [
-      { label: "Selected day", current: total(latest, latest), prior: total(previousLatest, previousLatest), detail: latest },
+      { label: "Selected day", current: total(latest, latest), prior: total(previousLatest, previousLatest), detail: salesDisplayDate(latest) },
       { label: "Month to date", current: total(monthStart, latest), prior: total(previousMonthStart, previousLatest), detail: latestDate.toLocaleDateString("en-US", { month: "long", year: "numeric", timeZone: "UTC" }) },
       { label: "Year to date", current: total(yearStart, latest), prior: total(previousYearStart, previousLatest), detail: latest.slice(0, 4) },
     ];
@@ -778,15 +805,8 @@
       const categories = salesAggregateGroup(departmentRows, "category").sort((a, b) => b.sales - a.sales);
       const tone = Math.min(departmentRank(department.name) + 1, GKPOS_DEPARTMENT_ORDER.length + 1);
       return `<details class="sales-department department-tone-${tone}">
-        <summary><span><b>${escapeHtml(department.name)}</b><small>${number.format(department.units)} units</small></span><strong>${currency.format(department.sales)}</strong></summary>
-        <div class="sales-category-branches">${categories.map((category) => {
-          const categoryRows = departmentRows.filter((row) => (cleanCell(row.category) || "Unassigned") === category.name);
-          const items = salesAggregateGroup(categoryRows.map((row) => ({ ...row, item: row.product || row.code })), "item").sort((a, b) => b.sales - a.sales);
-          return `<details class="sales-category-branch">
-            <summary><span><b>${escapeHtml(category.name)}</b><small>${number.format(category.units)} units</small></span><strong>${currency.format(category.sales)}</strong></summary>
-            <div class="sales-category-items">${items.slice(0, 100).map((item) => `<button type="button" data-open-item="${escapeHtml(item.name)}"><span><b>${escapeHtml(item.name)}</b><small>${number.format(item.units)} units</small></span><strong>${currency.format(item.sales)}</strong></button>`).join("")}</div>
-          </details>`;
-        }).join("")}</div>
+        <summary><span><b>${escapeHtml(department.name)}</b><small>${number.format(department.units)} units</small></span><span class="sales-mix-actions"><strong>${currency.format(department.sales)}</strong><button type="button" data-open-department="${escapeHtml(department.name)}">Chart</button></span></summary>
+        <div class="sales-category-branches">${categories.map((category) => `<button type="button" class="sales-category-chart" data-open-category="${escapeHtml(category.name)}"><span><b>${escapeHtml(category.name)}</b><small>${number.format(category.units)} units</small></span><strong>${currency.format(category.sales)}</strong></button>`).join("")}</div>
       </details>`;
     }).join("") : `<div class="sales-empty">Department totals will appear after sales load.</div>`;
   }
@@ -794,9 +814,11 @@
   async function renderSalesOverview() {
     const latest = state._remoteSalesAvailableEnd || state.dates.at(-1) || "";
     if (!latest) return;
-    const focus = salesUi.selectedDate || latest;
+    const trendDate = document.querySelector("#salesTrendDate");
+    if (trendDate && !trendDate.value) trendDate.value = salesUi.selectedDate || latest;
+    const focus = trendDate?.value || salesUi.selectedDate || latest;
     const focusLabel = document.querySelector("#salesOverviewFocus");
-    if (focusLabel) focusLabel.textContent = `${salesDate(focus).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" })} with month/year comparisons.`;
+    if (focusLabel) focusLabel.textContent = `${salesDisplayDate(focus)} compared with the same period last year.`;
     const previousYearStart = salesShiftYear(`${focus.slice(0, 4)}-01-01`, -1);
     const rollups = await salesFetchRollups("DAY", previousYearStart, focus);
     const fallback = salesAggregateDaily(salesRangeRows(previousYearStart, focus));
@@ -808,31 +830,10 @@
       const executive = document.querySelector("#salesExecutiveSummary");
       if (cards) cards.innerHTML = `<div class="sales-loading sales-history-warning">Loading complete year-over-year history… Partial totals are intentionally hidden.</div>`;
       if (executive) executive.innerHTML = "";
-      salesDrawChart(document.querySelector("#salesOverviewChart"), [], [], { type: "bar", height: 210 });
       return;
     }
     renderSalesYoyCards(daily, focus);
-    const monthBounds = salesMonthBounds(focus.slice(0, 7));
-    const byDate = new Map(daily.filter((row) => row.date >= monthBounds.start && row.date <= monthBounds.end).map((row) => [row.date, row]));
-    const monthSeries = [];
-    const priorMonthSeries = [];
-    for (let day = 1; day <= Number(monthBounds.end.slice(8)); day += 1) {
-      const iso = `${focus.slice(0, 7)}-${String(day).padStart(2, "0")}`;
-      const row = byDate.get(iso) || {};
-      monthSeries.push({ label: String(day), tooltipLabel: iso, value: Number(row.sales || 0), units: Number(row.units || 0) });
-      const priorIso = salesShiftYear(iso, -1);
-      const priorRow = daily.find((item) => item.date === priorIso) || {};
-      priorMonthSeries.push({ label: String(day), tooltipLabel: priorIso, value: Number(priorRow.sales || 0), units: Number(priorRow.units || 0) });
-    }
-    const chartTitle = document.querySelector("#salesOverviewChartTitle");
-    if (chartTitle) chartTitle.textContent = `${salesDate(monthBounds.start).toLocaleDateString("en-US", { month: "long", year: "numeric", timeZone: "UTC" })} daily sales`;
-    const currentYear = focus.slice(0, 4);
-    const priorYear = String(Number(currentYear) - 1);
-    const legend = document.querySelector("#salesOverviewLegend");
-    if (legend) legend.innerHTML = `<span><i class="current"></i>${currentYear}</span><span><i class="prior"></i>${priorYear}</span>`;
-    salesDrawChart(document.querySelector("#salesOverviewChart"), monthSeries, priorMonthSeries, { type: "bar", height: 210, currentLabel: currentYear, priorLabel: priorYear });
-    await ensureRemoteSalesRange(focus, focus, { silent: true });
-    renderSalesDepartmentTree(salesRangeRows(focus, focus));
+    await renderSalesTrend();
   }
 
   function renderSalesCalendarGrid(rows) {
@@ -842,6 +843,8 @@
     const bounds = salesMonthBounds(salesUi.calendarMonth);
     const date = new Date(Date.UTC(bounds.year, bounds.month - 1, 1, 12));
     if (title) title.textContent = date.toLocaleDateString("en-US", { month: "long", year: "numeric", timeZone: "UTC" });
+    const datePicker = document.querySelector("#salesCalendarDatePicker");
+    if (datePicker) datePicker.value = salesUi.selectedDate?.slice(0, 7) === salesUi.calendarMonth ? salesUi.selectedDate : bounds.start;
     const daily = new Map(salesAggregateDaily(rows).map((row) => [row.date, row]));
     const firstDay = date.getUTCDay();
     const daysInMonth = Number(bounds.end.slice(8));
@@ -884,7 +887,7 @@
     const priorTotal = salesTotals(priorRollups.filter((row) => row.date <= priorCutoff));
     const delta = salesDelta(currentTotal.sales, priorTotal.sales);
     const summary = document.querySelector("#salesCalendarMonthSummary");
-    if (summary) summary.innerHTML = `<b>${currency.format(currentTotal.sales)}</b><span>${cutoff === bounds.end ? "month total" : `through ${cutoff}`}</span><em class="${delta != null && delta < 0 ? "down" : "up"}">${priorTotal.sales ? `${salesDeltaText(delta)} vs same period ${Number(bounds.year) - 1} · ${currency.format(priorTotal.sales)}` : "No prior-year match"}</em>`;
+    if (summary) summary.innerHTML = `<b>${currency.format(currentTotal.sales)}</b><span>${cutoff === bounds.end ? "month total" : `through ${salesDisplayDate(cutoff)}`}</span><em class="${delta != null && delta < 0 ? "down" : "up"}">${priorTotal.sales ? `${salesDeltaText(delta)} vs same period ${Number(bounds.year) - 1} · ${currency.format(priorTotal.sales)}` : "No prior-year match"}</em>`;
   }
 
   async function renderSalesDayDetail(date) {
@@ -906,15 +909,42 @@
     </div>`;
   }
 
-  function salesTrendDates(period, end) {
-    if (period === "ytd") return { start: `${end.slice(0, 4)}-01-01`, end };
-    return { start: shiftIsoDate(end, -(Math.max(1, Number(period)) - 1)), end };
+  function salesTrendDates(period, anchor, latest) {
+    const date = salesDate(anchor || latest);
+    const year = date.getUTCFullYear();
+    const month = date.getUTCMonth();
+    let startDate = new Date(Date.UTC(year, month, date.getUTCDate(), 12));
+    let endDate = new Date(startDate);
+    if (period === "month") {
+      startDate = new Date(Date.UTC(year, month, 1, 12));
+      endDate = new Date(Date.UTC(year, month + 1, 0, 12));
+    } else if (period === "quarter") {
+      const firstMonth = Math.floor(month / 3) * 3;
+      startDate = new Date(Date.UTC(year, firstMonth, 1, 12));
+      endDate = new Date(Date.UTC(year, firstMonth + 3, 0, 12));
+    } else if (period === "half") {
+      const firstMonth = month < 6 ? 0 : 6;
+      startDate = new Date(Date.UTC(year, firstMonth, 1, 12));
+      endDate = new Date(Date.UTC(year, firstMonth + 6, 0, 12));
+    } else if (period === "year") {
+      startDate = new Date(Date.UTC(year, 0, 1, 12));
+      endDate = new Date(Date.UTC(year, 11, 31, 12));
+    }
+    const start = salesIso(startDate);
+    let end = salesIso(endDate);
+    if (latest && start <= latest && end > latest) end = latest;
+    return { start, end };
   }
 
   function salesTrendOptions(group) {
     if (!group) return [];
     const field = group === "item" ? "product" : group;
-    return [...new Set(state.rawSales.map((row) => cleanCell(row[field])).filter(Boolean))].sort(compareDisplayValue);
+    const inventoryRows = state.inventoryRows?.length ? state.inventoryRows : [...(state.latestInventory?.values?.() || [])];
+    const inventoryField = group === "item" ? "name" : field;
+    return [...new Set([
+      ...state.rawSales.map((row) => cleanCell(row[field])),
+      ...inventoryRows.map((row) => cleanCell(row[inventoryField]) || (group === "item" ? cleanCell(row.item_name) : "")),
+    ].filter(Boolean))].sort(compareDisplayValue);
   }
 
   function updateSalesTrendOptions() {
@@ -926,7 +956,7 @@
     const input = document.querySelector("#salesTrendEntity");
     if (input) {
       input.disabled = !group;
-      input.placeholder = group ? `Search ${group}` : "Select a filter first";
+      input.placeholder = group ? `Search ${group}` : "All sales";
       if (!group) input.value = "";
     }
   }
@@ -935,8 +965,11 @@
     const grouped = new Map();
     rows.forEach((row) => {
       const key = monthly ? row.date.slice(0, 7) : row.date;
-      const current = grouped.get(key) || { key, label: monthly ? key : row.date.slice(5), tooltipLabel: row.date, value: 0 };
-      current.value += Number(row[metric] || 0);
+      const current = grouped.get(key) || { key, label: monthly ? key.slice(5) : row.date.slice(5), tooltipLabel: monthly ? salesDisplayDate(`${key}-01`) : salesDisplayDate(row.date), value: 0, sales: 0, profit: 0, units: 0 };
+      current.sales += Number(row.sales || 0);
+      current.profit += Number(row.profit || 0);
+      current.units += Number(row.units || row.qty || 0);
+      current.value = metric === "margin" ? (current.sales ? (current.profit / current.sales) * 100 : 0) : Number(current[metric] || 0);
       grouped.set(key, current);
     });
     return [...grouped.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, row]) => row);
@@ -954,16 +987,16 @@
       const last = `${dates.end.slice(0, 7)}-01`;
       while (cursor <= last) {
         const key = cursor.slice(0, 7);
-        current.push({ label: key, tooltipLabel: key, value: Number(currentMap.get(key) || 0) });
+        current.push({ label: key.slice(5), tooltipLabel: salesDisplayDate(`${key}-01`), value: Number(currentMap.get(key) || 0) });
         const priorKey = salesShiftYear(cursor, -1).slice(0, 7);
-        prior.push({ label: key, tooltipLabel: priorKey, value: Number(priorMap.get(key) || 0) });
+        prior.push({ label: key.slice(5), tooltipLabel: salesDisplayDate(`${priorKey}-01`), value: Number(priorMap.get(key) || 0) });
         const date = salesDate(cursor); date.setUTCMonth(date.getUTCMonth() + 1); cursor = salesIso(date).slice(0, 7) + "-01";
       }
     } else {
       for (let iso = dates.start; iso <= dates.end; iso = shiftIsoDate(iso, 1)) {
-        current.push({ label: iso.slice(5), tooltipLabel: iso, value: Number(currentMap.get(iso) || 0) });
+        current.push({ label: iso.slice(5), tooltipLabel: salesDisplayDate(iso), value: Number(currentMap.get(iso) || 0) });
         const priorIso = salesShiftYear(iso, -1);
-        prior.push({ label: iso.slice(5), tooltipLabel: priorIso, value: Number(priorMap.get(iso) || 0) });
+        prior.push({ label: iso.slice(5), tooltipLabel: salesDisplayDate(priorIso), value: Number(priorMap.get(iso) || 0) });
       }
     }
     return { current, prior };
@@ -974,24 +1007,27 @@
     const group = document.querySelector("#salesTrendGroup")?.value || "";
     const entity = cleanCell(document.querySelector("#salesTrendEntity")?.value);
     const metric = document.querySelector("#salesTrendMetric")?.value || "sales";
-    const period = document.querySelector("#salesTrendPeriod")?.value || "30";
+    const period = document.querySelector("#salesTrendPeriod")?.value || "month";
     const compare = !!document.querySelector("#salesTrendCompare")?.checked;
     const latest = state._remoteSalesAvailableEnd || state.dates.at(-1) || "";
+    const anchor = document.querySelector("#salesTrendDate")?.value || salesUi.selectedDate || latest;
     const title = document.querySelector("#salesTrendTitle");
     const kicker = document.querySelector("#salesTrendKicker");
-    if (kicker) kicker.textContent = group ? `${group[0].toUpperCase()}${group.slice(1)} trend` : "Trend explorer";
-    if (title) title.textContent = group ? (entity || `Search for a ${group}`) : "Choose department, category, vendor, or item";
-    if (!latest || !group || !entity) {
+    if (kicker) kicker.textContent = group ? `${group[0].toUpperCase()}${group.slice(1)} analysis` : "Total sales";
+    if (title) title.textContent = group ? (entity || `Choose a ${group}`) : "All-store performance";
+    if (!latest || (group && !entity)) {
       const summary = document.querySelector("#salesTrendSummary");
       const legend = document.querySelector("#salesTrendLegend");
       if (legend) legend.innerHTML = "";
-      if (summary) summary.innerHTML = `<span>No filter selected.</span>`;
+      if (summary) summary.innerHTML = `<span>Choose a ${escapeHtml(group)} to view its performance.</span>`;
       return salesDrawChart(document.querySelector("#salesTrendExplorerChart"), [], [], { height: 300 });
     }
-    const dates = salesTrendDates(period, latest);
+    const dates = salesTrendDates(period, anchor, latest);
     const priorDates = { start: salesShiftYear(dates.start, -1), end: salesShiftYear(dates.end, -1) };
     let rows = [];
-    if (group === "item") {
+    if (!group) {
+      rows = await salesFetchRollups("DAY", compare ? priorDates.start : dates.start, dates.end);
+    } else if (group === "item") {
       const match = state.rawSales.find((row) => cleanCell(row.product).toLowerCase() === entity.toLowerCase());
       if (match?.code) {
         rows = await directSelectRows("daily_sales", {
@@ -1008,7 +1044,7 @@
       if (!rows.length) rows = salesRangeRows(compare ? priorDates.start : dates.start, dates.end, (row) => cleanCell(row[group]).toLowerCase() === entity.toLowerCase());
     }
     if (request !== salesUi.trendRequest) return;
-    const monthly = period === "365" || period === "ytd";
+    const monthly = period === "quarter" || period === "half" || period === "year";
     const currentRows = rows.filter((row) => row.date >= dates.start && row.date <= dates.end);
     const priorRows = compare ? rows.filter((row) => row.date >= priorDates.start && row.date <= priorDates.end) : [];
     const aligned = salesAlignedTrendSeries(currentRows, priorRows, metric, monthly, dates);
@@ -1018,12 +1054,16 @@
     const priorYear = String(Number(currentYear) - 1);
     const legend = document.querySelector("#salesTrendLegend");
     if (legend) legend.innerHTML = `<span><i class="current"></i>${currentYear}</span>${compare ? `<span><i class="prior"></i>${priorYear}</span>` : ""}`;
-    salesDrawChart(document.querySelector("#salesTrendExplorerChart"), current, prior, { type: salesUi.chartType, height: 300, currency: metric !== "units", currentLabel: currentYear, priorLabel: priorYear });
-    const currentTotal = current.reduce((sum, row) => sum + row.value, 0);
-    const priorTotal = prior.reduce((sum, row) => sum + row.value, 0);
-    const formatter = metric === "units" ? number : currency;
+    salesDrawChart(document.querySelector("#salesTrendExplorerChart"), current, prior, { type: salesUi.chartType, height: 320, currency: metric !== "units" && metric !== "margin", percent: metric === "margin", currentLabel: currentYear, priorLabel: priorYear });
+    const currentTotals = salesTotals(currentRows);
+    const priorTotals = salesTotals(priorRows);
+    const currentTotal = metric === "margin" ? (currentTotals.sales ? (currentTotals.profit / currentTotals.sales) * 100 : 0) : current.reduce((sum, row) => sum + row.value, 0);
+    const priorTotal = metric === "margin" ? (priorTotals.sales ? (priorTotals.profit / priorTotals.sales) * 100 : 0) : prior.reduce((sum, row) => sum + row.value, 0);
+    const formatter = metric === "units" ? number : metric === "margin" ? { format: (value) => `${Number(value || 0).toFixed(1)}%` } : currency;
     const summary = document.querySelector("#salesTrendSummary");
-    if (summary) summary.innerHTML = `<b>${formatter.format(currentTotal)}</b><span>selected period</span>${compare ? `<b class="${currentTotal >= priorTotal ? "up" : "down"}">${salesDeltaText(salesDelta(currentTotal, priorTotal))}</b><span>vs last year (${formatter.format(priorTotal)})</span>` : ""}`;
+    if (summary) summary.innerHTML = `<b>${formatter.format(currentTotal)}</b><span>${salesDisplayDate(dates.start)}–${salesDisplayDate(dates.end)}</span>${compare ? `<b class="${currentTotal >= priorTotal ? "up" : "down"}">${salesDeltaText(salesDelta(currentTotal, priorTotal))}</b><span>vs ${priorYear} (${formatter.format(priorTotal)})</span>` : ""}`;
+    const mixRows = await salesFetchRollups("CATEGORY__", dates.start, dates.end);
+    if (request === salesUi.trendRequest) renderSalesDepartmentTree(mixRows);
   }
 
   async function renderSalesItems() {
@@ -1032,7 +1072,7 @@
     const start = document.querySelector("#salesItemsStart")?.value || els.startDate.value || state.dates[0] || "";
     const end = document.querySelector("#salesItemsEnd")?.value || els.endDate.value || state.dates.at(-1) || "";
     const range = document.querySelector("#salesItemsRange");
-    if (range) range.textContent = start && end ? `${start} through ${end}` : "Choose a date range.";
+    if (range) range.textContent = start && end ? `${salesDisplayDate(start)} through ${salesDisplayDate(end)}` : "Choose a date range.";
     const query = cleanCell(document.querySelector("#salesItemSearch")?.value).toLowerCase();
     const departmentSelect = document.querySelector("#salesItemDepartment");
     const categorySelect = document.querySelector("#salesItemCategory");
@@ -1097,7 +1137,6 @@
     });
     if (mode === "overview") void renderSalesOverview();
     if (mode === "calendar") void renderSalesCalendar();
-    if (mode === "trends") { updateSalesTrendOptions(); void renderSalesTrend(); }
     if (mode === "items") {
       const startInput = document.querySelector("#salesItemsStart"), endInput = document.querySelector("#salesItemsEnd");
       const latest = state._remoteSalesAvailableEnd || state.dates.at(-1) || "";
@@ -1113,7 +1152,6 @@
     void renderSalesDataHealth();
     if (salesUi.mode === "overview") void renderSalesOverview();
     else if (salesUi.mode === "calendar") void renderSalesCalendar();
-    else if (salesUi.mode === "trends") { updateSalesTrendOptions(); void renderSalesTrend(); }
     else if (salesUi.mode === "items") void renderSalesItems();
   }
 
@@ -1121,11 +1159,14 @@
     const button = event.target.closest("[data-sales-mode]");
     if (button) setSalesMode(button.dataset.salesMode);
   });
-  document.querySelector("#salesHealthRefresh")?.addEventListener("click", () => { salesUi.healthLoadedAt = 0; salesUi.rollups.clear(); void renderSalesDataHealth(true); });
+  document.querySelector("#salesHealthRefresh")?.addEventListener("click", () => { void requestSalesRecovery(); });
   document.querySelector("#salesCalendar")?.addEventListener("click", (event) => {
     const button = event.target.closest("[data-sales-date]");
     if (!button) return;
     salesUi.selectedDate = button.dataset.salesDate;
+    const trendDate = document.querySelector("#salesTrendDate"), period = document.querySelector("#salesTrendPeriod");
+    if (trendDate) trendDate.value = salesUi.selectedDate;
+    if (period) period.value = "day";
     const startInput = document.querySelector("#salesItemsStart"), endInput = document.querySelector("#salesItemsEnd");
     if (startInput) startInput.value = salesUi.selectedDate;
     if (endInput) endInput.value = salesUi.selectedDate;
@@ -1144,7 +1185,13 @@
   document.querySelector("#salesCalendarToday")?.addEventListener("click", () => {
     salesUi.calendarMonth = (state._remoteSalesAvailableEnd || state.dates.at(-1) || salesIso(new Date())).slice(0, 7); salesUi.selectedDate = ""; void renderSalesCalendar();
   });
-  ["#salesTrendGroup", "#salesTrendMetric", "#salesTrendPeriod", "#salesTrendCompare"].forEach((selector) => document.querySelector(selector)?.addEventListener("change", () => {
+  document.querySelector("#salesCalendarDatePicker")?.addEventListener("change", (event) => {
+    if (!event.target.value) return;
+    salesUi.calendarMonth = event.target.value.slice(0, 7);
+    salesUi.selectedDate = event.target.value;
+    void renderSalesCalendar();
+  });
+  ["#salesTrendGroup", "#salesTrendMetric", "#salesTrendPeriod", "#salesTrendCompare", "#salesTrendDate"].forEach((selector) => document.querySelector(selector)?.addEventListener("change", () => {
     if (selector === "#salesTrendGroup") { const input = document.querySelector("#salesTrendEntity"); if (input) input.value = ""; updateSalesTrendOptions(); }
     void renderSalesTrend();
   }));
@@ -1156,8 +1203,10 @@
     if (group) group.value = "";
     if (entity) entity.value = "";
     if (metric) metric.value = "sales";
-    if (period) period.value = "30";
-    if (compare) compare.checked = false;
+    const date = document.querySelector("#salesTrendDate");
+    if (period) period.value = "month";
+    if (date) date.value = state._remoteSalesAvailableEnd || state.dates.at(-1) || "";
+    if (compare) compare.checked = true;
     salesUi.chartType = "line";
     document.querySelectorAll("[data-chart-type]").forEach((button) => button.classList.toggle("active", button.dataset.chartType === "line"));
     updateSalesTrendOptions();
@@ -1225,15 +1274,21 @@
     if (start && end && start <= end) void ensureRemoteSalesRange(start, end).then(renderSalesItems);
   }));
   document.querySelector("#salesWorkspace")?.addEventListener("click", (event) => {
-    const trend = event.target.closest("[data-open-trend]");
+    const trend = event.target.closest("[data-open-trend], [data-open-category]");
     if (trend) {
-      setSalesMode("trends");
+      setSalesMode("overview");
       const group = document.querySelector("#salesTrendGroup"), input = document.querySelector("#salesTrendEntity");
-      if (group) group.value = "category"; updateSalesTrendOptions(); if (input) input.value = trend.dataset.openTrend; void renderSalesTrend();
+      if (group) group.value = "category"; updateSalesTrendOptions(); if (input) input.value = trend.dataset.openTrend || trend.dataset.openCategory; void renderSalesTrend();
+    }
+    const department = event.target.closest("[data-open-department]");
+    if (department) {
+      setSalesMode("overview");
+      const group = document.querySelector("#salesTrendGroup"), input = document.querySelector("#salesTrendEntity");
+      if (group) group.value = "department"; updateSalesTrendOptions(); if (input) input.value = department.dataset.openDepartment; void renderSalesTrend();
     }
     const item = event.target.closest("[data-open-item]");
     if (item) {
-      setSalesMode("trends");
+      setSalesMode("overview");
       const group = document.querySelector("#salesTrendGroup"), input = document.querySelector("#salesTrendEntity");
       if (group) group.value = "item"; updateSalesTrendOptions(); if (input) input.value = item.dataset.openItem; void renderSalesTrend();
     }
