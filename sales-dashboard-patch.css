@@ -803,12 +803,17 @@ body.sales-day-open .sales-top-dock { display: none; }
 
 /* v20: repair top stacking, chronology, and readable item names */
 body:has(.tab-view[data-tab-view="dashboard"].active) .dashboard-layout {
-  grid-template-areas: none !important;
-  grid-template-rows: auto !important;
-  grid-auto-flow: row !important;
+  display: flex !important;
+  flex-direction: column !important;
   align-content: start !important;
   gap: .55rem !important;
   padding-top: 0 !important;
+}
+body:has(.tab-view[data-tab-view="dashboard"].active) .dashboard-layout > * {
+  flex: 0 0 auto;
+  grid-area: auto !important;
+  width: 100% !important;
+  min-width: 0 !important;
 }
 .sales-top-dock .sales-mode-tabs,
 .sales-top-dock .sales-health-panel {
