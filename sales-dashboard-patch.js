@@ -1,5 +1,5 @@
 (function () {
-  const VERSION = "20261018-sales-studio-v20";
+  const VERSION = "20261018-sales-studio-v21";
   const DAY_MS = 86400000;
   const GKPOS_DEPARTMENT_ORDER = ["GENERAL", "HAIR", "BEAUTY PRODUCTS", "COSMETIC", "ELECTRIC", "JEWELRY", "GROCERY"];
   const GKPOS_CATEGORY_DEPARTMENTS = new Map(Object.entries({
