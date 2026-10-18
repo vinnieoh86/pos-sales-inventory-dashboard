@@ -1,5 +1,5 @@
 (function () {
-  const VERSION = "20261018-sales-studio-v17";
+  const VERSION = "20261018-sales-studio-v18";
   const DAY_MS = 86400000;
   const GKPOS_DEPARTMENT_ORDER = ["GENERAL", "HAIR", "BEAUTY PRODUCTS", "COSMETIC", "ELECTRIC", "JEWELRY", "GROCERY"];
   const GKPOS_CATEGORY_DEPARTMENTS = new Map(Object.entries({
@@ -155,6 +155,7 @@
     if (tabs && calendarTab && overviewTab) {
       calendarTab.classList.add("active");
       overviewTab.classList.remove("active");
+      overviewTab.textContent = "Overview / Charts";
       tabs.append(calendarTab, overviewTab);
     }
 
@@ -205,7 +206,13 @@
       dock?.insertAdjacentElement("afterend", cards);
     }
 
-    calendar.insertAdjacentHTML("beforeend", `<section class="sales-calendar-selection" id="salesCalendarSelection"><div class="sales-section-heading"><div><p class="eyebrow">Selected day</p><h2 id="salesCalendarDayTitle">Choose a calendar day</h2></div><button type="button" class="sales-secondary-button" id="salesCalendarClearFilters">Clear day filters</button></div><div class="sales-calendar-mix" id="salesCalendarMix"></div></section>`);
+    const dayPage = document.createElement("section");
+    dayPage.className = "sales-mode-view sales-day-page";
+    dayPage.dataset.salesModeView = "day";
+    dayPage.id = "salesDayPage";
+    dayPage.hidden = true;
+    dayPage.innerHTML = `<header class="sales-day-page__header"><button type="button" class="sales-secondary-button" id="salesDayBack">&#8249; Back to calendar</button><div><p class="eyebrow">Daily sales detail</p><h2 id="salesCalendarDayTitle">Choose a calendar day</h2><p id="salesDayComparison"></p></div></header><section class="sales-calendar-selection" id="salesCalendarSelection"><div class="sales-section-heading"><div><p class="eyebrow">Department breakdown</p><h2>Sales mix for this day</h2></div><button type="button" class="sales-secondary-button" id="salesCalendarClearFilters">Clear department filter</button></div><div class="sales-calendar-mix" id="salesCalendarMix"></div></section>`;
+    workspace?.append(dayPage);
 
     if (itemsView) {
       itemsView.hidden = false;
@@ -942,7 +949,7 @@
     await renderSalesTrend();
   }
 
-  function renderSalesCalendarGrid(rows) {
+  function renderSalesCalendarGrid(rows, priorRows = []) {
     const target = document.querySelector("#salesCalendar");
     const title = document.querySelector("#salesCalendarTitle");
     if (!target || !salesUi.calendarMonth) return;
@@ -952,6 +959,7 @@
     const datePicker = document.querySelector("#salesCalendarDatePicker");
     if (datePicker) datePicker.value = salesUi.selectedDate?.slice(0, 7) === salesUi.calendarMonth ? salesUi.selectedDate : bounds.start;
     const daily = new Map(salesAggregateDaily(rows).map((row) => [row.date, row]));
+    const priorDaily = new Map(salesAggregateDaily(priorRows).map((row) => [row.date, row]));
     const firstDay = date.getUTCDay();
     const daysInMonth = Number(bounds.end.slice(8));
     const cells = [];
@@ -960,8 +968,11 @@
     for (let day = 1; day <= daysInMonth; day += 1) {
       const iso = `${salesUi.calendarMonth}-${String(day).padStart(2, "0")}`;
       const row = daily.get(iso);
-      const classes = ["sales-calendar__day", row ? "has-sales" : "", iso === salesUi.selectedDate ? "selected" : ""].filter(Boolean).join(" ");
-      cells.push(`<button type="button" class="${classes}" data-sales-date="${iso}"><span>${day}</span>${row ? `<strong>${currency.format(row.sales)}</strong><small>${number.format(row.units)} units</small>` : `<small>No sales</small>`}</button>`);
+      const priorIso = salesShiftYear(iso, -1);
+      const priorRow = priorDaily.get(priorIso);
+      const delta = row && priorRow ? salesDelta(row.sales, priorRow.sales) : null;
+      const classes = ["sales-calendar__day", row || priorRow ? "has-sales" : "", iso === salesUi.selectedDate ? "selected" : ""].filter(Boolean).join(" ");
+      cells.push(`<button type="button" class="${classes}" data-sales-date="${iso}"><span class="sales-calendar__date">${day}</span><div class="sales-calendar__compare"><span><small>${bounds.year}</small><strong>${row ? currency.format(row.sales) : "—"}</strong></span><span class="prior"><small>${Number(bounds.year) - 1}</small><strong>${priorRow ? currency.format(priorRow.sales) : "—"}</strong></span></div>${delta == null ? "" : `<em class="${delta < 0 ? "down" : "up"}">${salesDeltaText(delta)}</em>`}</button>`);
     }
     target.innerHTML = cells.join("");
   }
@@ -995,8 +1006,8 @@
       rows = salesRangeRows(bounds.start, bounds.end);
     }
     const latestRollupDate = rows.reduce((max, row) => row.date > max ? row.date : max, "");
-    if (!salesUi.selectedDate || salesUi.selectedDate.slice(0, 7) !== salesUi.calendarMonth) salesUi.selectedDate = latestRollupDate || bounds.start;
-    renderSalesCalendarGrid(rows);
+    if (salesUi.selectedDate && salesUi.selectedDate.slice(0, 7) !== salesUi.calendarMonth) salesUi.selectedDate = "";
+    renderSalesCalendarGrid(rows, priorRollups);
     const currentMonth = salesIso(new Date()).slice(0, 7);
     const knownEnd = state._remoteSalesAvailableEnd || latestRollupDate;
     const isOpenMonth = salesUi.calendarMonth === currentMonth || (knownEnd && knownEnd.slice(0, 7) === salesUi.calendarMonth);
@@ -1008,11 +1019,24 @@
     const summary = document.querySelector("#salesCalendarMonthSummary");
     if (summary) summary.innerHTML = `<b>${currency.format(currentTotal.sales)}</b><span>${cutoff === bounds.end ? "month total" : `through ${salesDisplayDate(cutoff)}`}</span><em class="${delta != null && delta < 0 ? "down" : "up"}">${priorTotal.sales ? `${salesDeltaText(delta)} vs same period ${Number(bounds.year) - 1} · ${currency.format(priorTotal.sales)}` : "No prior-year match"}</em>`;
 
-    const selected = salesUi.selectedDate || latestRollupDate;
-    if (!selected) return;
+    const yearStart = `${cutoff.slice(0, 4)}-01-01`;
+    const priorYearStart = salesShiftYear(yearStart, -1);
+    const [ytdRollups, priorYtdRollups, adjustments] = await Promise.all([
+      salesFetchRollups("DAY", yearStart, cutoff),
+      salesFetchRollups("DAY", priorYearStart, priorCutoff),
+      salesFetchAdjustments(bounds.start, cutoff),
+    ]);
+    renderSalesPeriodKpis(rows.filter((row) => row.date <= cutoff), priorRollups.filter((row) => row.date <= priorCutoff), ytdRollups, priorYtdRollups, { start: bounds.start, end: cutoff }, { start: priorBounds.start, end: priorCutoff }, "month", adjustments);
+  }
+
+  async function renderSalesDayPage() {
+    const selected = salesUi.selectedDate;
+    if (!selected) { setSalesMode("calendar"); return; }
     const priorSelected = salesShiftYear(selected, -1);
     const yearStart = `${selected.slice(0, 4)}-01-01`;
     const priorYearStart = salesShiftYear(yearStart, -1);
+    const title = document.querySelector("#salesCalendarDayTitle");
+    if (title) title.textContent = salesDate(selected).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric", timeZone: "UTC" });
     await ensureRemoteSalesRange(selected, selected, { silent: true });
     const dayRows = salesRangeRows(selected, selected);
     renderSalesCalendarMix(dayRows);
@@ -1023,6 +1047,11 @@
       salesFetchRollups("DAY", priorYearStart, priorSelected),
       salesFetchAdjustments(selected, selected),
     ]);
+    const current = salesTotals(dayRollup);
+    const prior = salesTotals(priorDayRollup);
+    const delta = salesDelta(current.sales, prior.sales);
+    const comparison = document.querySelector("#salesDayComparison");
+    if (comparison) comparison.innerHTML = `<b>${salesDisplayDate(selected)}: ${currency.format(current.sales)}</b><span>${salesDisplayDate(priorSelected)}: ${currency.format(prior.sales)}</span>${delta == null ? "" : `<em class="${delta < 0 ? "down" : "up"}">${salesDeltaText(delta)} year over year</em>`}`;
     renderSalesPeriodKpis(dayRollup, priorDayRollup, ytdRollups, priorYtdRollups, { start: selected, end: selected }, { start: priorSelected, end: priorSelected }, "day", adjustments);
     await renderSalesItems({ start: selected, end: selected }, null, dayRows);
   }
@@ -1401,7 +1430,7 @@
     const latest = state._remoteSalesAvailableEnd || state.dates.at(-1) || "";
     const anchor = document.querySelector("#salesTrendDate")?.value || latest;
     const period = document.querySelector("#salesTrendPeriod")?.value || "month";
-    const calendarMode = salesUi.mode === "calendar";
+    const calendarMode = salesUi.mode === "day";
     const calendarDay = salesUi.selectedDate || latest;
     const dates = calendarMode ? { start: calendarDay, end: calendarDay } : (selectedDates || salesTrendDates(period, anchor, latest));
     const start = dates.start;
@@ -1462,16 +1491,19 @@
   function setSalesMode(mode) {
     if (mode === "items") mode = "overview";
     salesUi.mode = mode;
-    document.querySelectorAll("[data-sales-mode]").forEach((button) => button.classList.toggle("active", button.dataset.salesMode === mode));
+    document.body.classList.toggle("sales-day-open", mode === "day");
+    document.querySelectorAll("[data-sales-mode]").forEach((button) => button.classList.toggle("active", button.dataset.salesMode === mode || (mode === "day" && button.dataset.salesMode === "calendar")));
     document.querySelectorAll("[data-sales-mode-view]").forEach((view) => {
       const active = view.dataset.salesModeView === mode;
       view.hidden = !active; view.classList.toggle("active", active);
     });
     const items = document.querySelector(".sales-items-inline");
-    const destination = mode === "calendar" ? document.querySelector('[data-sales-mode-view="calendar"]') : document.querySelector('[data-sales-mode-view="overview"]');
+    const destination = mode === "day" ? document.querySelector("#salesDayPage") : document.querySelector('[data-sales-mode-view="overview"]');
     if (items && destination) destination.append(items);
     if (mode === "overview") void renderSalesOverview();
     if (mode === "calendar") void renderSalesCalendar();
+    if (mode === "day") void renderSalesDayPage();
+    window.scrollTo({ top: 0, left: 0, behavior: "instant" });
   }
 
   function renderSalesWorkspace() {
@@ -1479,6 +1511,7 @@
     void renderSalesDataHealth();
     if (salesUi.mode === "overview") void renderSalesOverview();
     else if (salesUi.mode === "calendar") void renderSalesCalendar();
+    else if (salesUi.mode === "day") void renderSalesDayPage();
     else if (salesUi.mode === "items") void renderSalesItems();
   }
 
@@ -1493,8 +1526,9 @@
     salesUi.selectedDate = button.dataset.salesDate;
     salesUi.calendarDepartment = "";
     salesUi.calendarCategory = "";
-    void renderSalesCalendar();
+    setSalesMode("day");
   });
+  document.querySelector("#salesDayBack")?.addEventListener("click", () => setSalesMode("calendar"));
   document.querySelector("#salesCalendarPrev")?.addEventListener("click", () => {
     const bounds = salesMonthBounds(salesUi.calendarMonth);
     const date = new Date(Date.UTC(bounds.year, bounds.month - 2, 1, 12));
@@ -1557,7 +1591,7 @@
     if (!checkbox) return;
     if (checkbox.checked) salesUi.vendors.add(checkbox.value); else salesUi.vendors.delete(checkbox.value);
     updateSalesMasterOptions();
-    if (salesUi.mode === "calendar") void renderSalesCalendar(); else void renderSalesTrend();
+    if (salesUi.mode === "day") void renderSalesDayPage(); else void renderSalesTrend();
   });
   document.querySelector("#salesVendorCompare")?.addEventListener("click", (event) => {
     salesUi.vendorCompare = !salesUi.vendorCompare;
@@ -1583,12 +1617,12 @@
     if (all) { salesUi.calendarDepartment = ""; salesUi.calendarCategory = ""; }
     if (department) { salesUi.calendarDepartment = department.dataset.calendarDepartment; salesUi.calendarCategory = ""; }
     if (category) salesUi.calendarCategory = category.dataset.calendarCategory;
-    void renderSalesCalendar();
+    void renderSalesDayPage();
   });
   document.querySelector("#salesCalendarClearFilters")?.addEventListener("click", () => {
     salesUi.calendarDepartment = ""; salesUi.calendarCategory = "";
     const search = document.querySelector("#salesItemSearch"); if (search) search.value = "";
-    void renderSalesCalendar();
+    void renderSalesDayPage();
   });
   document.querySelector("#salesChartType")?.addEventListener("click", (event) => {
     const button = event.target.closest("[data-chart-type]"); if (!button) return;
@@ -1677,6 +1711,7 @@
     }
     const item = event.target.closest("[data-open-item]");
     if (item) {
+      if (salesUi.mode === "day") return;
       setSalesMode("overview");
       const catalogItem = salesMasterCatalog().find((row) => row.product === item.dataset.openItem);
       if (catalogItem) salesUi.drill = { department: catalogItem.department, category: catalogItem.category, item: catalogItem.product };
