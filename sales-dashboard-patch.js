@@ -1,5 +1,5 @@
 (function () {
-  const VERSION = "20261018-sales-studio-v19";
+  const VERSION = "20261018-sales-studio-v20";
   const DAY_MS = 86400000;
   const GKPOS_DEPARTMENT_ORDER = ["GENERAL", "HAIR", "BEAUTY PRODUCTS", "COSMETIC", "ELECTRIC", "JEWELRY", "GROCERY"];
   const GKPOS_CATEGORY_DEPARTMENTS = new Map(Object.entries({
@@ -206,12 +206,19 @@
       dock?.insertAdjacentElement("afterend", cards);
     }
 
+    const dayNav = document.createElement("section");
+    dayNav.className = "sales-day-nav";
+    dayNav.id = "salesDayNav";
+    dayNav.hidden = true;
+    dayNav.innerHTML = `<button type="button" class="sales-secondary-button" id="salesDayBack">&#8249; Back to calendar</button><div><p class="eyebrow">Daily sales detail</p><h2 id="salesCalendarDayTitle">Choose a calendar day</h2><p id="salesDayComparison"></p></div>`;
+    document.querySelector("#salesTopDock")?.insertAdjacentElement("afterend", dayNav);
+
     const dayPage = document.createElement("section");
     dayPage.className = "sales-mode-view sales-day-page";
     dayPage.dataset.salesModeView = "day";
     dayPage.id = "salesDayPage";
     dayPage.hidden = true;
-    dayPage.innerHTML = `<header class="sales-day-page__header"><button type="button" class="sales-secondary-button" id="salesDayBack">&#8249; Back to calendar</button><div><p class="eyebrow">Daily sales detail</p><h2 id="salesCalendarDayTitle">Choose a calendar day</h2><p id="salesDayComparison"></p></div></header><section class="sales-calendar-selection" id="salesCalendarSelection"><div class="sales-section-heading"><div><p class="eyebrow">Department breakdown</p><h2>Sales mix for this day</h2></div><button type="button" class="sales-secondary-button" id="salesCalendarClearFilters">Clear department filter</button></div><div class="sales-calendar-mix" id="salesCalendarMix"></div></section>`;
+    dayPage.innerHTML = `<section class="sales-calendar-selection" id="salesCalendarSelection"><div class="sales-section-heading"><div><p class="eyebrow">Department breakdown</p><h2>Sales mix for this day</h2></div><button type="button" class="sales-secondary-button" id="salesCalendarClearFilters">Clear department filter</button></div><div class="sales-calendar-mix" id="salesCalendarMix"></div></section>`;
     workspace?.append(dayPage);
 
     if (itemsView) {
@@ -972,7 +979,7 @@
       const priorRow = priorDaily.get(priorIso);
       const delta = row && priorRow ? salesDelta(row.sales, priorRow.sales) : null;
       const classes = ["sales-calendar__day", row || priorRow ? "has-sales" : "", iso === salesUi.selectedDate ? "selected" : ""].filter(Boolean).join(" ");
-      cells.push(`<button type="button" class="${classes}" data-sales-date="${iso}"><span class="sales-calendar__date">${day}</span><div class="sales-calendar__compare"><span><small>${bounds.year}</small><strong>${row ? currency.format(row.sales) : "—"}</strong></span><span class="prior"><small>${Number(bounds.year) - 1}</small><strong>${priorRow ? currency.format(priorRow.sales) : "—"}</strong></span></div>${delta == null ? "" : `<em class="${delta < 0 ? "down" : "up"}">${salesDeltaText(delta)}</em>`}</button>`);
+      cells.push(`<button type="button" class="${classes}" data-sales-date="${iso}"><span class="sales-calendar__date">${day}</span><div class="sales-calendar__compare"><span class="prior"><small>${Number(bounds.year) - 1}</small><strong>${priorRow ? currency.format(priorRow.sales) : "—"}</strong></span><span class="current"><small>${bounds.year}</small><strong>${row ? currency.format(row.sales) : "—"}</strong></span></div>${delta == null ? "" : `<em class="${delta < 0 ? "down" : "up"}">${salesDeltaText(delta)}</em>`}</button>`);
     }
     target.innerHTML = cells.join("");
   }
@@ -1051,7 +1058,7 @@
     const prior = salesTotals(priorDayRollup);
     const delta = salesDelta(current.sales, prior.sales);
     const comparison = document.querySelector("#salesDayComparison");
-    if (comparison) comparison.innerHTML = `<b>${salesDisplayDate(selected)}: ${currency.format(current.sales)}</b><span>${salesDisplayDate(priorSelected)}: ${currency.format(prior.sales)}</span>${delta == null ? "" : `<em class="${delta < 0 ? "down" : "up"}">${salesDeltaText(delta)} year over year</em>`}`;
+    if (comparison) comparison.innerHTML = `<span>${salesDisplayDate(priorSelected)}: ${currency.format(prior.sales)}</span><b>${salesDisplayDate(selected)}: ${currency.format(current.sales)}</b>${delta == null ? "" : `<em class="${delta < 0 ? "down" : "up"}">${salesDeltaText(delta)} year over year</em>`}`;
     renderSalesPeriodKpis(dayRollup, priorDayRollup, ytdRollups, priorYtdRollups, { start: selected, end: selected }, { start: priorSelected, end: priorSelected }, "day", adjustments);
     await renderSalesItems({ start: selected, end: selected }, null, dayRows);
   }
@@ -1492,6 +1499,8 @@
     if (mode === "items") mode = "overview";
     salesUi.mode = mode;
     document.body.classList.toggle("sales-day-open", mode === "day");
+    const dayNav = document.querySelector("#salesDayNav");
+    if (dayNav) dayNav.hidden = mode !== "day";
     document.querySelectorAll("[data-sales-mode]").forEach((button) => button.classList.toggle("active", button.dataset.salesMode === mode || (mode === "day" && button.dataset.salesMode === "calendar")));
     document.querySelectorAll("[data-sales-mode-view]").forEach((view) => {
       const active = view.dataset.salesModeView === mode;
