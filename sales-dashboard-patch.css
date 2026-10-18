@@ -426,3 +426,74 @@ body:has(.tab-view[data-tab-view="dashboard"].active) .dashboard-layout {
   .sales-card__heading { align-items: flex-start; flex-direction: column; }
 }
 
+/* v16 one-page sales command center */
+.dashboard-overview--compact {
+  min-height: 0;
+  padding: .65rem 1rem;
+  border-radius: 12px;
+}
+.dashboard-overview--compact h1 { margin: .05rem 0 0; font-size: 1.35rem; }
+.dashboard-overview--compact .dashboard-overview__status { gap: .15rem; }
+.dashboard-overview--compact .dashboard-sync-badge { padding: .3rem .65rem; }
+.sales-health-panel { padding: .65rem .8rem; }
+.sales-health-heading h2 { font-size: .95rem; }
+.sales-health-card { padding: .5rem .65rem; }
+.sales-health-card span { font-size: .75rem; }
+.sales-master-controls {
+  grid-template-columns: minmax(7rem,.7fr) minmax(18rem,1.5fr) repeat(3,minmax(10rem,1fr)) minmax(14rem,1.25fr) minmax(8rem,.75fr) auto auto auto;
+  position: sticky;
+  top: .35rem;
+  z-index: 40;
+  box-shadow: 0 10px 25px rgba(18,45,35,.08);
+}
+.sales-period-nav { display: grid; grid-template-columns: 2.7rem minmax(10rem,1fr) 2.7rem; align-items: end; gap: .35rem; }
+.sales-period-nav label { min-width: 0; }
+.sales-analysis-grid { display: grid; grid-template-columns: minmax(0,2.25fr) minmax(20rem,.85fr); gap: 1rem; align-items: start; }
+.sales-analysis-grid > .sales-overview-grid { display: block; }
+.sales-analysis-grid > .sales-overview-grid .sales-card { max-height: 31rem; overflow: auto; }
+.sales-period-kpis { display: grid; grid-template-columns: repeat(6,minmax(0,1fr)); gap: .6rem; }
+.sales-period-kpis article { display: grid; gap: .15rem; min-width: 0; padding: .7rem .8rem; border: 1px solid #dbe6e1; border-radius: 11px; background: #fff; }
+.sales-period-kpis small { color: #65766f; font-size: .67rem; font-weight: 900; text-transform: uppercase; }
+.sales-period-kpis b { overflow: hidden; color: #173f32; font-size: clamp(1rem,1.5vw,1.3rem); text-overflow: ellipsis; white-space: nowrap; }
+.sales-period-kpis span { color: #73817b; font-size: .7rem; }
+.sales-items-inline { display: grid; gap: .75rem; margin-top: .25rem; padding-top: 1rem; border-top: 2px solid #dce7e2; }
+.sales-items-inline .sales-item-toolbar { display: flex; justify-content: flex-end; padding: 0; border: 0; background: transparent; }
+.sales-items-inline .sales-item-toolbar label { min-width: 12rem; }
+.sales-items-inline .sales-table-wrap { max-height: 34rem; }
+.sales-item-totals span.warning { border-color: #dfaa4a; background: #fff8e9; }
+.sales-item-totals em { color: #9a5c00; font-size: .65rem; font-style: normal; font-weight: 850; }
+.sales-category-detail { overflow: hidden; border: 1px solid #e2ebe7; border-radius: 9px; background: var(--dept-sub-bg); }
+.sales-category-detail > summary { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: .6rem; padding: .58rem .65rem; cursor: pointer; list-style: none; }
+.sales-category-detail > summary::-webkit-details-marker { display: none; }
+.sales-category-detail > summary > span:first-child { display: grid; min-width: 0; }
+.sales-category-detail > summary small { color: #74827c; }
+.sales-tree-items { display: grid; max-height: 19rem; overflow: auto; padding: 0 .55rem .45rem; background: #fff; }
+.sales-tree-items button { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: .55rem; padding: .45rem .25rem; border: 0; border-top: 1px solid #edf2f0; color: #293b34; background: transparent; text-align: left; }
+.sales-tree-items button:hover { color: #08734f; background: #f4faf7; }
+.sales-tree-items span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sales-tree-more { color: #08734f !important; font-weight: 850; }
+
+@media (max-width: 1450px) {
+  .sales-master-controls { grid-template-columns: repeat(5,minmax(9rem,1fr)); }
+  .sales-period-nav { grid-column: span 2; }
+  .sales-period-kpis { grid-template-columns: repeat(3,minmax(0,1fr)); }
+}
+@media (max-width: 1050px) {
+  .sales-analysis-grid { grid-template-columns: 1fr; }
+  .sales-analysis-grid > .sales-overview-grid .sales-card { max-height: none; }
+  .sales-master-controls { position: static; grid-template-columns: repeat(3,minmax(0,1fr)); }
+  .sales-period-nav { grid-column: span 2; }
+}
+@media (max-width: 760px) {
+  .dashboard-overview--compact { align-items: flex-start; }
+  .sales-master-controls { grid-template-columns: 1fr 1fr; }
+  .sales-period-nav { grid-column: 1 / -1; }
+  .sales-period-kpis { grid-template-columns: 1fr 1fr; }
+  .sales-analysis-grid { gap: .7rem; }
+}
+@media (max-width: 480px) {
+  .sales-master-controls { grid-template-columns: 1fr; }
+  .sales-period-nav { grid-column: auto; }
+  .sales-period-kpis { grid-template-columns: 1fr; }
+}
+
