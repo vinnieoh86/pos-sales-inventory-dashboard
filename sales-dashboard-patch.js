@@ -1,5 +1,5 @@
 (function () {
-  const VERSION = "20261018-sales-studio-v15";
+  const VERSION = "20261018-sales-studio-v16";
   const DAY_MS = 86400000;
   const GKPOS_DEPARTMENT_ORDER = ["GENERAL", "HAIR", "BEAUTY PRODUCTS", "COSMETIC", "ELECTRIC", "JEWELRY", "GROCERY"];
   const GKPOS_CATEGORY_DEPARTMENTS = new Map(Object.entries({
@@ -136,6 +136,65 @@
         </section>
       </section>`);
   }
+
+  function upgradeSalesStudioLayout() {
+    const overview = document.querySelector('[data-sales-mode-view="overview"]');
+    const itemsView = document.querySelector('[data-sales-mode-view="items"]');
+    const hero = document.querySelector("#dashboardOverview");
+    const tabs = document.querySelector("#salesModeTabs");
+    const controls = document.querySelector(".sales-overview-controls");
+    if (!overview || !controls || overview.dataset.masterLayout === "true") return;
+    overview.dataset.masterLayout = "true";
+
+    if (hero) {
+      hero.classList.add("dashboard-overview--compact");
+      hero.innerHTML = `<div><p class="eyebrow">Sales intelligence</p><h1>Sales performance</h1></div><div class="dashboard-overview__status"><span class="dashboard-sync-badge" id="dashboardDataStatus">Loading sales history...</span><small id="dashboardDataRange">Waiting for shared data.</small></div>`;
+    }
+    tabs?.querySelector('[data-sales-mode="items"]')?.remove();
+    tabs?.querySelector('[data-sales-mode="overview"]')?.classList.add("active");
+    tabs?.querySelector('[data-sales-mode="calendar"]')?.classList.remove("active");
+
+    controls.classList.add("sales-master-controls");
+    controls.innerHTML = `
+      <label>View<select id="salesTrendPeriod"><option value="day">Daily</option><option value="week">Weekly</option><option value="month" selected>Monthly</option><option value="quarter">Quarterly</option><option value="half">Bi-annual</option><option value="year">Annual</option></select></label>
+      <div class="sales-period-nav"><button type="button" class="sales-icon-button" id="salesTrendPrev" aria-label="Previous period">&#8249;</button><label>Period date<input type="date" id="salesTrendDate" /></label><button type="button" class="sales-icon-button" id="salesTrendNext" aria-label="Next period">&#8250;</button></div>
+      <label>Department<select id="salesMasterDepartment"><option value="">All departments</option></select></label>
+      <label>Category<select id="salesMasterCategory"><option value="">All categories</option></select></label>
+      <label>Vendor<select id="salesMasterVendor"><option value="">All vendors</option></select></label>
+      <label>Item<input id="salesMasterItem" list="salesMasterItems" placeholder="All products / search UPC" /><datalist id="salesMasterItems"></datalist></label>
+      <label>Metric<select id="salesTrendMetric"><option value="sales">Net sales $</option><option value="units">Units</option><option value="profit">Profit</option><option value="margin">Margin %</option></select></label>
+      <div class="sales-segmented" id="salesChartType"><button type="button" class="active" data-chart-type="bar">Bar</button><button type="button" data-chart-type="line">Line</button></div>
+      <label class="sales-check"><input type="checkbox" id="salesTrendCompare" checked /> Compare prior year</label>
+      <button type="button" class="sales-secondary-button sales-clear-button" id="salesTrendClear">Clear all</button>`;
+
+    const trendCard = document.querySelector("#salesTrendCard");
+    const mixGrid = document.querySelector(".sales-overview-grid");
+    if (trendCard && mixGrid) {
+      const analysisGrid = document.createElement("div");
+      analysisGrid.className = "sales-analysis-grid";
+      trendCard.parentNode.insertBefore(analysisGrid, trendCard);
+      analysisGrid.append(trendCard, mixGrid);
+      const mixTitle = mixGrid.querySelector("h3");
+      if (mixTitle) mixTitle.textContent = "Departments, categories & items";
+    }
+
+    document.querySelector("#salesExecutiveSummary")?.remove();
+    const cards = document.querySelector("#salesYoyCards");
+    if (cards) cards.className = "sales-period-kpis";
+
+    if (itemsView) {
+      itemsView.hidden = false;
+      itemsView.removeAttribute("data-sales-mode-view");
+      itemsView.classList.add("sales-items-inline");
+      const heading = itemsView.querySelector("h2");
+      if (heading) heading.textContent = "Items in the selected view";
+      const itemToolbar = itemsView.querySelector(".sales-item-toolbar");
+      if (itemToolbar) itemToolbar.innerHTML = `<label>Sort<select id="salesItemSort" aria-label="Sort items"><option value="sales">Highest sales</option><option value="units">Most units</option><option value="profit">Highest profit</option><option value="cost">Highest total cost</option><option value="product">Product A-Z</option></select></label>`;
+      overview.append(itemsView);
+    }
+  }
+
+  upgradeSalesStudioLayout();
 
   function shiftIsoDate(iso, days) {
     const date = new Date(`${iso}T12:00:00Z`);
@@ -464,10 +523,10 @@
   });
 
   const salesUi = {
-    mode: "calendar",
+    mode: "overview",
     calendarMonth: "",
     selectedDate: "",
-    chartType: "line",
+    chartType: "bar",
     itemSort: "sales",
     itemSortDirection: "desc",
     trendRequest: 0,
@@ -661,10 +720,10 @@
       const current = closest.current;
       const prior = closest.prior;
       const label = current?.tooltipLabel || current?.label || prior?.tooltipLabel || prior?.label || "";
-      const currentText = current ? `<span class="current-dot"></span>${escapeHtml(options.currentLabel || "Current")}: <b>${formatter.format(current.value)}</b>${current.units == null ? "" : ` · ${number.format(current.units)} units`}` : "";
       const priorText = prior ? `<span class="prior-dot"></span>${escapeHtml(options.priorLabel || "Prior year")}: <b>${formatter.format(prior.value)}</b>${prior.units == null ? "" : ` · ${number.format(prior.units)} units`}` : "";
+      const currentText = current ? `<span class="current-dot"></span>${escapeHtml(options.currentLabel || "Current")}: <b>${formatter.format(current.value)}</b>${current.units == null ? "" : ` · ${number.format(current.units)} units`}` : "";
       const delta = current && prior && Number(prior.value) ? salesDelta(Number(current.value), Number(prior.value)) : null;
-      tooltip.innerHTML = `<strong>${escapeHtml(label)}</strong>${currentText ? `<br>${currentText}` : ""}${priorText ? `<br>${priorText}` : ""}${delta == null ? "" : `<br><em class="${delta < 0 ? "down" : "up"}">${salesDeltaText(delta)} vs prior year</em>`}`;
+      tooltip.innerHTML = `<strong>${escapeHtml(label)}</strong>${priorText ? `<br>${priorText}` : ""}${currentText ? `<br>${currentText}` : ""}${delta == null ? "" : `<br><em class="${delta < 0 ? "down" : "up"}">${salesDeltaText(delta)} vs prior year</em>`}`;
       tooltip.hidden = false;
       tooltip.style.left = `${Math.min(clientX + 14, window.innerWidth - 270)}px`;
       tooltip.style.top = `${Math.max(8, clientY - 100)}px`;
@@ -710,8 +769,8 @@
     if (options.type === "bar") {
       const slot = Math.max(4, (right - left) / count);
       const bar = Math.max(2, Math.min(18, slot * 0.34));
-      current.forEach((row, index) => { const x = xFor(index) - bar; const y = yFor(row.value); ctx.fillStyle = "#16835b"; ctx.fillRect(x, y, bar, bottom - y); });
-      prior.forEach((row, index) => { const x = xFor(index) + 1; const y = yFor(row.value); ctx.fillStyle = "#9cb7db"; ctx.fillRect(x, y, bar, bottom - y); });
+      prior.forEach((row, index) => { const x = xFor(index) - bar; const y = yFor(row.value); ctx.fillStyle = "#9cb7db"; ctx.fillRect(x, y, bar, bottom - y); });
+      current.forEach((row, index) => { const x = xFor(index) + 1; const y = yFor(row.value); ctx.fillStyle = "#16835b"; ctx.fillRect(x, y, bar, bottom - y); });
     } else {
       drawLine(prior, "#8da9d2", true);
       drawLine(current, "#16835b", false);
@@ -815,8 +874,12 @@
       const categories = salesAggregateGroup(departmentRows, "category").sort((a, b) => b.sales - a.sales);
       const tone = Math.min(departmentRank(department.name) + 1, GKPOS_DEPARTMENT_ORDER.length + 1);
       return `<details class="sales-department department-tone-${tone}">
-        <summary><span><b>${escapeHtml(department.name)}</b><small>${number.format(department.units)} units</small></span><span class="sales-mix-actions"><strong>${currency.format(department.sales)}</strong><button type="button" data-open-department="${escapeHtml(department.name)}">Chart</button></span></summary>
-        <div class="sales-category-branches">${categories.map((category) => `<button type="button" class="sales-category-chart" data-open-category="${escapeHtml(category.name)}"><span><b>${escapeHtml(category.name)}</b><small>${number.format(category.units)} units</small></span><strong>${currency.format(category.sales)}</strong></button>`).join("")}</div>
+        <summary><span><b>${escapeHtml(department.name)}</b><small>${number.format(department.units)} units</small></span><span class="sales-mix-actions"><strong>${currency.format(department.sales)}</strong><button type="button" data-open-department="${escapeHtml(department.name)}">View</button></span></summary>
+        <div class="sales-category-branches">${categories.map((category) => {
+          const categoryRows = departmentRows.filter((row) => (cleanCell(row.category) || "Unassigned") === category.name);
+          const items = salesAggregateGroup(categoryRows, "product").sort((a, b) => b.sales - a.sales);
+          return `<details class="sales-category-detail"><summary><span><b>${escapeHtml(category.name)}</b><small>${number.format(category.units)} units</small></span><span class="sales-mix-actions"><strong>${currency.format(category.sales)}</strong><button type="button" data-open-category="${escapeHtml(category.name)}">View</button></span></summary><div class="sales-tree-items">${items.slice(0, 30).map((item) => `<button type="button" data-open-item="${escapeHtml(item.name)}"><span>${escapeHtml(item.name)}</span><strong>${currency.format(item.sales)}</strong></button>`).join("") || `<small>No item detail loaded.</small>`}${items.length > 30 ? `<button type="button" class="sales-tree-more" data-open-category="${escapeHtml(category.name)}">View all ${number.format(items.length)} items below</button>` : ""}</div></details>`;
+        }).join("")}</div>
       </details>`;
     }).join("") : `<div class="sales-empty">Department totals will appear after sales load.</div>`;
   }
@@ -824,25 +887,12 @@
   async function renderSalesOverview() {
     const latest = state._remoteSalesAvailableEnd || state.dates.at(-1) || "";
     if (!latest) return;
+    updateSalesMasterOptions();
     const trendDate = document.querySelector("#salesTrendDate");
     if (trendDate && !trendDate.value) trendDate.value = salesUi.selectedDate || latest;
     const focus = trendDate?.value || salesUi.selectedDate || latest;
     const focusLabel = document.querySelector("#salesOverviewFocus");
-    if (focusLabel) focusLabel.textContent = `${salesDisplayDate(focus)} compared with the same period last year.`;
-    const previousYearStart = salesShiftYear(`${focus.slice(0, 4)}-01-01`, -1);
-    const rollups = await salesFetchRollups("DAY", previousYearStart, focus);
-    const fallback = salesAggregateDaily(salesRangeRows(previousYearStart, focus));
-    const daily = rollups.length ? rollups : fallback;
-    const coverageStart = daily[0]?.date || "";
-    const serverShouldCoverComparison = state._remoteSalesAvailableStart && state._remoteSalesAvailableStart <= previousYearStart;
-    if (serverShouldCoverComparison && (!rollups.length || !coverageStart || coverageStart > shiftIsoDate(previousYearStart, 7))) {
-      const cards = document.querySelector("#salesYoyCards");
-      const executive = document.querySelector("#salesExecutiveSummary");
-      if (cards) cards.innerHTML = `<div class="sales-loading sales-history-warning">Loading complete year-over-year history… Partial totals are intentionally hidden.</div>`;
-      if (executive) executive.innerHTML = "";
-      return;
-    }
-    renderSalesYoyCards(daily, focus);
+    if (focusLabel) focusLabel.textContent = `Every chart, KPI and item below follows the master filters.`;
     await renderSalesTrend();
   }
 
@@ -925,7 +975,13 @@
     const month = date.getUTCMonth();
     let startDate = new Date(Date.UTC(year, month, date.getUTCDate(), 12));
     let endDate = new Date(startDate);
-    if (period === "month") {
+    if (period === "week") {
+      const day = startDate.getUTCDay();
+      const mondayOffset = day === 0 ? -6 : 1 - day;
+      startDate.setUTCDate(startDate.getUTCDate() + mondayOffset);
+      endDate = new Date(startDate);
+      endDate.setUTCDate(endDate.getUTCDate() + 6);
+    } else if (period === "month") {
       startDate = new Date(Date.UTC(year, month, 1, 12));
       endDate = new Date(Date.UTC(year, month + 1, 0, 12));
     } else if (period === "quarter") {
@@ -944,6 +1000,110 @@
     let end = salesIso(endDate);
     if (latest && start <= latest && end > latest) end = latest;
     return { start, end };
+  }
+
+  let salesMasterCatalogStamp = "";
+  let salesMasterCatalogRows = [];
+
+  function salesMasterCatalog() {
+    const inventoryRows = state.inventoryRows?.length ? state.inventoryRows : [...(state.latestInventory?.values?.() || [])];
+    const stamp = `${state._dataCacheStamp || 0}|${inventoryRows.length}`;
+    if (stamp === salesMasterCatalogStamp) return salesMasterCatalogRows;
+    salesMasterCatalogStamp = stamp;
+    const seen = new Set();
+    salesMasterCatalogRows = [];
+    [...inventoryRows, ...state.rawSales].forEach((source) => {
+      const row = salesHierarchyRow({
+        code: cleanCell(source.code || source.Code),
+        product: cleanCell(source.product || source.name || source.item_name || source.PRODUCT),
+        department: cleanCell(source.department || source.Department || source.DEPARTMENT),
+        category: cleanCell(source.category || source.Category || source.CATEGORY),
+        vendor: cleanCell(source.vendor || source.vendor_name || source.VENDOR),
+      });
+      const key = codeKey(row.code) || row.product.toLowerCase();
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      salesMasterCatalogRows.push({ ...row, vendor: row.vendor || "Unassigned" });
+    });
+    return salesMasterCatalogRows;
+  }
+
+  function salesMasterFilters() {
+    return {
+      department: cleanCell(document.querySelector("#salesMasterDepartment")?.value),
+      category: cleanCell(document.querySelector("#salesMasterCategory")?.value),
+      vendor: cleanCell(document.querySelector("#salesMasterVendor")?.value),
+      item: cleanCell(document.querySelector("#salesMasterItem")?.value),
+    };
+  }
+
+  function salesSetSelectOptions(select, values, label, preferredOrder = null) {
+    if (!select) return "";
+    const current = select.value;
+    let options = [...new Set(values.map((value) => cleanCell(value) || "Unassigned"))];
+    options.sort((a, b) => preferredOrder
+      ? (preferredOrder.indexOf(a.toUpperCase()) === -1 ? 999 : preferredOrder.indexOf(a.toUpperCase())) - (preferredOrder.indexOf(b.toUpperCase()) === -1 ? 999 : preferredOrder.indexOf(b.toUpperCase())) || a.localeCompare(b)
+      : a.localeCompare(b));
+    select.innerHTML = `<option value="">${label}</option>${options.map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`).join("")}`;
+    select.value = options.includes(current) ? current : "";
+    return select.value;
+  }
+
+  function updateSalesMasterOptions() {
+    const catalog = salesMasterCatalog();
+    const departmentSelect = document.querySelector("#salesMasterDepartment");
+    const categorySelect = document.querySelector("#salesMasterCategory");
+    const vendorSelect = document.querySelector("#salesMasterVendor");
+    const department = salesSetSelectOptions(departmentSelect, catalog.map((row) => row.department), "All departments", GKPOS_DEPARTMENT_ORDER);
+    const departmentRows = catalog.filter((row) => !department || row.department === department);
+    const category = salesSetSelectOptions(categorySelect, departmentRows.map((row) => row.category), "All categories");
+    const categoryRows = departmentRows.filter((row) => !category || row.category === category);
+    const vendor = salesSetSelectOptions(vendorSelect, categoryRows.map((row) => row.vendor), "All vendors");
+    const itemRows = categoryRows.filter((row) => !vendor || row.vendor === vendor);
+    const list = document.querySelector("#salesMasterItems");
+    if (list) list.innerHTML = itemRows.slice(0, 5000).map((row) => `<option value="${escapeHtml(row.product)}">${escapeHtml(row.code)}</option>`).join("");
+  }
+
+  function salesFilterTitle(filters) {
+    return filters.item || filters.category || filters.department || filters.vendor || "All-store performance";
+  }
+
+  function salesRowsMatchFilters(row, filters) {
+    const itemText = `${cleanCell(row.product)} ${cleanCell(row.code)}`.toLowerCase();
+    return (!filters.department || cleanCell(row.department).toLowerCase() === filters.department.toLowerCase())
+      && (!filters.category || cleanCell(row.category).toLowerCase() === filters.category.toLowerCase())
+      && (!filters.vendor || cleanCell(row.vendor).toLowerCase() === filters.vendor.toLowerCase())
+      && (!filters.item || itemText.includes(filters.item.toLowerCase()));
+  }
+
+  async function salesFetchFilteredRows(start, end, filters) {
+    if (!filters.department && !filters.category && !filters.vendor && !filters.item) return salesFetchRollups("DAY", start, end);
+    if (!filters.vendor && !filters.item) {
+      const rows = await salesFetchRollups("CATEGORY__", start, end);
+      return rows.filter((row) => salesRowsMatchFilters(row, filters));
+    }
+    if (filters.vendor && !filters.department && !filters.category && !filters.item) {
+      const rows = await salesFetchRollups("VENDOR__", start, end);
+      return rows.filter((row) => salesRowsMatchFilters(row, filters));
+    }
+    const catalog = salesMasterCatalog();
+    const itemNeedle = filters.item.toLowerCase();
+    const exactItem = filters.item ? catalog.find((row) => row.code.toLowerCase() === itemNeedle || row.product.toLowerCase() === itemNeedle) : null;
+    const query = {
+      select: "sales_date,code,product,vendor,category,department,qty,sales,cost_sold,profit",
+      and: `(sales_date.gte.${start},sales_date.lte.${end})`,
+      order: "sales_date.asc",
+    };
+    if (exactItem?.code) query.code = `eq.${exactItem.code}`;
+    else {
+      query.code = "not.like.__ROLLUP__*";
+      if (filters.item) query.product = `ilike.*${filters.item.replace(/[*,()]/g, "")}*`;
+      if (filters.department) query.department = `eq.${filters.department}`;
+      if (filters.category) query.category = `eq.${filters.category}`;
+      if (filters.vendor) query.vendor = `eq.${filters.vendor}`;
+    }
+    const rows = await directSelectRows("daily_sales", query).then((result) => result.map(hydrateSalesFromSupabase)).catch(() => []);
+    return rows.map(salesHierarchyRow).filter((row) => salesRowsMatchFilters(row, filters));
   }
 
   function salesTrendOptions(group) {
@@ -1012,113 +1172,104 @@
     return { current, prior };
   }
 
+  function renderSalesPeriodKpis(currentRows, priorRows, ytdCurrentRows, ytdPriorRows, dates, priorDates, period) {
+    const target = document.querySelector("#salesYoyCards");
+    if (!target) return;
+    const current = salesTotals(currentRows);
+    const prior = salesTotals(priorRows);
+    const ytd = salesTotals(ytdCurrentRows);
+    const priorYtd = salesTotals(ytdPriorRows);
+    const margin = current.sales ? (current.profit / current.sales) * 100 : 0;
+    const priorMargin = prior.sales ? (prior.profit / prior.sales) * 100 : 0;
+    const delta = salesDelta(current.sales, prior.sales);
+    const periodName = { day: "Selected day", week: "Selected week", month: "Selected month", quarter: "Selected quarter", half: "Selected half-year", year: "Selected year" }[period] || "Selected period";
+    const range = dates.start === dates.end ? salesDisplayDate(dates.start) : `${salesDisplayDate(dates.start)}–${salesDisplayDate(dates.end)}`;
+    const priorYear = priorDates.end.slice(0, 4);
+    target.innerHTML = `
+      <article><small>${periodName}</small><b>${currency.format(current.sales)}</b><span>${escapeHtml(range)}</span></article>
+      <article><small>Prior-year sales</small><b>${currency.format(prior.sales)}</b><span class="${delta != null && delta < 0 ? "down" : "up"}">${salesDeltaText(delta)} · ${currency.format(current.sales - prior.sales)}</span></article>
+      <article><small>Units</small><b>${number.format(current.units)}</b><span>${number.format(prior.units)} in ${priorYear}</span></article>
+      <article><small>Total cost</small><b>${currency.format(current.cost)}</b><span>Cost for this selection</span></article>
+      <article><small>Gross profit</small><b>${currency.format(current.profit)}</b><span>${margin.toFixed(1)}% margin · ${priorMargin.toFixed(1)}% prior</span></article>
+      <article><small>YTD through ${salesDisplayDate(dates.end)}</small><b>${currency.format(ytd.sales)}</b><span>${salesDeltaText(salesDelta(ytd.sales, priorYtd.sales))} vs ${priorYear}</span></article>`;
+  }
+
   async function renderSalesTrend() {
     const request = ++salesUi.trendRequest;
-    const group = document.querySelector("#salesTrendGroup")?.value || "";
-    const entity = cleanCell(document.querySelector("#salesTrendEntity")?.value);
+    const filters = salesMasterFilters();
     const metric = document.querySelector("#salesTrendMetric")?.value || "sales";
     const period = document.querySelector("#salesTrendPeriod")?.value || "month";
     const compare = !!document.querySelector("#salesTrendCompare")?.checked;
     const latest = state._remoteSalesAvailableEnd || state.dates.at(-1) || "";
     const anchor = document.querySelector("#salesTrendDate")?.value || salesUi.selectedDate || latest;
-    const title = document.querySelector("#salesTrendTitle");
-    const kicker = document.querySelector("#salesTrendKicker");
-    if (kicker) kicker.textContent = group ? `${group[0].toUpperCase()}${group.slice(1)} analysis` : "Total sales";
-    if (title) title.textContent = group ? (entity || `Choose a ${group}`) : "All-store performance";
-    if (!latest || (group && !entity)) {
-      const summary = document.querySelector("#salesTrendSummary");
-      const legend = document.querySelector("#salesTrendLegend");
-      if (legend) legend.innerHTML = "";
-      if (summary) summary.innerHTML = `<span>Choose a ${escapeHtml(group)} to view its performance.</span>`;
-      return salesDrawChart(document.querySelector("#salesTrendExplorerChart"), [], [], { height: 300 });
-    }
+    if (!latest || !anchor) return;
     const dates = salesTrendDates(period, anchor, latest);
     const priorDates = { start: salesShiftYear(dates.start, -1), end: salesShiftYear(dates.end, -1) };
-    let rows = [];
-    if (!group) {
-      rows = await salesFetchRollups("DAY", compare ? priorDates.start : dates.start, dates.end);
-    } else if (group === "item") {
-      const match = state.rawSales.find((row) => cleanCell(row.product).toLowerCase() === entity.toLowerCase());
-      if (match?.code) {
-        rows = await directSelectRows("daily_sales", {
-          select: "sales_date,code,product,vendor,category,department,qty,sales,cost_sold,profit",
-          and: `(sales_date.gte.${compare ? priorDates.start : dates.start},sales_date.lte.${dates.end})`,
-          code: `eq.${match.code}`,
-          order: "sales_date.asc",
-        }).then((result) => result.map(hydrateSalesFromSupabase)).catch(() => []);
-      }
-    } else {
-      const rollupKind = group === "vendor" ? "VENDOR__" : "CATEGORY__";
-      rows = await salesFetchRollups(rollupKind, compare ? priorDates.start : dates.start, dates.end);
-      rows = rows.filter((row) => cleanCell(row[group]).toLowerCase() === entity.toLowerCase());
-      if (!rows.length) rows = salesRangeRows(compare ? priorDates.start : dates.start, dates.end, (row) => cleanCell(row[group]).toLowerCase() === entity.toLowerCase());
-    }
+    const currentYtdStart = `${dates.end.slice(0, 4)}-01-01`;
+    const priorYtdStart = salesShiftYear(currentYtdStart, -1);
+    const fetchStart = compare ? priorYtdStart : currentYtdStart;
+    const title = document.querySelector("#salesTrendTitle");
+    const kicker = document.querySelector("#salesTrendKicker");
+    if (kicker) kicker.textContent = period === "month" ? "Monthly comparison" : `${period[0].toUpperCase()}${period.slice(1)} comparison`;
+    if (title) title.textContent = salesFilterTitle(filters);
+    const summary = document.querySelector("#salesTrendSummary");
+    if (summary) summary.innerHTML = `<span>Loading ${escapeHtml(salesDisplayDate(dates.start))} through ${escapeHtml(salesDisplayDate(dates.end))}…</span>`;
+
+    const rows = await salesFetchFilteredRows(fetchStart, dates.end, filters);
     if (request !== salesUi.trendRequest) return;
-    const monthly = period === "quarter" || period === "half" || period === "year";
     const currentRows = rows.filter((row) => row.date >= dates.start && row.date <= dates.end);
     const priorRows = compare ? rows.filter((row) => row.date >= priorDates.start && row.date <= priorDates.end) : [];
+    const ytdCurrentRows = rows.filter((row) => row.date >= currentYtdStart && row.date <= dates.end);
+    const ytdPriorRows = compare ? rows.filter((row) => row.date >= priorYtdStart && row.date <= priorDates.end) : [];
+    const monthly = period === "quarter" || period === "half" || period === "year";
     const aligned = salesAlignedTrendSeries(currentRows, priorRows, metric, monthly, dates);
     const current = aligned.current;
     const prior = compare ? aligned.prior : [];
     const currentYear = dates.end.slice(0, 4);
     const priorYear = String(Number(currentYear) - 1);
     const legend = document.querySelector("#salesTrendLegend");
-    if (legend) legend.innerHTML = `<span><i class="current"></i>${currentYear}</span>${compare ? `<span><i class="prior"></i>${priorYear}</span>` : ""}`;
-    salesDrawChart(document.querySelector("#salesTrendExplorerChart"), current, prior, { type: salesUi.chartType, height: 320, currency: metric !== "units" && metric !== "margin", percent: metric === "margin", currentLabel: currentYear, priorLabel: priorYear });
+    if (legend) legend.innerHTML = `${compare ? `<span><i class="prior"></i>${priorYear}</span>` : ""}<span><i class="current"></i>${currentYear}</span>`;
+    salesDrawChart(document.querySelector("#salesTrendExplorerChart"), current, prior, { type: salesUi.chartType, height: 330, currency: metric !== "units" && metric !== "margin", percent: metric === "margin", currentLabel: currentYear, priorLabel: priorYear });
     const currentTotals = salesTotals(currentRows);
     const priorTotals = salesTotals(priorRows);
     const currentTotal = metric === "margin" ? (currentTotals.sales ? (currentTotals.profit / currentTotals.sales) * 100 : 0) : current.reduce((sum, row) => sum + row.value, 0);
     const priorTotal = metric === "margin" ? (priorTotals.sales ? (priorTotals.profit / priorTotals.sales) * 100 : 0) : prior.reduce((sum, row) => sum + row.value, 0);
     const formatter = metric === "units" ? number : metric === "margin" ? { format: (value) => `${Number(value || 0).toFixed(1)}%` } : currency;
-    const summary = document.querySelector("#salesTrendSummary");
     if (summary) summary.innerHTML = `<b>${formatter.format(currentTotal)}</b><span>${salesDisplayDate(dates.start)}–${salesDisplayDate(dates.end)}</span>${compare ? `<b class="${currentTotal >= priorTotal ? "up" : "down"}">${salesDeltaText(salesDelta(currentTotal, priorTotal))}</b><span>vs ${priorYear} (${formatter.format(priorTotal)})</span>` : ""}`;
-    const mixRows = await salesFetchRollups("CATEGORY__", dates.start, dates.end);
-    if (request === salesUi.trendRequest) renderSalesDepartmentTree(mixRows);
+    renderSalesPeriodKpis(currentRows, priorRows, ytdCurrentRows, ytdPriorRows, dates, priorDates, period);
+
+    await ensureRemoteSalesRange(dates.start, dates.end, { silent: true });
+    if (request !== salesUi.trendRequest) return;
+    const rawCurrent = salesRangeRows(dates.start, dates.end).filter((row) => salesRowsMatchFilters(row, filters));
+    renderSalesDepartmentTree(rawCurrent.length ? rawCurrent : currentRows);
+    await renderSalesItems(dates, filters, rawCurrent);
   }
 
-  async function renderSalesItems() {
+  async function renderSalesItems(selectedDates = null, selectedFilters = null, sourceRows = null) {
     const body = document.querySelector("#salesItemRows");
     if (!body) return;
-    const start = document.querySelector("#salesItemsStart")?.value || els.startDate.value || state.dates[0] || "";
-    const end = document.querySelector("#salesItemsEnd")?.value || els.endDate.value || state.dates.at(-1) || "";
+    const latest = state._remoteSalesAvailableEnd || state.dates.at(-1) || "";
+    const anchor = document.querySelector("#salesTrendDate")?.value || latest;
+    const period = document.querySelector("#salesTrendPeriod")?.value || "month";
+    const dates = selectedDates || salesTrendDates(period, anchor, latest);
+    const start = dates.start;
+    const end = dates.end;
+    const filters = selectedFilters || salesMasterFilters();
     const range = document.querySelector("#salesItemsRange");
     if (range) range.textContent = start && end ? `${salesDisplayDate(start)} through ${salesDisplayDate(end)}` : "Choose a date range.";
-    const query = cleanCell(document.querySelector("#salesItemSearch")?.value).toLowerCase();
-    const departmentSelect = document.querySelector("#salesItemDepartment");
-    const categorySelect = document.querySelector("#salesItemCategory");
-    const vendorSelect = document.querySelector("#salesItemVendor");
+    const query = filters.item.toLowerCase();
     const sortSelect = document.querySelector("#salesItemSort");
     const sort = salesUi.itemSort || sortSelect?.value || "sales";
     if (sortSelect && sortSelect.value !== sort && [...sortSelect.options].some((option) => option.value === sort)) sortSelect.value = sort;
     const map = new Map();
-    salesRangeRows(start, end).forEach((row) => {
+    (sourceRows || salesRangeRows(start, end).filter((row) => salesRowsMatchFilters(row, filters))).forEach((row) => {
       const key = codeKey(row.code) || cleanCell(row.product).toLowerCase();
       const current = map.get(key) || { code: row.code, product: row.product || row.code, department: row.department, category: row.category, vendor: row.vendor, units: 0, sales: 0, cost: 0, profit: 0 };
       current.units += Number(row.units || 0); current.sales += Number(row.sales || 0); current.cost += Number(row.cost || 0); current.profit += Number(row.profit || 0);
       map.set(key, current);
     });
-    const setFilterOptions = (select, values, allLabel) => {
-      if (!select) return "";
-      const current = select.value;
-      const options = [...new Set(values.map((value) => cleanCell(value) || "Unassigned"))].sort((a, b) => a.localeCompare(b));
-      select.innerHTML = `<option value="">${allLabel}</option>${options.map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`).join("")}`;
-      select.value = options.includes(current) ? current : "";
-      return select.value;
-    };
     const allRows = [...map.values()].map((row) => ({ ...row, price: row.units ? row.sales / row.units : 0, unitCost: row.units ? row.cost / row.units : 0 }));
-    const departmentOrder = (name) => {
-      const index = GKPOS_DEPARTMENT_ORDER.indexOf(cleanCell(name).toUpperCase());
-      return index === -1 ? GKPOS_DEPARTMENT_ORDER.length : index;
-    };
-    const departments = [...new Set(allRows.map((row) => cleanCell(row.department) || "Unassigned"))]
-      .sort((a, b) => departmentOrder(a) - departmentOrder(b) || a.localeCompare(b));
-    const department = setFilterOptions(departmentSelect, departments, "All departments");
-    const departmentRows = allRows.filter((row) => !department || (cleanCell(row.department) || "Unassigned") === department);
-    const category = setFilterOptions(categorySelect, departmentRows.map((row) => row.category), "All categories");
-    const categoryRows = departmentRows.filter((row) => !category || (cleanCell(row.category) || "Unassigned") === category);
-    const vendor = setFilterOptions(vendorSelect, categoryRows.map((row) => row.vendor), "All vendors");
-    let rows = categoryRows
-      .filter((row) => !vendor || (cleanCell(row.vendor) || "Unassigned") === vendor)
+    let rows = allRows
       .filter((row) => !query || [row.code, row.product].join(" ").toLowerCase().includes(query));
     const direction = salesUi.itemSortDirection === "asc" ? 1 : -1;
     rows.sort((a, b) => ["product", "department", "category", "vendor"].includes(sort)
@@ -1126,10 +1277,11 @@
       : direction * (Number(a[sort] || 0) - Number(b[sort] || 0)));
     const totals = salesTotals(rows);
     const finalizedDays = await salesFetchRollups("DAY", start, end);
-    const hasItemFilters = Boolean(department || category || vendor || query);
+    const hasItemFilters = Boolean(filters.department || filters.category || filters.vendor || query);
     const finalizedSubtotal = !hasItemFilters && finalizedDays.length ? salesTotals(finalizedDays).sales : totals.sales;
+    const zeroCostCount = rows.filter((row) => row.sales && !row.cost).length;
     const totalTarget = document.querySelector("#salesItemsTotals");
-    if (totalTarget) totalTarget.innerHTML = `<span><small>Products</small><b>${number.format(rows.length)}</b></span><span><small>Units</small><b>${number.format(totals.units)}</b></span><span><small>Item sales</small><b>${currency.format(totals.sales)}</b></span><span><small>Total cost</small><b>${currency.format(totals.cost)}</b></span><span><small>Final subtotal</small><b>${currency.format(finalizedSubtotal)}</b></span><span><small>Total profit</small><b>${currency.format(totals.profit)}</b></span>`;
+    if (totalTarget) totalTarget.innerHTML = `<span><small>Products</small><b>${number.format(rows.length)}</b></span><span><small>Units</small><b>${number.format(totals.units)}</b></span><span><small>Item sales</small><b>${currency.format(totals.sales)}</b></span><span class="${zeroCostCount ? "warning" : ""}"><small>Total cost</small><b>${currency.format(totals.cost)}</b>${zeroCostCount ? `<em>${number.format(zeroCostCount)} missing-cost item${zeroCostCount === 1 ? "" : "s"}</em>` : ""}</span><span><small>Final subtotal</small><b>${currency.format(finalizedSubtotal)}</b></span><span><small>Total profit</small><b>${currency.format(totals.profit)}</b></span>`;
     document.querySelectorAll("[data-item-sort]").forEach((button) => {
       const active = button.dataset.itemSort === sort;
       button.classList.toggle("active", active);
@@ -1201,27 +1353,53 @@
     salesUi.selectedDate = event.target.value;
     void renderSalesCalendar();
   });
-  ["#salesTrendGroup", "#salesTrendMetric", "#salesTrendPeriod", "#salesTrendCompare", "#salesTrendDate"].forEach((selector) => document.querySelector(selector)?.addEventListener("change", () => {
-    if (selector === "#salesTrendGroup") { const input = document.querySelector("#salesTrendEntity"); if (input) input.value = ""; updateSalesTrendOptions(); }
-    void renderSalesTrend();
-  }));
-  document.querySelector("#salesTrendEntity")?.addEventListener("change", () => { void renderSalesTrend(); });
-  document.querySelector("#salesTrendEntity")?.addEventListener("keydown", (event) => { if (event.key === "Enter") void renderSalesTrend(); });
+  ["#salesTrendMetric", "#salesTrendPeriod", "#salesTrendCompare", "#salesTrendDate"].forEach((selector) => document.querySelector(selector)?.addEventListener("change", () => { void renderSalesTrend(); }));
+  document.querySelector("#salesMasterDepartment")?.addEventListener("change", () => {
+    const category = document.querySelector("#salesMasterCategory"), vendor = document.querySelector("#salesMasterVendor"), item = document.querySelector("#salesMasterItem");
+    if (category) category.value = ""; if (vendor) vendor.value = ""; if (item) item.value = "";
+    updateSalesMasterOptions(); void renderSalesTrend();
+  });
+  document.querySelector("#salesMasterCategory")?.addEventListener("change", () => {
+    const vendor = document.querySelector("#salesMasterVendor"), item = document.querySelector("#salesMasterItem");
+    if (vendor) vendor.value = ""; if (item) item.value = "";
+    updateSalesMasterOptions(); void renderSalesTrend();
+  });
+  document.querySelector("#salesMasterVendor")?.addEventListener("change", () => {
+    const item = document.querySelector("#salesMasterItem"); if (item) item.value = "";
+    updateSalesMasterOptions(); void renderSalesTrend();
+  });
+  document.querySelector("#salesMasterItem")?.addEventListener("change", () => { void renderSalesTrend(); });
+  document.querySelector("#salesMasterItem")?.addEventListener("keydown", (event) => { if (event.key === "Enter") void renderSalesTrend(); });
   document.querySelector("#salesTrendClear")?.addEventListener("click", () => {
-    const group = document.querySelector("#salesTrendGroup"), entity = document.querySelector("#salesTrendEntity");
     const metric = document.querySelector("#salesTrendMetric"), period = document.querySelector("#salesTrendPeriod"), compare = document.querySelector("#salesTrendCompare");
-    if (group) group.value = "";
-    if (entity) entity.value = "";
+    ["salesMasterDepartment", "salesMasterCategory", "salesMasterVendor", "salesMasterItem"].forEach((id) => { const element = document.querySelector(`#${id}`); if (element) element.value = ""; });
     if (metric) metric.value = "sales";
     const date = document.querySelector("#salesTrendDate");
     if (period) period.value = "month";
     if (date) date.value = state._remoteSalesAvailableEnd || state.dates.at(-1) || "";
     if (compare) compare.checked = true;
-    salesUi.chartType = "line";
-    document.querySelectorAll("[data-chart-type]").forEach((button) => button.classList.toggle("active", button.dataset.chartType === "line"));
-    updateSalesTrendOptions();
+    salesUi.chartType = "bar";
+    document.querySelectorAll("[data-chart-type]").forEach((button) => button.classList.toggle("active", button.dataset.chartType === "bar"));
+    updateSalesMasterOptions();
     void renderSalesTrend();
   });
+  function shiftSalesAnchor(direction) {
+    const input = document.querySelector("#salesTrendDate");
+    const period = document.querySelector("#salesTrendPeriod")?.value || "month";
+    if (!input?.value) return;
+    const date = salesDate(input.value);
+    if (period === "day") date.setUTCDate(date.getUTCDate() + direction);
+    else if (period === "week") date.setUTCDate(date.getUTCDate() + (7 * direction));
+    else if (period === "month") date.setUTCMonth(date.getUTCMonth() + direction);
+    else if (period === "quarter") date.setUTCMonth(date.getUTCMonth() + (3 * direction));
+    else if (period === "half") date.setUTCMonth(date.getUTCMonth() + (6 * direction));
+    else date.setUTCFullYear(date.getUTCFullYear() + direction);
+    const latest = state._remoteSalesAvailableEnd || state.dates.at(-1) || salesIso(new Date());
+    input.value = salesIso(date) > latest ? latest : salesIso(date);
+    void renderSalesTrend();
+  }
+  document.querySelector("#salesTrendPrev")?.addEventListener("click", () => shiftSalesAnchor(-1));
+  document.querySelector("#salesTrendNext")?.addEventListener("click", () => shiftSalesAnchor(1));
   document.querySelector("#salesChartType")?.addEventListener("click", (event) => {
     const button = event.target.closest("[data-chart-type]"); if (!button) return;
     salesUi.chartType = button.dataset.chartType;
@@ -1287,25 +1465,30 @@
     const trend = event.target.closest("[data-open-trend], [data-open-category]");
     if (trend) {
       setSalesMode("overview");
-      const group = document.querySelector("#salesTrendGroup"), input = document.querySelector("#salesTrendEntity");
-      if (group) group.value = "category"; updateSalesTrendOptions(); if (input) input.value = trend.dataset.openTrend || trend.dataset.openCategory; void renderSalesTrend();
+      const categoryName = trend.dataset.openTrend || trend.dataset.openCategory;
+      const department = document.querySelector("#salesMasterDepartment");
+      const category = document.querySelector("#salesMasterCategory");
+      const mapped = GKPOS_CATEGORY_DEPARTMENTS.get(cleanCell(categoryName).toUpperCase());
+      if (department && mapped) department.value = mapped;
+      updateSalesMasterOptions(); if (category) category.value = categoryName; void renderSalesTrend();
     }
     const department = event.target.closest("[data-open-department]");
     if (department) {
       setSalesMode("overview");
-      const group = document.querySelector("#salesTrendGroup"), input = document.querySelector("#salesTrendEntity");
-      if (group) group.value = "department"; updateSalesTrendOptions(); if (input) input.value = department.dataset.openDepartment; void renderSalesTrend();
+      const select = document.querySelector("#salesMasterDepartment"), category = document.querySelector("#salesMasterCategory"), vendor = document.querySelector("#salesMasterVendor"), item = document.querySelector("#salesMasterItem");
+      if (select) select.value = department.dataset.openDepartment;
+      if (category) category.value = ""; if (vendor) vendor.value = ""; if (item) item.value = "";
+      updateSalesMasterOptions(); void renderSalesTrend();
     }
     const item = event.target.closest("[data-open-item]");
     if (item) {
       setSalesMode("overview");
-      const group = document.querySelector("#salesTrendGroup"), input = document.querySelector("#salesTrendEntity");
-      if (group) group.value = "item"; updateSalesTrendOptions(); if (input) input.value = item.dataset.openItem; void renderSalesTrend();
+      const input = document.querySelector("#salesMasterItem"); if (input) input.value = item.dataset.openItem; void renderSalesTrend();
     }
   });
   window.addEventListener("resize", () => { if (activeTabName() === "dashboard") renderSalesWorkspace(); });
 
   dashboardDataStatus();
-  setSalesMode("calendar");
+  setSalesMode("overview");
 })();
 
