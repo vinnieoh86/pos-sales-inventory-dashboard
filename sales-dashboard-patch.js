@@ -1,5 +1,5 @@
 (function () {
-  const VERSION = "20261017-sales-studio-v12";
+  const VERSION = "20261018-sales-studio-v13";
   const DAY_MS = 86400000;
   const GKPOS_DEPARTMENT_ORDER = ["GENERAL", "HAIR", "BEAUTY PRODUCTS", "COSMETIC", "ELECTRIC", "JEWELRY", "GROCERY"];
   const GKPOS_CATEGORY_DEPARTMENTS = new Map(Object.entries({
@@ -874,14 +874,17 @@
       rows = salesRangeRows(bounds.start, bounds.end);
     }
     renderSalesCalendarGrid(rows);
-    const availableEnd = state._remoteSalesAvailableEnd || bounds.end;
-    const cutoff = availableEnd.slice(0, 7) === salesUi.calendarMonth ? availableEnd : bounds.end;
+    const latestRollupDate = rows.reduce((max, row) => row.date > max ? row.date : max, "");
+    const currentMonth = salesIso(new Date()).slice(0, 7);
+    const knownEnd = state._remoteSalesAvailableEnd || latestRollupDate;
+    const isOpenMonth = salesUi.calendarMonth === currentMonth || (knownEnd && knownEnd.slice(0, 7) === salesUi.calendarMonth);
+    const cutoff = isOpenMonth && latestRollupDate ? latestRollupDate : bounds.end;
     const priorCutoff = salesShiftYear(cutoff, -1);
     const currentTotal = salesTotals(rows.filter((row) => row.date <= cutoff));
     const priorTotal = salesTotals(priorRollups.filter((row) => row.date <= priorCutoff));
     const delta = salesDelta(currentTotal.sales, priorTotal.sales);
     const summary = document.querySelector("#salesCalendarMonthSummary");
-    if (summary) summary.innerHTML = `<b>${currency.format(currentTotal.sales)}</b><span>${cutoff === bounds.end ? "month total" : `through day ${Number(cutoff.slice(8))}`}</span><em class="${delta != null && delta < 0 ? "down" : "up"}">${priorTotal.sales ? `${salesDeltaText(delta)} vs ${Number(bounds.year) - 1} · ${currency.format(priorTotal.sales)}` : "No prior-year match"}</em>`;
+    if (summary) summary.innerHTML = `<b>${currency.format(currentTotal.sales)}</b><span>${cutoff === bounds.end ? "month total" : `through ${cutoff}`}</span><em class="${delta != null && delta < 0 ? "down" : "up"}">${priorTotal.sales ? `${salesDeltaText(delta)} vs same period ${Number(bounds.year) - 1} · ${currency.format(priorTotal.sales)}` : "No prior-year match"}</em>`;
   }
 
   async function renderSalesDayDetail(date) {
