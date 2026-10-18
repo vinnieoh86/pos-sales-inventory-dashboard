@@ -1,5 +1,5 @@
 (function () {
-  const VERSION = "20261018-sales-studio-v22";
+  const VERSION = "20261018-sales-studio-v23";
   const DAY_MS = 86400000;
   const GKPOS_DEPARTMENT_ORDER = ["GENERAL", "HAIR", "BEAUTY PRODUCTS", "COSMETIC", "ELECTRIC", "JEWELRY", "GROCERY"];
   const GKPOS_CATEGORY_DEPARTMENTS = new Map(Object.entries({
@@ -1091,8 +1091,9 @@
         <summary><span><b>${escapeHtml(department.name)}</b><small>${number.format(department.units)} units</small></span><span class="sales-mix-actions"><strong>${currency.format(department.sales)}</strong><button type="button" data-open-department="${escapeHtml(department.name)}">View</button></span></summary>
         <div class="sales-category-branches">${categories.map((category) => {
           const categoryRows = departmentRows.filter((row) => (cleanCell(row.category) || "Unassigned") === category.name);
-          const items = salesAggregateGroup(categoryRows, "product").sort((a, b) => b.sales - a.sales);
-          return `<details class="sales-category-detail"><summary><span><b>${escapeHtml(category.name)}</b><small>${number.format(category.units)} units</small></span><span class="sales-mix-actions"><strong>${currency.format(category.sales)}</strong><button type="button" data-open-category="${escapeHtml(category.name)}">View</button></span></summary><div class="sales-tree-items">${items.slice(0, 30).map((item) => `<button type="button" data-open-item="${escapeHtml(item.name)}"><span>${escapeHtml(item.name)}</span><strong>${currency.format(item.sales)}</strong></button>`).join("") || `<small>No item detail loaded.</small>`}${items.length > 30 ? `<button type="button" class="sales-tree-more" data-open-category="${escapeHtml(category.name)}">View all ${number.format(items.length)} items below</button>` : ""}</div></details>`;
+          const itemRows = categoryRows.filter((row) => !String(row.code || "").startsWith("__ROLLUP__"));
+          const items = salesAggregateGroup(itemRows, "product").sort((a, b) => b.sales - a.sales);
+          return `<details class="sales-category-detail"><summary><span><b>${escapeHtml(category.name)}</b><small>${number.format(category.units)} units</small></span><span class="sales-mix-actions"><strong>${currency.format(category.sales)}</strong><button type="button" data-open-category="${escapeHtml(category.name)}">View</button></span></summary><div class="sales-tree-items">${items.slice(0, 30).map((item) => `<button type="button" data-open-item="${escapeHtml(item.name)}"><span>${escapeHtml(item.name)}</span><strong>${currency.format(item.sales)}</strong></button>`).join("") || `<button type="button" class="sales-tree-more" data-open-category="${escapeHtml(category.name)}">View category items</button>`}${items.length > 30 ? `<button type="button" class="sales-tree-more" data-open-category="${escapeHtml(category.name)}">View all ${number.format(items.length)} items below</button>` : ""}</div></details>`;
         }).join("")}</div>
       </details>`;
     }).join("") : `<div class="sales-empty">Department totals will appear after sales load.</div>`;
@@ -1365,6 +1366,24 @@
     return rows.map(salesHierarchyRow).filter((row) => salesRowsMatchFilters(row, filters));
   }
 
+  async function salesFetchDetailRows(start, end, filters) {
+    if (!filters.item && !filters.category && !(filters.vendors || []).length) return [];
+    const query = {
+      select: "*",
+      and: `(sales_date.gte.${start},sales_date.lte.${end})`,
+      code: "not.like.__ROLLUP__*",
+      order: "sales_date.asc",
+    };
+    if (filters.department) query.department = `eq.${filters.department}`;
+    if (filters.category) query.category = `eq.${filters.category}`;
+    if ((filters.vendors || []).length === 1) query.vendor = `eq.${filters.vendors[0]}`;
+    const fetchQuery = (requestQuery) => directSelectRows("daily_sales", requestQuery).catch(() => []);
+    const rawRows = (filters.vendors || []).length > 1
+      ? (await Promise.all(filters.vendors.map((vendor) => fetchQuery({ ...query, vendor: `eq.${vendor}` })))).flat()
+      : await fetchQuery(query);
+    return rawRows.map(hydrateSalesFromSupabase).map(salesHierarchyRow).filter((row) => salesRowsMatchFilters(row, filters));
+  }
+
   function salesTrendOptions(group) {
     if (!group) return [];
     const field = group === "item" ? "product" : group;
@@ -1565,11 +1584,10 @@
     if (request !== salesUi.trendRequest) return;
     renderSalesPeriodKpis(currentRows, priorRows, ytdCurrentRows, ytdPriorRows, dates, priorDates, "range", adjustments);
 
-    if (!filters.item) await ensureRemoteSalesRange(dates.start, dates.end, { silent: true });
+    const detailRows = filters.item ? currentRows : await salesFetchDetailRows(dates.start, dates.end, filters);
     if (request !== salesUi.trendRequest) return;
-    const rawCurrent = filters.item ? currentRows : salesRangeRows(dates.start, dates.end).filter((row) => salesRowsMatchFilters(row, filters));
-    renderSalesDepartmentTree(rawCurrent.length ? rawCurrent : currentRows);
-    await renderSalesItems(dates, filters, rawCurrent);
+    renderSalesDepartmentTree(detailRows.length ? detailRows : currentRows);
+    await renderSalesItems(dates, filters, detailRows);
   }
 
   async function renderSalesItems(selectedDates = null, selectedFilters = null, sourceRows = null) {
@@ -1603,6 +1621,12 @@
     if (sortSelect && sortSelect.value !== sort && [...sortSelect.options].some((option) => option.value === sort)) sortSelect.value = sort;
     const matchedSource = (sourceRows || salesRangeRows(start, end).filter((row) => salesRowsMatchFilters(row, filters)))
       .filter((row) => !searchQuery || `${cleanCell(row.product)} ${cleanCell(row.code)}`.toLowerCase().includes(searchQuery));
+    if (!calendarMode && Array.isArray(sourceRows) && !sourceRows.length && !filters.category && !filters.vendors.length && !filters.item) {
+      const totalTarget = document.querySelector("#salesItemsTotals");
+      if (totalTarget) totalTarget.innerHTML = `<span><small>Item details</small><b>Select a category</b><em>Use the department/category panel to load products without slowing the dashboard.</em></span>`;
+      body.innerHTML = `<tr><td colspan="10" class="sales-empty">Choose a category on the right to load its itemized sales.</td></tr>`;
+      return;
+    }
     const map = new Map();
     matchedSource.forEach((row) => {
       const timestamp = cleanCell(row.timestamp || row.saleTime || row.time);
