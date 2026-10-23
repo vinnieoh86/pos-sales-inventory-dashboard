@@ -723,6 +723,8 @@ body:has(.tab-view[data-tab-view="dashboard"].active) .date-presets { display: n
 .sales-period-key-row > span i { display: inline-block; width: .55rem; height: .55rem; margin-right: .35rem; border-radius: 50%; }
 .sales-period-key-row b { color: #173e31; }
 .sales-period-key-row em { min-width: 4.9rem; color: #a34848; font-style: normal; text-align: right; }
+.sales-period-key-row--average { background: #eef2f8; }
+.sales-period-key-row--average em { color: #52627f; }
 .sales-trend-period-key footer { display: flex; flex-wrap: wrap; gap: .45rem 1rem; color: #66766f; font-size: .65rem; }
 .sales-trend-period-key footer span { display: inline-flex; align-items: center; gap: .28rem; }
 
