@@ -1,5 +1,5 @@
 (function () {
-  const VERSION = "20261018-sales-studio-v23";
+  const VERSION = "20261023-sales-studio-v24";
   const DAY_MS = 86400000;
   const GKPOS_DEPARTMENT_ORDER = ["GENERAL", "HAIR", "BEAUTY PRODUCTS", "COSMETIC", "ELECTRIC", "JEWELRY", "GROCERY"];
   const GKPOS_CATEGORY_DEPARTMENTS = new Map(Object.entries({
@@ -173,8 +173,8 @@
 
     controls.classList.add("sales-master-controls");
     controls.innerHTML = `
-      <label>Range<select id="salesTrendRange"><option value="3">3 months</option><option value="6" selected>6 months</option><option value="9">9 months</option><option value="12">12 months</option></select></label>
-      <label>Trend by<select id="salesTrendBucket"><option value="week">Weekly</option><option value="month" selected>Monthly</option></select></label>
+      <label>Range<select id="salesTrendRange"><option value="d1">1 day</option><option value="d3">3 days</option><option value="d5">5 days</option><option value="w1">1 week</option><option value="w2">2 weeks</option><option value="m1">1 month</option><option value="q1">1 quarter</option><option value="y1">1 year</option><option value="m3">3 months</option><option value="m6" selected>6 months</option><option value="m9">9 months</option><option value="m12">12 months</option></select></label>
+      <label>Trend by<select id="salesTrendBucket"><option value="day">Daily</option><option value="week">Weekly</option><option value="month" selected>Monthly</option><option value="quarter">Quarterly</option></select></label>
       <div class="sales-period-nav"><button type="button" class="sales-icon-button" id="salesTrendPrev" aria-label="Previous range">&#8249;</button><label>Through date<input type="date" id="salesTrendDate" /></label><button type="button" class="sales-icon-button" id="salesTrendNext" aria-label="Next range">&#8250;</button></div>
       <details class="sales-vendor-picker" id="salesVendorPicker"><summary>Vendors <span id="salesVendorCount">All</span></summary><div><input type="search" id="salesVendorSearch" placeholder="Find vendor" autocomplete="off" data-lpignore="true"/><div id="salesVendorOptions"></div></div></details>
       <button type="button" class="sales-secondary-button" id="salesVendorCompare">Compare vendors</button>
@@ -197,6 +197,10 @@
       analysisGrid.append(trendCard, mixGrid);
       const mixTitle = mixGrid.querySelector("h3");
       if (mixTitle) mixTitle.textContent = "Browse departments, categories & items";
+    }
+    const trendCanvas = document.querySelector("#salesTrendExplorerChart");
+    if (trendCanvas && !document.querySelector("#salesTrendPeriodKey")) {
+      trendCanvas.insertAdjacentHTML("afterend", `<section class="sales-trend-period-key" id="salesTrendPeriodKey" aria-live="polite"><div class="sales-empty">Move across the chart to inspect a period. Click to lock it.</div></section>`);
     }
 
     document.querySelector("#salesExecutiveSummary")?.remove();
@@ -594,8 +598,9 @@
     drill: { department: "", category: "", item: "" },
     vendors: new Set(),
     vendorCompare: false,
-    trendRangeMonths: 6,
+    trendRangePreset: "m6",
     trendBucket: "month",
+    trendPinnedIndex: null,
     itemHistoryMonths: 24,
     trendRequest: 0,
     rollups: new Map(),
@@ -796,8 +801,6 @@
       const rect = canvas.getBoundingClientRect();
       const pointerX = clientX - rect.left;
       const closest = points.reduce((best, point) => Math.abs(point.x - pointerX) < Math.abs(best.x - pointerX) ? point : best, points[0]);
-      const threshold = Math.max(12, rect.width / Math.max(points.length, 1) / 2);
-      if (Math.abs(closest.x - pointerX) > threshold) { tooltip.hidden = true; return; }
       const formatter = options.percent ? { format: (value) => `${Number(value || 0).toFixed(1)}%` } : (options.currency === false ? number : currency);
       const current = closest.current;
       const prior = closest.prior;
@@ -851,10 +854,10 @@
     if (options.type === "bar") {
       const slot = Math.max(4, (right - left) / count);
       const bar = Math.max(2, Math.min(18, slot * 0.34));
-      prior.forEach((row, index) => { const x = xFor(index) - bar; const y = yFor(row.value); ctx.fillStyle = "#9cb7db"; ctx.fillRect(x, y, bar, bottom - y); });
+      prior.forEach((row, index) => { const x = xFor(index) - bar; const y = yFor(row.value); ctx.fillStyle = "#efb0b0"; ctx.fillRect(x, y, bar, bottom - y); });
       current.forEach((row, index) => { const x = xFor(index) + 1; const y = yFor(row.value); ctx.fillStyle = "#16835b"; ctx.fillRect(x, y, bar, bottom - y); });
     } else {
-      drawLine(prior, "#8da9d2", true);
+      drawLine(prior, "#dc7f7f", true);
       drawLine(current, "#16835b", false);
     }
     ctx.fillStyle = "#6d7773"; ctx.font = "11px Arial"; ctx.textAlign = "center";
@@ -875,7 +878,12 @@
   const SALES_TREND_COLORS = ["#16835b", "#4f6f91", "#8b5fb5", "#d16b43", "#c39a24", "#168b91", "#b54f73", "#637a36", "#805e49", "#667085"];
 
   function salesTrendBucketKey(iso, bucket) {
+    if (bucket === "day") return iso.slice(0, 10);
     if (bucket === "month") return iso.slice(0, 7);
+    if (bucket === "quarter") {
+      const date = salesDate(iso);
+      return `${date.getUTCFullYear()}-Q${Math.floor(date.getUTCMonth() / 3) + 1}`;
+    }
     const date = salesDate(iso);
     const day = date.getUTCDay();
     date.setUTCDate(date.getUTCDate() + (day === 0 ? -6 : 1 - day));
@@ -883,18 +891,34 @@
   }
 
   function salesTrendBucketLabel(key, bucket) {
-    if (bucket === "month") return salesDate(`${key}-01`).toLocaleDateString("en-US", { month: "short", year: "2-digit", timeZone: "UTC" });
-    return salesDate(key).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+    if (bucket === "day") return salesDate(key).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+    if (bucket === "month") return salesDate(`${key}-01`).toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" });
+    if (bucket === "quarter") return `${key.slice(5)} ${key.slice(0, 4)}`;
+    return `Week of ${salesDate(key).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })}`;
   }
 
   function salesTrendBucketKeys(dates, bucket) {
     const keys = [];
+    if (bucket === "day") {
+      for (let cursor = dates.start; cursor <= dates.end; cursor = shiftIsoDate(cursor, 1)) keys.push(cursor);
+      return keys;
+    }
     if (bucket === "month") {
       let cursor = `${dates.start.slice(0, 7)}-01`;
       const last = `${dates.end.slice(0, 7)}-01`;
       while (cursor <= last) {
         keys.push(cursor.slice(0, 7));
         const date = salesDate(cursor); date.setUTCMonth(date.getUTCMonth() + 1); cursor = `${salesIso(date).slice(0, 7)}-01`;
+      }
+      return keys;
+    }
+    if (bucket === "quarter") {
+      const startDate = salesDate(dates.start);
+      let cursor = new Date(Date.UTC(startDate.getUTCFullYear(), Math.floor(startDate.getUTCMonth() / 3) * 3, 1, 12));
+      const endDate = salesDate(dates.end);
+      while (cursor <= endDate) {
+        keys.push(`${cursor.getUTCFullYear()}-Q${Math.floor(cursor.getUTCMonth() / 3) + 1}`);
+        cursor.setUTCMonth(cursor.getUTCMonth() + 3);
       }
       return keys;
     }
@@ -947,20 +971,67 @@
     if (!canvas) return;
     let tooltip = document.querySelector("#salesChartTooltip");
     if (!tooltip) { tooltip = document.createElement("div"); tooltip.id = "salesChartTooltip"; tooltip.className = "sales-chart-tooltip"; tooltip.hidden = true; document.body.append(tooltip); }
-    canvas.onmousemove = (event) => {
-      if (!xPositions.length) { tooltip.hidden = true; return; }
-      const rect = canvas.getBoundingClientRect();
-      const pointerX = event.clientX - rect.left;
+    const context = canvas.getContext("2d");
+    const baseImage = context.getImageData(0, 0, canvas.width, canvas.height);
+    const formatter = options.percent ? { format: (value) => `${Number(value || 0).toFixed(1)}%` } : (options.currency === false ? number : currency);
+    const key = document.querySelector("#salesTrendPeriodKey");
+    const priorColor = "#dc7f7f";
+    const nearestIndex = (pointerX) => {
       let index = 0;
       xPositions.forEach((x, candidate) => { if (Math.abs(x - pointerX) < Math.abs(xPositions[index] - pointerX)) index = candidate; });
-      const formatter = options.percent ? { format: (value) => `${Number(value || 0).toFixed(1)}%` } : (options.currency === false ? number : currency);
-      const rows = series.map((item) => ({ ...item, value: Number(item.values[index] || 0) })).filter((item) => item.value !== 0).sort((a, b) => b.value - a.value);
-      tooltip.innerHTML = `<strong>${escapeHtml(labels[index] || "")}</strong>${rows.slice(0, 12).map((item) => `<br><span style="display:inline-block;width:.55rem;height:.55rem;margin-right:.35rem;border-radius:50%;background:${item.color};opacity:${item.prior ? .45 : 1}"></span>${escapeHtml(item.name)}${item.prior ? " (prior)" : ""}: <b>${formatter.format(item.value)}</b>`).join("") || "<br>No sales"}`;
+      return index;
+    };
+    const rowsFor = (index) => series.map((item) => ({ ...item, value: Number(item.values[index] || 0) }));
+    const renderKey = (index) => {
+      if (!key || index < 0) return;
+      const rows = rowsFor(index);
+      const currentRows = rows.filter((item) => !item.prior).sort((a, b) => b.value - a.value);
+      const priorMap = new Map(rows.filter((item) => item.prior).map((item) => [item.name, item.value]));
+      const currentTotal = currentRows.reduce((sum, item) => sum + item.value, 0);
+      const priorTotal = [...priorMap.values()].reduce((sum, value) => sum + value, 0);
+      key.innerHTML = `<header><div><small>Selected period</small><b>${escapeHtml(labels[index] || "")}</b></div><div class="sales-period-key-total"><small>Current total</small><b>${formatter.format(currentTotal)}</b>${priorMap.size ? `<span>Prior: ${formatter.format(priorTotal)}</span>` : ""}</div></header><div class="sales-period-key-grid">${currentRows.map((item) => `<div class="sales-period-key-row"><span><i style="background:${item.color}"></i>${escapeHtml(item.name)}</span><b>${formatter.format(item.value)}</b><em>${priorMap.has(item.name) ? formatter.format(priorMap.get(item.name)) : "—"}</em></div>`).join("") || `<div class="sales-empty">No sales in this period.</div>`}</div><footer><span>Current</span>${priorMap.size ? `<span><i></i> Prior year (light red)</span>` : ""}<span>${salesUi.trendPinnedIndex == null ? "Click the chart to lock this period" : "Locked · click again to unlock"}</span></footer>`;
+    };
+    const paintSelection = (index) => {
+      context.putImageData(baseImage, 0, 0);
+      if (index < 0 || !xPositions.length) return;
+      const spacing = xPositions.length > 1 ? Math.abs(xPositions[1] - xPositions[0]) : Math.max(28, canvas.clientWidth - 76);
+      const x = xPositions[index];
+      context.save();
+      context.fillStyle = "rgba(22, 131, 91, .08)";
+      context.fillRect(Math.max(48, x - spacing / 2), 18, Math.max(6, spacing), Math.max(0, canvas.clientHeight - 60));
+      context.strokeStyle = "rgba(18, 99, 70, .72)";
+      context.lineWidth = 1.5;
+      context.setLineDash([3, 3]);
+      context.beginPath(); context.moveTo(x, 18); context.lineTo(x, canvas.clientHeight - 42); context.stroke();
+      context.restore();
+      renderKey(index);
+    };
+    const defaultIndex = Math.max(0, Math.min(labels.length - 1, salesUi.trendPinnedIndex == null ? labels.length - 1 : salesUi.trendPinnedIndex));
+    paintSelection(defaultIndex);
+    canvas.onmousemove = (event) => {
+      if (!xPositions.length || salesUi.trendPinnedIndex != null) return;
+      const rect = canvas.getBoundingClientRect();
+      const index = nearestIndex(event.clientX - rect.left);
+      paintSelection(index);
+      const rows = rowsFor(index).filter((item) => item.value !== 0).sort((a, b) => b.value - a.value);
+      tooltip.innerHTML = `<strong>${escapeHtml(labels[index] || "")}</strong>${rows.slice(0, 12).map((item) => `<br><span class="${item.prior ? "prior-dot" : "current-dot"}" style="background:${item.prior ? priorColor : item.color}"></span>${escapeHtml(item.name)}${item.prior ? " (prior)" : ""}: <b>${formatter.format(item.value)}</b>`).join("") || "<br>No sales"}`;
       tooltip.hidden = false;
       tooltip.style.left = `${Math.min(event.clientX + 14, window.innerWidth - 310)}px`;
       tooltip.style.top = `${Math.max(8, event.clientY - 130)}px`;
     };
-    canvas.onmouseleave = () => { tooltip.hidden = true; };
+    canvas.onclick = (event) => {
+      if (!xPositions.length) return;
+      const rect = canvas.getBoundingClientRect();
+      const index = nearestIndex(event.clientX - rect.left);
+      salesUi.trendPinnedIndex = salesUi.trendPinnedIndex === index ? null : index;
+      tooltip.hidden = true;
+      paintSelection(index);
+    };
+    canvas.onmouseleave = () => {
+      tooltip.hidden = true;
+      const index = salesUi.trendPinnedIndex == null ? labels.length - 1 : Math.min(salesUi.trendPinnedIndex, labels.length - 1);
+      paintSelection(index);
+    };
   }
 
   function salesDrawMultiSeriesChart(canvas, labels, series, options = {}) {
@@ -987,12 +1058,12 @@
       series.forEach((item, seriesIndex) => item.values.forEach((value, index) => {
         const x = xPositions[index] - (bar * series.length) / 2 + seriesIndex * bar;
         const y = yFor(value);
-        ctx.globalAlpha = item.prior ? .35 : .92; ctx.fillStyle = item.color; ctx.fillRect(x, y, Math.max(1, bar - 1), bottom - y);
+        ctx.globalAlpha = item.prior ? .72 : .92; ctx.fillStyle = item.prior ? "#efb0b0" : item.color; ctx.fillRect(x, y, Math.max(1, bar - 1), bottom - y);
       }));
       ctx.globalAlpha = 1;
     } else {
       series.forEach((item) => {
-        ctx.strokeStyle = item.color; ctx.globalAlpha = item.prior ? .38 : 1; ctx.lineWidth = item.prior ? 1.6 : 2.5; ctx.setLineDash(item.prior ? [6, 5] : []);
+        ctx.strokeStyle = item.prior ? "#dc7f7f" : item.color; ctx.globalAlpha = item.prior ? .78 : 1; ctx.lineWidth = item.prior ? 1.8 : 2.5; ctx.setLineDash(item.prior ? [6, 5] : []);
         ctx.beginPath(); item.values.forEach((value, index) => { const x = xPositions[index], y = yFor(value); if (!index) ctx.moveTo(x, y); else ctx.lineTo(x, y); }); ctx.stroke();
       });
       ctx.globalAlpha = 1; ctx.setLineDash([]);
@@ -1237,13 +1308,47 @@
     </div>`;
   }
 
-  function salesTrendDates(monthCount, anchor, latest) {
-    const endDate = salesDate(anchor || latest);
-    const months = Math.max(1, Number(monthCount || 6));
-    const startDate = new Date(Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth() - months + 1, 1, 12));
+  function salesTrendRangeSpec(value) {
+    if (typeof value === "number" || /^\d+$/.test(String(value || ""))) return { unit: "month", count: Math.max(1, Number(value || 6)), value: `m${Math.max(1, Number(value || 6))}` };
+    const match = String(value || "m6").match(/^([dwmqy])(\d+)$/);
+    const unit = ({ d: "day", w: "week", m: "month", q: "quarter", y: "year" })[match?.[1]] || "month";
+    return { unit, count: Math.max(1, Number(match?.[2] || 6)), value: String(value || "m6") };
+  }
+
+  function salesTrendRangeLabel(value) {
+    const spec = salesTrendRangeSpec(value);
+    const singular = { day: "day", week: "week", month: "month", quarter: "quarter", year: "year" }[spec.unit];
+    return `${spec.count} ${singular}${spec.count === 1 ? "" : "s"}`;
+  }
+
+  function salesTrendDates(rangeValue, anchor, latest) {
+    const spec = salesTrendRangeSpec(rangeValue);
+    const focus = salesDate(anchor || latest);
+    let startDate = new Date(focus);
+    let endDate = new Date(focus);
+    if (spec.unit === "day") startDate.setUTCDate(startDate.getUTCDate() - spec.count + 1);
+    if (spec.unit === "week") {
+      const day = focus.getUTCDay();
+      const mondayOffset = day === 0 ? -6 : 1 - day;
+      startDate.setUTCDate(startDate.getUTCDate() + mondayOffset - (spec.count - 1) * 7);
+      endDate.setUTCDate(endDate.getUTCDate() + mondayOffset + 6);
+    }
+    if (spec.unit === "month") {
+      startDate = new Date(Date.UTC(focus.getUTCFullYear(), focus.getUTCMonth() - spec.count + 1, 1, 12));
+      endDate = new Date(Date.UTC(focus.getUTCFullYear(), focus.getUTCMonth() + 1, 0, 12));
+    }
+    if (spec.unit === "quarter") {
+      const quarterStart = Math.floor(focus.getUTCMonth() / 3) * 3;
+      startDate = new Date(Date.UTC(focus.getUTCFullYear(), quarterStart - (spec.count - 1) * 3, 1, 12));
+      endDate = new Date(Date.UTC(focus.getUTCFullYear(), quarterStart + 3, 0, 12));
+    }
+    if (spec.unit === "year") {
+      startDate = new Date(Date.UTC(focus.getUTCFullYear() - spec.count + 1, 0, 1, 12));
+      endDate = new Date(Date.UTC(focus.getUTCFullYear(), 11, 31, 12));
+    }
     let end = salesIso(endDate);
     if (latest && end > latest) end = latest;
-    return { start: salesIso(startDate), end };
+    return { start: salesIso(startDate), end, spec };
   }
 
   let salesMasterCatalogStamp = "";
@@ -1528,15 +1633,15 @@
     const request = ++salesUi.trendRequest;
     const filters = salesMasterFilters();
     const metric = document.querySelector("#salesTrendMetric")?.value || "sales";
-    const rangeMonths = Number(document.querySelector("#salesTrendRange")?.value || salesUi.trendRangeMonths || 6);
+    const rangePreset = document.querySelector("#salesTrendRange")?.value || salesUi.trendRangePreset || "m6";
     const bucket = document.querySelector("#salesTrendBucket")?.value || salesUi.trendBucket || "month";
-    salesUi.trendRangeMonths = rangeMonths;
+    salesUi.trendRangePreset = rangePreset;
     salesUi.trendBucket = bucket;
     const compare = !!document.querySelector("#salesTrendCompare")?.checked;
     const latest = state._remoteSalesAvailableEnd || state.dates.at(-1) || "";
     const anchor = document.querySelector("#salesTrendDate")?.value || salesUi.selectedDate || latest;
     if (!latest || !anchor) return;
-    const requestedDates = salesTrendDates(rangeMonths, anchor, latest);
+    const requestedDates = salesTrendDates(rangePreset, anchor, latest);
     const historyMonths = Number(document.querySelector("#salesItemHistoryRange")?.value || salesUi.itemHistoryMonths || 24);
     salesUi.itemHistoryMonths = historyMonths;
     const dates = filters.item ? salesTrendDates(historyMonths, anchor, latest) : requestedDates;
@@ -1548,7 +1653,7 @@
     const kicker = document.querySelector("#salesTrendKicker");
     const dimension = salesChartDimension(filters);
     const dimensionLabel = { department: "Departments", category: "Categories", vendor: "Vendors", "": "Category" }[dimension];
-    if (kicker) kicker.textContent = filters.item ? `${historyMonths}-month item history` : `${rangeMonths}-month ${bucket === "week" ? "weekly" : "monthly"} trend`;
+    if (kicker) kicker.textContent = filters.item ? `${historyMonths}-month item history` : `${salesTrendRangeLabel(rangePreset)} · ${bucket === "day" ? "daily" : bucket === "week" ? "weekly" : bucket === "quarter" ? "quarterly" : "monthly"} trend`;
     if (title) title.textContent = filters.item ? `${filters.item} sales history` : filters.category ? `${filters.category} trend` : filters.department ? `${filters.department} category trends` : salesUi.vendorCompare ? "Vendor trends" : "Department trends";
     document.body.classList.toggle("sales-item-history-active", !!filters.item);
     const summary = document.querySelector("#salesTrendSummary");
@@ -1565,7 +1670,7 @@
     const fallbackName = filters.category || filters.department || salesFilterTitle(filters);
     const trend = salesTrendSeries(currentRows, priorRows, metric, bucket, dimension, fallbackName, dates, compare);
     const legend = document.querySelector("#salesTrendLegend");
-    if (legend) legend.innerHTML = filters.item ? "" : `${trend.series.filter((item) => !item.prior).map((item) => `<span><i style="background:${item.color}"></i>${escapeHtml(item.name)}</span>`).join("")}${compare ? `<span class="sales-prior-key">Faded = ${priorYear}</span>` : ""}`;
+    if (legend) legend.innerHTML = filters.item ? "" : `${trend.series.filter((item) => !item.prior).map((item) => `<span><i style="background:${item.color}"></i>${escapeHtml(item.name)}</span>`).join("")}${compare ? `<span class="sales-prior-key"><i></i>${priorYear} = light red</span>` : ""}`;
     if (!filters.item) salesDrawMultiSeriesChart(document.querySelector("#salesTrendExplorerChart"), trend.labels, trend.series, { type: salesUi.chartType, height: 350, currency: metric !== "units" && metric !== "margin", percent: metric === "margin" });
     const currentTotals = salesTotals(currentRows);
     const priorTotals = salesTotals(priorRows);
@@ -1595,10 +1700,10 @@
     if (!body) return;
     const latest = state._remoteSalesAvailableEnd || state.dates.at(-1) || "";
     const anchor = document.querySelector("#salesTrendDate")?.value || latest;
-    const rangeMonths = Number(document.querySelector("#salesTrendRange")?.value || salesUi.trendRangeMonths || 6);
+    const rangePreset = document.querySelector("#salesTrendRange")?.value || salesUi.trendRangePreset || "m6";
     const calendarMode = salesUi.mode === "day";
     const calendarDay = salesUi.selectedDate || latest;
-    const dates = calendarMode ? { start: calendarDay, end: calendarDay } : (selectedDates || salesTrendDates(rangeMonths, anchor, latest));
+    const dates = calendarMode ? { start: calendarDay, end: calendarDay } : (selectedDates || salesTrendDates(rangePreset, anchor, latest));
     const start = dates.start;
     const end = dates.end;
     const filters = calendarMode ? {
@@ -1728,7 +1833,7 @@
     salesUi.calendarCategory = "";
     void renderSalesCalendar();
   });
-  ["#salesTrendMetric", "#salesTrendRange", "#salesTrendBucket", "#salesTrendCompare", "#salesTrendDate"].forEach((selector) => document.querySelector(selector)?.addEventListener("change", () => { void renderSalesTrend(); }));
+  ["#salesTrendMetric", "#salesTrendRange", "#salesTrendBucket", "#salesTrendCompare", "#salesTrendDate"].forEach((selector) => document.querySelector(selector)?.addEventListener("change", () => { salesUi.trendPinnedIndex = null; void renderSalesTrend(); }));
   document.querySelector("#salesTrendClear")?.addEventListener("click", () => {
     const metric = document.querySelector("#salesTrendMetric"), range = document.querySelector("#salesTrendRange"), bucket = document.querySelector("#salesTrendBucket"), compare = document.querySelector("#salesTrendCompare");
     salesUi.drill = { department: "", category: "", item: "" };
@@ -1738,10 +1843,13 @@
     const itemSearch = document.querySelector("#salesItemSearch"); if (itemSearch) itemSearch.value = "";
     if (metric) metric.value = "sales";
     const date = document.querySelector("#salesTrendDate");
-    if (range) range.value = "6";
+    if (range) range.value = "m6";
     if (bucket) bucket.value = "month";
     if (date) date.value = state._remoteSalesAvailableEnd || state.dates.at(-1) || "";
     if (compare) compare.checked = true;
+    salesUi.trendRangePreset = "m6";
+    salesUi.trendBucket = "month";
+    salesUi.trendPinnedIndex = null;
     salesUi.chartType = "bar";
     document.querySelectorAll("[data-chart-type]").forEach((button) => button.classList.toggle("active", button.dataset.chartType === "bar"));
     updateSalesMasterOptions();
@@ -1751,9 +1859,15 @@
     const input = document.querySelector("#salesTrendDate");
     if (!input?.value) return;
     const date = salesDate(input.value);
-    date.setUTCMonth(date.getUTCMonth() + direction);
+    const spec = salesTrendRangeSpec(document.querySelector("#salesTrendRange")?.value || salesUi.trendRangePreset || "m6");
+    if (spec.unit === "day") date.setUTCDate(date.getUTCDate() + direction * spec.count);
+    if (spec.unit === "week") date.setUTCDate(date.getUTCDate() + direction * spec.count * 7);
+    if (spec.unit === "month") date.setUTCMonth(date.getUTCMonth() + direction * spec.count);
+    if (spec.unit === "quarter") date.setUTCMonth(date.getUTCMonth() + direction * spec.count * 3);
+    if (spec.unit === "year") date.setUTCFullYear(date.getUTCFullYear() + direction * spec.count);
     const latest = state._remoteSalesAvailableEnd || state.dates.at(-1) || salesIso(new Date());
     input.value = salesIso(date) > latest ? latest : salesIso(date);
+    salesUi.trendPinnedIndex = null;
     void renderSalesTrend();
   }
   document.querySelector("#salesTrendPrev")?.addEventListener("click", () => shiftSalesAnchor(-1));
@@ -1902,4 +2016,5 @@
   dashboardDataStatus();
   setSalesMode("calendar");
 })();
+
 
