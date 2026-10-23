@@ -659,6 +659,119 @@ body:has(.tab-view[data-tab-view="dashboard"].active) .date-presets { display: n
   .sales-analysis-grid { grid-template-columns: 1fr; }
   .sales-period-kpis { grid-template-columns: repeat(3,minmax(0,1fr)); }
 }
+
+/* v24: period navigation, prior-year contrast, locked inspection, responsive fit */
+.sales-chart-tooltip .prior-dot { background: #dc7f7f !important; }
+.sales-chart-legend .sales-prior-key {
+  display: inline-flex;
+  align-items: center;
+  gap: .3rem;
+  color: #9f4545 !important;
+  background: #fdecec !important;
+}
+.sales-chart-legend .sales-prior-key i,
+.sales-trend-period-key footer i {
+  display: inline-block;
+  width: .65rem;
+  height: .65rem;
+  border-radius: 50%;
+  background: #dc7f7f !important;
+}
+.sales-calendar__compare > span.prior { background: #fdecec !important; }
+.sales-calendar__compare .prior strong { color: #a34848 !important; }
+
+.sales-trend-period-key {
+  display: grid;
+  gap: .55rem;
+  margin-top: .55rem;
+  padding: .72rem .8rem;
+  border: 1px solid #d8e4df;
+  border-radius: 12px;
+  background: #f9fbfa;
+}
+.sales-trend-period-key header {
+  display: flex;
+  justify-content: space-between;
+  align-items: end;
+  gap: 1rem;
+  padding-bottom: .45rem;
+  border-bottom: 1px solid #e2eae6;
+}
+.sales-trend-period-key header > div { display: grid; gap: .08rem; }
+.sales-trend-period-key small { color: #66766f; font-size: .65rem; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; }
+.sales-trend-period-key header b { color: #173e31; font-size: .95rem; }
+.sales-period-key-total { text-align: right; }
+.sales-period-key-total b { font-size: 1.15rem !important; }
+.sales-period-key-total span { color: #a34848; font-size: .7rem; font-weight: 800; }
+.sales-period-key-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit,minmax(13rem,1fr));
+  gap: .28rem .75rem;
+}
+.sales-period-key-row {
+  display: grid;
+  grid-template-columns: minmax(0,1fr) max-content max-content;
+  align-items: center;
+  gap: .55rem;
+  min-width: 0;
+  padding: .28rem .38rem;
+  border-radius: 7px;
+  background: #fff;
+  font-size: .72rem;
+}
+.sales-period-key-row > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sales-period-key-row > span i { display: inline-block; width: .55rem; height: .55rem; margin-right: .35rem; border-radius: 50%; }
+.sales-period-key-row b { color: #173e31; }
+.sales-period-key-row em { min-width: 4.9rem; color: #a34848; font-style: normal; text-align: right; }
+.sales-trend-period-key footer { display: flex; flex-wrap: wrap; gap: .45rem 1rem; color: #66766f; font-size: .65rem; }
+.sales-trend-period-key footer span { display: inline-flex; align-items: center; gap: .28rem; }
+
+html, body { max-width: 100%; overflow-x: hidden !important; }
+body:has(.tab-view[data-tab-view="dashboard"].active) .command-bar,
+body:has(.tab-view[data-tab-view="dashboard"].active) .command-bar .tab-list {
+  width: 100%;
+  max-width: 100%;
+  overflow: visible !important;
+}
+body:has(.tab-view[data-tab-view="dashboard"].active) .command-bar .tab-list {
+  flex-wrap: wrap !important;
+  justify-content: center !important;
+}
+.sales-master-controls {
+  grid-template-columns: repeat(auto-fit,minmax(8.25rem,1fr)) !important;
+  width: 100%;
+  max-width: 100%;
+}
+.sales-master-controls > *,
+.sales-analysis-grid > *,
+.sales-trend-card,
+.sales-trend-card canvas { min-width: 0 !important; max-width: 100% !important; }
+.sales-analysis-grid { grid-template-columns: minmax(0,2.5fr) minmax(17rem,.75fr) !important; width: 100%; max-width: 100%; }
+.sales-calendar-mix { display: grid !important; grid-template-columns: repeat(auto-fit,minmax(8.5rem,1fr)); overflow: visible !important; }
+.sales-table-wrap { max-width: 100% !important; overflow-x: hidden !important; }
+.sales-item-table { width: 100% !important; table-layout: fixed; }
+.sales-item-table th,
+.sales-item-table td { overflow-wrap: anywhere; }
+
+@media (max-width: 1050px) {
+  .sales-analysis-grid { grid-template-columns: 1fr !important; }
+  .sales-period-key-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
+}
+@media (max-width: 700px) {
+  body:has(.tab-view[data-tab-view="dashboard"].active) .command-bar .tab-list { justify-content: flex-start !important; }
+  .sales-master-controls { grid-template-columns: repeat(2,minmax(0,1fr)) !important; }
+  .sales-period-nav { grid-column: 1 / -1; }
+  .sales-trend-period-key header { align-items: start; }
+  .sales-period-key-grid { grid-template-columns: 1fr; }
+  .sales-item-table th:nth-child(4), .sales-item-table td:nth-child(4),
+  .sales-item-table th:nth-child(7), .sales-item-table td:nth-child(7),
+  .sales-item-table th:nth-child(9), .sales-item-table td:nth-child(9) { display: none !important; }
+}
+@media (max-width: 460px) {
+  .sales-master-controls { grid-template-columns: 1fr !important; }
+  .sales-trend-period-key header { display: grid; }
+  .sales-period-key-total { text-align: left; }
+}
 @media (max-width: 760px) {
   .command-bar .tab-list { justify-content: flex-start; overflow-x: auto; flex-wrap: nowrap; }
   .command-bar .tab-button { flex: 0 0 auto; }
@@ -931,4 +1044,5 @@ body.sales-item-history-active .sales-items-inline { border-top: 0; padding-top:
   .sales-items-inline.item-history-view .sales-item-toolbar { grid-template-columns: 1fr 1fr; }
   .sales-items-inline.item-history-view .sales-item-search { grid-column: 1 / -1; }
 }
+
 
