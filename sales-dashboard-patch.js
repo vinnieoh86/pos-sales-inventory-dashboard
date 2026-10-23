@@ -1,5 +1,5 @@
 (function () {
-  const VERSION = "20261023-sales-studio-v24";
+  const VERSION = "20261023-sales-studio-v25";
   const DAY_MS = 86400000;
   const GKPOS_DEPARTMENT_ORDER = ["GENERAL", "HAIR", "BEAUTY PRODUCTS", "COSMETIC", "ELECTRIC", "JEWELRY", "GROCERY"];
   const GKPOS_CATEGORY_DEPARTMENTS = new Map(Object.entries({
@@ -175,11 +175,11 @@
     controls.innerHTML = `
       <label>Range<select id="salesTrendRange"><option value="d1">1 day</option><option value="d3">3 days</option><option value="d5">5 days</option><option value="w1">1 week</option><option value="w2">2 weeks</option><option value="m1">1 month</option><option value="q1">1 quarter</option><option value="y1">1 year</option><option value="m3">3 months</option><option value="m6" selected>6 months</option><option value="m9">9 months</option><option value="m12">12 months</option></select></label>
       <label>Trend by<select id="salesTrendBucket"><option value="day">Daily</option><option value="week">Weekly</option><option value="month" selected>Monthly</option><option value="quarter">Quarterly</option></select></label>
-      <div class="sales-period-nav"><button type="button" class="sales-icon-button" id="salesTrendPrev" aria-label="Previous range">&#8249;</button><label>Through date<input type="date" id="salesTrendDate" /></label><button type="button" class="sales-icon-button" id="salesTrendNext" aria-label="Next range">&#8250;</button></div>
+      <div class="sales-period-nav"><button type="button" class="sales-icon-button" id="salesTrendPrev" aria-label="Previous range">&#8249;</button><label title="Current periods stop at the latest completed sales day.">Data through<input type="date" id="salesTrendDate" /></label><button type="button" class="sales-icon-button" id="salesTrendNext" aria-label="Next range">&#8250;</button></div>
       <details class="sales-vendor-picker" id="salesVendorPicker"><summary>Vendors <span id="salesVendorCount">All</span></summary><div><input type="search" id="salesVendorSearch" placeholder="Find vendor" autocomplete="off" data-lpignore="true"/><div id="salesVendorOptions"></div></div></details>
       <button type="button" class="sales-secondary-button" id="salesVendorCompare">Compare vendors</button>
       <label>Metric<select id="salesTrendMetric"><option value="sales">Net sales $</option><option value="units">Units</option><option value="profit">Profit</option><option value="margin">Margin %</option></select></label>
-      <div class="sales-segmented" id="salesChartType"><button type="button" class="active" data-chart-type="bar">Bar</button><button type="button" data-chart-type="line">Line</button></div>
+      <div class="sales-segmented" id="salesChartType"><button type="button" data-chart-type="bar">Bar</button><button type="button" class="active" data-chart-type="line">Line</button></div>
       <label class="sales-check"><input type="checkbox" id="salesTrendCompare" checked /> Compare prior year</label>
       <button type="button" class="sales-secondary-button sales-clear-button" id="salesTrendClear">Clear all</button>`;
 
@@ -592,7 +592,7 @@
     selectedDate: "",
     calendarDepartment: "",
     calendarCategory: "",
-    chartType: "bar",
+    chartType: "line",
     itemSort: "sales",
     itemSortDirection: "desc",
     drill: { department: "", category: "", item: "" },
@@ -967,6 +967,26 @@
     return { labels: keys.map((key) => salesTrendBucketLabel(key, bucket)), series: [...(compare ? build(priorRows, true) : []), ...build(rows, false)] };
   }
 
+  function salesTrendWithMovingAverage(rows, priorRows, metric, bucket, label, dates, compare) {
+    const trend = salesTrendSeries(rows, priorRows, metric, bucket, "", label, dates, compare);
+    const current = trend.series.find((item) => !item.prior);
+    if (!current) return trend;
+    const windowSize = bucket === "day" ? 7 : 3;
+    const values = current.values.map((_, index) => {
+      const slice = current.values.slice(Math.max(0, index - windowSize + 1), index + 1).map(Number);
+      return slice.length ? slice.reduce((sum, value) => sum + value, 0) / slice.length : 0;
+    });
+    const average = {
+      name: bucket === "day" ? "7-day moving average" : `3-${bucket} moving average`,
+      color: "#334a78",
+      prior: false,
+      average: true,
+      reference: true,
+      values,
+    };
+    return { ...trend, series: [...trend.series, average] };
+  }
+
   function bindSalesMultiChartHover(canvas, labels, series, xPositions, options = {}) {
     if (!canvas) return;
     let tooltip = document.querySelector("#salesChartTooltip");
@@ -985,11 +1005,12 @@
     const renderKey = (index) => {
       if (!key || index < 0) return;
       const rows = rowsFor(index);
-      const currentRows = rows.filter((item) => !item.prior).sort((a, b) => b.value - a.value);
+      const currentRows = rows.filter((item) => !item.prior && !item.reference).sort((a, b) => b.value - a.value);
+      const referenceRows = rows.filter((item) => item.reference);
       const priorMap = new Map(rows.filter((item) => item.prior).map((item) => [item.name, item.value]));
       const currentTotal = currentRows.reduce((sum, item) => sum + item.value, 0);
       const priorTotal = [...priorMap.values()].reduce((sum, value) => sum + value, 0);
-      key.innerHTML = `<header><div><small>Selected period</small><b>${escapeHtml(labels[index] || "")}</b></div><div class="sales-period-key-total"><small>Current total</small><b>${formatter.format(currentTotal)}</b>${priorMap.size ? `<span>Prior: ${formatter.format(priorTotal)}</span>` : ""}</div></header><div class="sales-period-key-grid">${currentRows.map((item) => `<div class="sales-period-key-row"><span><i style="background:${item.color}"></i>${escapeHtml(item.name)}</span><b>${formatter.format(item.value)}</b><em>${priorMap.has(item.name) ? formatter.format(priorMap.get(item.name)) : "—"}</em></div>`).join("") || `<div class="sales-empty">No sales in this period.</div>`}</div><footer><span>Current</span>${priorMap.size ? `<span><i></i> Prior year (light red)</span>` : ""}<span>${salesUi.trendPinnedIndex == null ? "Click the chart to lock this period" : "Locked · click again to unlock"}</span></footer>`;
+      key.innerHTML = `<header><div><small>Selected period</small><b>${escapeHtml(labels[index] || "")}</b></div><div class="sales-period-key-total"><small>Current total</small><b>${formatter.format(currentTotal)}</b>${priorMap.size ? `<span>Prior: ${formatter.format(priorTotal)}</span>` : ""}</div></header><div class="sales-period-key-grid">${currentRows.map((item) => `<div class="sales-period-key-row"><span><i style="background:${item.color}"></i>${escapeHtml(item.name)}</span><b>${formatter.format(item.value)}</b><em>${priorMap.has(item.name) ? formatter.format(priorMap.get(item.name)) : "—"}</em></div>`).join("") || `<div class="sales-empty">No sales in this period.</div>`}${referenceRows.map((item) => `<div class="sales-period-key-row sales-period-key-row--average"><span><i style="background:${item.color}"></i>${escapeHtml(item.name)}</span><b>${formatter.format(item.value)}</b><em>trend</em></div>`).join("")}</div><footer><span>Current</span>${priorMap.size ? `<span><i></i> Prior year (light red)</span>` : ""}<span>${salesUi.trendPinnedIndex == null ? "Click the chart to lock this period" : "Locked · click again to unlock"}</span></footer>`;
     };
     const paintSelection = (index) => {
       context.putImageData(baseImage, 0, 0);
@@ -1054,16 +1075,21 @@
     const xPositions = labels.map((_, index) => left + slot * index + slot / 2);
     const yFor = (value) => bottom - ((bottom - top) * Number(value || 0)) / max;
     if (options.type === "bar") {
-      const bar = Math.max(2, Math.min(16, slot * .78 / Math.max(series.length, 1)));
-      series.forEach((item, seriesIndex) => item.values.forEach((value, index) => {
-        const x = xPositions[index] - (bar * series.length) / 2 + seriesIndex * bar;
+      const bars = series.filter((item) => !item.average);
+      const bar = Math.max(2, Math.min(18, slot * .72 / Math.max(bars.length, 1)));
+      bars.forEach((item, seriesIndex) => item.values.forEach((value, index) => {
+        const x = xPositions[index] - (bar * bars.length) / 2 + seriesIndex * bar;
         const y = yFor(value);
         ctx.globalAlpha = item.prior ? .72 : .92; ctx.fillStyle = item.prior ? "#efb0b0" : item.color; ctx.fillRect(x, y, Math.max(1, bar - 1), bottom - y);
       }));
       ctx.globalAlpha = 1;
+      series.filter((item) => item.average).forEach((item) => {
+        ctx.strokeStyle = item.color; ctx.lineWidth = 2.6; ctx.setLineDash([]);
+        ctx.beginPath(); item.values.forEach((value, index) => { const x = xPositions[index], y = yFor(value); if (!index) ctx.moveTo(x, y); else ctx.lineTo(x, y); }); ctx.stroke();
+      });
     } else {
       series.forEach((item) => {
-        ctx.strokeStyle = item.prior ? "#dc7f7f" : item.color; ctx.globalAlpha = item.prior ? .78 : 1; ctx.lineWidth = item.prior ? 1.8 : 2.5; ctx.setLineDash(item.prior ? [6, 5] : []);
+        ctx.strokeStyle = item.prior ? "#dc7f7f" : item.color; ctx.globalAlpha = item.prior ? .78 : 1; ctx.lineWidth = item.average ? 3.2 : (item.prior ? 1.8 : 2.5); ctx.setLineDash(item.prior ? [6, 5] : []);
         ctx.beginPath(); item.values.forEach((value, index) => { const x = xPositions[index], y = yFor(value); if (!index) ctx.moveTo(x, y); else ctx.lineTo(x, y); }); ctx.stroke();
       });
       ctx.globalAlpha = 1; ctx.setLineDash([]);
@@ -1644,17 +1670,15 @@
     const requestedDates = salesTrendDates(rangePreset, anchor, latest);
     const historyMonths = Number(document.querySelector("#salesItemHistoryRange")?.value || salesUi.itemHistoryMonths || 24);
     salesUi.itemHistoryMonths = historyMonths;
-    const dates = filters.item ? salesTrendDates(historyMonths, anchor, latest) : requestedDates;
+    const dates = filters.item ? salesTrendDates(historyMonths, latest, latest) : requestedDates;
     const priorDates = { start: salesShiftYear(dates.start, -1), end: salesShiftYear(dates.end, -1) };
     const currentYtdStart = `${dates.end.slice(0, 4)}-01-01`;
     const priorYtdStart = salesShiftYear(currentYtdStart, -1);
     const fetchStart = [dates.start, currentYtdStart, ...(compare ? [priorDates.start, priorYtdStart] : [])].sort()[0];
     const title = document.querySelector("#salesTrendTitle");
     const kicker = document.querySelector("#salesTrendKicker");
-    const dimension = salesChartDimension(filters);
-    const dimensionLabel = { department: "Departments", category: "Categories", vendor: "Vendors", "": "Category" }[dimension];
-    if (kicker) kicker.textContent = filters.item ? `${historyMonths}-month item history` : `${salesTrendRangeLabel(rangePreset)} · ${bucket === "day" ? "daily" : bucket === "week" ? "weekly" : bucket === "quarter" ? "quarterly" : "monthly"} trend`;
-    if (title) title.textContent = filters.item ? `${filters.item} sales history` : filters.category ? `${filters.category} trend` : filters.department ? `${filters.department} category trends` : salesUi.vendorCompare ? "Vendor trends" : "Department trends";
+    if (kicker) kicker.textContent = filters.item ? `${historyMonths}-month item history · latest closed day ${salesDisplayDate(latest)}` : `${salesTrendRangeLabel(rangePreset)} · ${bucket === "day" ? "daily" : bucket === "week" ? "weekly" : bucket === "quarter" ? "quarterly" : "monthly"} trend · data through ${salesDisplayDate(dates.end)}`;
+    if (title) title.textContent = filters.item ? `${filters.item} sales history` : filters.category ? `${filters.category} sales trend` : filters.department ? `${filters.department} sales trend` : salesUi.vendorCompare ? "Selected vendor sales trend" : "Total store sales trend";
     document.body.classList.toggle("sales-item-history-active", !!filters.item);
     const summary = document.querySelector("#salesTrendSummary");
     if (summary) summary.innerHTML = `<span>Loading ${escapeHtml(salesDisplayDate(dates.start))} through ${escapeHtml(salesDisplayDate(dates.end))}…</span>`;
@@ -1667,8 +1691,8 @@
     const ytdPriorRows = compare ? rows.filter((row) => row.date >= priorYtdStart && row.date <= priorDates.end) : [];
     const currentYear = dates.end.slice(0, 4);
     const priorYear = String(Number(currentYear) - 1);
-    const fallbackName = filters.category || filters.department || salesFilterTitle(filters);
-    const trend = salesTrendSeries(currentRows, priorRows, metric, bucket, dimension, fallbackName, dates, compare);
+    const trendLabel = filters.category || filters.department || (filters.vendors.length ? filters.vendors.join(", ") : "Total sales");
+    const trend = salesTrendWithMovingAverage(currentRows, priorRows, metric, bucket, trendLabel, dates, compare);
     const legend = document.querySelector("#salesTrendLegend");
     if (legend) legend.innerHTML = filters.item ? "" : `${trend.series.filter((item) => !item.prior).map((item) => `<span><i style="background:${item.color}"></i>${escapeHtml(item.name)}</span>`).join("")}${compare ? `<span class="sales-prior-key"><i></i>${priorYear} = light red</span>` : ""}`;
     if (!filters.item) salesDrawMultiSeriesChart(document.querySelector("#salesTrendExplorerChart"), trend.labels, trend.series, { type: salesUi.chartType, height: 350, currency: metric !== "units" && metric !== "margin", percent: metric === "margin" });
@@ -1850,8 +1874,8 @@
     salesUi.trendRangePreset = "m6";
     salesUi.trendBucket = "month";
     salesUi.trendPinnedIndex = null;
-    salesUi.chartType = "bar";
-    document.querySelectorAll("[data-chart-type]").forEach((button) => button.classList.toggle("active", button.dataset.chartType === "bar"));
+    salesUi.chartType = "line";
+    document.querySelectorAll("[data-chart-type]").forEach((button) => button.classList.toggle("active", button.dataset.chartType === "line"));
     updateSalesMasterOptions();
     void renderSalesTrend();
   });
