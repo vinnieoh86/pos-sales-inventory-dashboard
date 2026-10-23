@@ -1,5 +1,5 @@
 (function () {
-  const VERSION = "20261023-sales-studio-v25";
+  const VERSION = "20261023-sales-studio-v26";
   const DAY_MS = 86400000;
   const GKPOS_DEPARTMENT_ORDER = ["GENERAL", "HAIR", "BEAUTY PRODUCTS", "COSMETIC", "ELECTRIC", "JEWELRY", "GROCERY"];
   const GKPOS_CATEGORY_DEPARTMENTS = new Map(Object.entries({
@@ -1498,7 +1498,7 @@
   }
 
   async function salesFetchDetailRows(start, end, filters) {
-    if (!filters.item && !filters.category && !(filters.vendors || []).length) return [];
+    if (!filters.item && !filters.category && !filters.department && !(filters.vendors || []).length) return [];
     const query = {
       select: "*",
       and: `(sales_date.gte.${start},sales_date.lte.${end})`,
@@ -1737,6 +1737,12 @@
       vendors: [...salesUi.vendors],
       item: "",
     } : (selectedFilters || salesMasterFilters());
+    let effectiveSourceRows = sourceRows;
+    const hasScopedSelection = Boolean(filters.department || filters.category || filters.item || (filters.vendors || []).length);
+    if (!calendarMode && hasScopedSelection && (!Array.isArray(effectiveSourceRows) || !effectiveSourceRows.length)) {
+      body.innerHTML = `<tr><td colspan="10" class="sales-empty">Loading matching products…</td></tr>`;
+      effectiveSourceRows = await salesFetchDetailRows(start, end, filters);
+    }
     const range = document.querySelector("#salesItemsRange");
     if (range) range.textContent = calendarMode ? `${salesDisplayDate(start)} only` : (start && end ? `${salesDisplayDate(start)} through ${salesDisplayDate(end)}` : "Choose a date range.");
     const searchQuery = cleanCell(document.querySelector("#salesItemSearch")?.value).toLowerCase();
@@ -1748,9 +1754,9 @@
     const sortSelect = document.querySelector("#salesItemSort");
     const sort = exactHistory ? (salesUi.itemSort === "product" ? "date" : salesUi.itemSort) : (salesUi.itemSort || sortSelect?.value || "sales");
     if (sortSelect && sortSelect.value !== sort && [...sortSelect.options].some((option) => option.value === sort)) sortSelect.value = sort;
-    const matchedSource = (sourceRows || salesRangeRows(start, end).filter((row) => salesRowsMatchFilters(row, filters)))
+    const matchedSource = ((Array.isArray(effectiveSourceRows) && effectiveSourceRows.length) ? effectiveSourceRows : salesRangeRows(start, end).filter((row) => salesRowsMatchFilters(row, filters)))
       .filter((row) => !searchQuery || `${cleanCell(row.product)} ${cleanCell(row.code)}`.toLowerCase().includes(searchQuery));
-    if (!calendarMode && Array.isArray(sourceRows) && !sourceRows.length && !filters.category && !filters.vendors.length && !filters.item) {
+    if (!calendarMode && Array.isArray(effectiveSourceRows) && !effectiveSourceRows.length && !filters.department && !filters.category && !filters.vendors.length && !filters.item) {
       const totalTarget = document.querySelector("#salesItemsTotals");
       if (totalTarget) totalTarget.innerHTML = `<span><small>Item details</small><b>Select a category</b><em>Use the department/category panel to load products without slowing the dashboard.</em></span>`;
       body.innerHTML = `<tr><td colspan="10" class="sales-empty">Choose a category on the right to load its itemized sales.</td></tr>`;
