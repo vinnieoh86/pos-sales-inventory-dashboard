@@ -1,5 +1,5 @@
 (function () {
-  const VERSION = "20261024-sales-studio-v30";
+  const VERSION = "20261024-sales-studio-v31";
   const DAY_MS = 86400000;
   const GKPOS_DEPARTMENT_ORDER = ["GENERAL", "HAIR", "BEAUTY PRODUCTS", "COSMETIC", "ELECTRIC", "JEWELRY", "GROCERY"];
   const GKPOS_CATEGORY_DEPARTMENTS = new Map(Object.entries({
@@ -262,6 +262,12 @@
       }
       summary.append(kpis, daySelection);
       dayPage.append(items);
+    } else if (mode === "overview") {
+      const controls = overview.querySelector(".sales-master-controls");
+      if (controls) controls.insertAdjacentElement("afterend", kpis);
+      else overview.prepend(kpis);
+      dayPage.prepend(daySelection);
+      overview.append(items);
     } else {
       dock.insertAdjacentElement("afterend", kpis);
       dayPage.prepend(daySelection);
@@ -1040,6 +1046,30 @@
     return { labels: keys.map((key) => salesTrendBucketLabel(key, bucket)), series: [...(compare ? build(priorRows, true) : []), ...build(rows, false)] };
   }
 
+  function salesDepartmentComparisonSeries(rows, priorRows, metric, compare) {
+    const currentGroups = new Map(salesAggregateGroup(rows, "department").map((row) => [row.name, row]));
+    const priorGroups = new Map(salesAggregateGroup(priorRows, "department").map((row) => [row.name, row]));
+    const labels = [...new Set([...currentGroups.keys(), ...priorGroups.keys()])]
+      .filter((name) => name && name !== "Unassigned")
+      .sort((a, b) => {
+        const ai = GKPOS_DEPARTMENT_ORDER.indexOf(a.toUpperCase());
+        const bi = GKPOS_DEPARTMENT_ORDER.indexOf(b.toUpperCase());
+        return (ai < 0 ? 999 : ai) - (bi < 0 ? 999 : bi) || a.localeCompare(b);
+      });
+    const valueFor = (map, name) => {
+      const row = map.get(name) || { sales: 0, profit: 0, units: 0 };
+      return metric === "margin" ? (row.sales ? (row.profit / row.sales) * 100 : 0) : Number(row[metric] || 0);
+    };
+    const base = { name: "Department total", color: "#16835b" };
+    return {
+      labels,
+      series: [
+        ...(compare ? [{ ...base, prior: true, values: labels.map((name) => valueFor(priorGroups, name)) }] : []),
+        { ...base, prior: false, values: labels.map((name) => valueFor(currentGroups, name)) },
+      ],
+    };
+  }
+
   function bindSalesMultiChartHover(canvas, labels, series, xPositions, options = {}, hitAreas = []) {
     if (!canvas) return;
     let tooltip = document.querySelector("#salesChartTooltip");
@@ -1125,7 +1155,7 @@
     const xPositions = labels.map((_, index) => left + slot * index + slot / 2);
     const yFor = (value) => bottom - ((bottom - top) * Number(value || 0)) / max;
     const hitAreas = [];
-    if (options.type === "bar") {
+    if (options.type === "bar" || options.type === "combo") {
       const logicalNames = [...new Set(series.map((item) => item.name))];
       const bar = Math.max(3, Math.min(24, slot * .82 / Math.max(logicalNames.length, 1)));
       logicalNames.forEach((name, logicalIndex) => {
@@ -1145,7 +1175,7 @@
             ctx.fillStyle = color;
             ctx.fillRect(baseX, currentY, fullWidth, bottom - currentY);
           }
-          if (priorValue) {
+          if (priorValue && options.type === "bar") {
             ctx.globalAlpha = .96;
             ctx.fillStyle = salesLightenHex(color);
             ctx.fillRect(baseX + (fullWidth - overlayWidth) / 2, priorY, overlayWidth, bottom - priorY);
@@ -1157,6 +1187,27 @@
         });
       });
       ctx.globalAlpha = 1;
+      if (options.type === "combo") {
+        const priorSeries = series.find((item) => item.prior);
+        if (priorSeries) {
+          ctx.strokeStyle = "#d66b6b";
+          ctx.fillStyle = "#fff";
+          ctx.lineWidth = 2.5;
+          ctx.setLineDash([]);
+          ctx.beginPath();
+          priorSeries.values.forEach((value, index) => {
+            const x = xPositions[index];
+            const y = yFor(value);
+            if (!index) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+          });
+          ctx.stroke();
+          priorSeries.values.forEach((value, index) => {
+            if (!Number(value || 0)) return;
+            const x = xPositions[index], y = yFor(value);
+            ctx.beginPath(); ctx.arc(x, y, 3.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+          });
+        }
+      }
     } else {
       series.forEach((item, seriesIndex) => {
         ctx.strokeStyle = item.color; ctx.globalAlpha = item.prior ? .38 : 1; ctx.lineWidth = item.prior ? 1.6 : 2.5; ctx.setLineDash(item.prior ? [6, 5] : []);
@@ -1772,20 +1823,20 @@
       const change = salesDelta(currentValue, priorValue);
       return `<div class="sales-compare-row"><b>${label}</b><span><small>${priorYear}</small><strong>${formatter.format(priorValue)}</strong></span><span><small>${currentYear}</small><strong>${formatter.format(currentValue)}</strong></span><em class="${change != null && change < 0 ? "down" : "up"}">${salesDeltaText(change)}</em></div>`;
     };
-    target.innerHTML = `<section class="sales-compare-card">
+    target.innerHTML = `<section class="sales-summary-panel"><div class="sales-compare-card">
       <header><div><small>${periodName}</small><b>${escapeHtml(range)}</b></div><span>Prior</span><span>Current</span><span>Change</span></header>
       ${row("Net sales", prior.sales, current.sales)}
       ${row("Units", prior.units, current.units, number)}
       ${row("Total cost", prior.cost, current.cost)}
       ${row("Gross profit", prior.profit, current.profit)}
       ${row("Margin", priorMargin, margin, { format: (value) => `${Number(value || 0).toFixed(1)}%` })}
-    </section>
-    <section class="sales-current-facts">
+    </div>
+    <div class="sales-current-facts">
       <article><small>Gross sales</small><b>${hasAdjustments ? currency.format(adjustments.gross) : "—"}</b></article>
       <article><small>Discounts</small><b>${hasAdjustments ? currency.format(adjustments.discount) : "—"}</b></article>
       <article><small>Returns</small><b>${hasAdjustments ? currency.format(adjustments.returns) : "—"}</b></article>
       <article><small>YTD through ${salesDisplayDate(dates.end)}</small><b>${currency.format(ytd.sales)}</b><span class="${salesDelta(ytd.sales, priorYtd.sales) != null && salesDelta(ytd.sales, priorYtd.sales) < 0 ? "down" : "up"}">${salesDeltaText(salesDelta(ytd.sales, priorYtd.sales))}</span></article>
-    </section>`;
+    </div></section>`;
   }
 
   async function renderSalesTrend() {
@@ -1809,9 +1860,8 @@
     const title = document.querySelector("#salesTrendTitle");
     const kicker = document.querySelector("#salesTrendKicker");
     const dimension = salesChartDimension(filters);
-    const dimensionLabel = { department: "Departments", category: "Categories", vendor: "Vendors", "": "Category" }[dimension];
     if (kicker) kicker.textContent = filters.item ? `${historyMonths}-month item history` : `${bucket === "day" ? "Daily" : bucket === "week" ? "Weekly" : "Monthly"} view · ${salesDisplayDate(dates.start)}–${salesDisplayDate(dates.end)}`;
-    if (title) title.textContent = filters.item ? `${filters.item} sales history` : filters.category ? `${filters.category} trend` : filters.department ? `${filters.department} category trends` : salesUi.vendorCompare ? "Vendor trends" : "Department trends";
+    if (title) title.textContent = filters.item ? `${filters.item} sales history` : filters.category ? `${filters.category} sales trend` : filters.department ? `${filters.department} sales trend` : salesUi.vendorCompare ? "Vendor trends" : "Department totals";
     document.body.classList.toggle("sales-item-history-active", !!filters.item);
     const summary = document.querySelector("#salesTrendSummary");
     if (summary) summary.innerHTML = `<span>Loading ${escapeHtml(salesDisplayDate(dates.start))} through ${escapeHtml(salesDisplayDate(dates.end))}…</span>`;
@@ -1825,10 +1875,17 @@
     const currentYear = dates.end.slice(0, 4);
     const priorYear = String(Number(currentYear) - 1);
     const fallbackName = filters.category || filters.department || salesFilterTitle(filters);
-    const trend = salesTrendSeries(currentRows, priorRows, metric, bucket, dimension, fallbackName, dates, compare);
+    const snapshotDepartments = !filters.department && !filters.category && !filters.item && !filters.vendors.length && !salesUi.vendorCompare;
+    const trend = snapshotDepartments
+      ? salesDepartmentComparisonSeries(currentRows, priorRows, metric, compare)
+      : salesTrendSeries(currentRows, priorRows, metric, bucket, dimension, fallbackName, dates, compare);
+    const currentSeriesCount = trend.series.filter((item) => !item.prior).length;
+    const adaptiveChartType = salesUi.chartType === "line" ? "line" : (snapshotDepartments || currentSeriesCount > 1 ? "bar" : "combo");
     const legend = document.querySelector("#salesTrendLegend");
-    if (legend) legend.innerHTML = filters.item ? "" : `${trend.series.filter((item) => !item.prior).map((item) => `<span><i style="background:${item.color}"></i>${escapeHtml(item.name)}</span>`).join("")}${compare ? `<span class="sales-prior-key">Light overlay ${priorYear} · dark base ${currentYear}</span>` : ""}`;
-    if (!filters.item) salesDrawMultiSeriesChart(document.querySelector("#salesTrendExplorerChart"), trend.labels, trend.series, { type: salesUi.chartType, height: 350, currency: metric !== "units" && metric !== "margin", percent: metric === "margin", priorLabel: priorYear, currentLabel: currentYear });
+    if (legend) legend.innerHTML = filters.item ? "" : snapshotDepartments
+      ? `<span><i style="background:#16835b"></i>${currentYear} department totals</span>${compare ? `<span class="sales-prior-key">Light overlay = ${priorYear}</span>` : ""}`
+      : `<span><i style="background:#16835b"></i>${currentYear} ${adaptiveChartType === "combo" ? "bars" : "sales"}</span>${compare ? `<span class="sales-prior-key">${adaptiveChartType === "combo" ? "Red line" : "Light overlay"} = ${priorYear}</span>` : ""}`;
+    if (!filters.item) salesDrawMultiSeriesChart(document.querySelector("#salesTrendExplorerChart"), trend.labels, trend.series, { type: adaptiveChartType, height: 350, currency: metric !== "units" && metric !== "margin", percent: metric === "margin", priorLabel: priorYear, currentLabel: currentYear });
     const currentTotals = salesTotals(currentRows);
     const priorTotals = salesTotals(priorRows);
     const currentTotal = metric === "margin" ? (currentTotals.sales ? (currentTotals.profit / currentTotals.sales) * 100 : 0) : salesMetricValue(currentTotals, metric);
