@@ -1,5 +1,5 @@
 (function () {
-  const VERSION = "20261024-sales-studio-v27";
+  const VERSION = "20261024-sales-studio-v28";
   const DAY_MS = 86400000;
   const GKPOS_DEPARTMENT_ORDER = ["GENERAL", "HAIR", "BEAUTY PRODUCTS", "COSMETIC", "ELECTRIC", "JEWELRY", "GROCERY"];
   const GKPOS_CATEGORY_DEPARTMENTS = new Map(Object.entries({
@@ -583,7 +583,7 @@
   });
 
   const salesUi = {
-    mode: "calendar",
+    mode: "",
     calendarMonth: "",
     selectedDate: "",
     calendarDepartment: "",
@@ -600,6 +600,8 @@
     itemHistoryMonths: 24,
     trendRequest: 0,
     rollups: new Map(),
+    itemDetails: new Map(),
+    itemRequest: 0,
     healthLoadedAt: 0,
     healthPromise: null,
   };
@@ -991,24 +993,64 @@
     return { labels: keys.map((key) => salesTrendBucketLabel(key, bucket)), series: [...(compare ? build(priorRows, true) : []), ...build(rows, false)] };
   }
 
-  function bindSalesMultiChartHover(canvas, labels, series, xPositions, options = {}) {
+  function bindSalesMultiChartHover(canvas, labels, series, xPositions, options = {}, hitAreas = []) {
     if (!canvas) return;
     let tooltip = document.querySelector("#salesChartTooltip");
     if (!tooltip) { tooltip = document.createElement("div"); tooltip.id = "salesChartTooltip"; tooltip.className = "sales-chart-tooltip"; tooltip.hidden = true; document.body.append(tooltip); }
-    canvas.onmousemove = (event) => {
-      if (!xPositions.length) { tooltip.hidden = true; return; }
+    let marker = document.querySelector("#salesChartMarker");
+    if (!marker) { marker = document.createElement("div"); marker.id = "salesChartMarker"; marker.className = "sales-chart-marker"; marker.hidden = true; document.body.append(marker); }
+    let hoverFrame = 0;
+    const formatter = options.percent ? { format: (value) => `${Number(value || 0).toFixed(1)}%` } : (options.currency === false ? number : currency);
+    const hitAt = (event) => {
       const rect = canvas.getBoundingClientRect();
-      const pointerX = event.clientX - rect.left;
-      let index = 0;
-      xPositions.forEach((x, candidate) => { if (Math.abs(x - pointerX) < Math.abs(xPositions[index] - pointerX)) index = candidate; });
-      const formatter = options.percent ? { format: (value) => `${Number(value || 0).toFixed(1)}%` } : (options.currency === false ? number : currency);
-      const rows = series.map((item) => ({ ...item, value: Number(item.values[index] || 0) })).filter((item) => item.value !== 0).sort((a, b) => b.value - a.value);
-      tooltip.innerHTML = `<strong>${escapeHtml(labels[index] || "")}</strong>${rows.slice(0, 12).map((item) => `<br><span style="display:inline-block;width:.55rem;height:.55rem;margin-right:.35rem;border-radius:50%;background:${item.color};opacity:${item.prior ? .45 : 1}"></span>${escapeHtml(item.name)}${item.prior ? " (prior)" : ""}: <b>${formatter.format(item.value)}</b>`).join("") || "<br>No sales"}`;
-      tooltip.hidden = false;
-      tooltip.style.left = `${Math.min(event.clientX + 14, window.innerWidth - 310)}px`;
-      tooltip.style.top = `${Math.max(8, event.clientY - 130)}px`;
+      const x = event.clientX - rect.left;
+      const y = event.clientY - rect.top;
+      return hitAreas.find((hit) => hit.kind === "bar" && x >= hit.x - 3 && x <= hit.x + hit.width + 3 && y >= hit.y - 3 && y <= hit.y + hit.height + 3)
+        || hitAreas.reduce((best, hit) => {
+          if (hit.kind !== "point") return best;
+          const distance = Math.hypot(x - hit.x, y - hit.y);
+          return distance <= 13 && (!best || distance < best.distance) ? { ...hit, distance } : best;
+        }, null);
     };
-    canvas.onmouseleave = () => { tooltip.hidden = true; };
+    const showHit = (hit, locked = false) => {
+      if (!hit) return;
+      const rect = canvas.getBoundingClientRect();
+      const markerWidth = hit.kind === "bar" ? Math.max(4, hit.width) : 14;
+      const markerHeight = hit.kind === "bar" ? Math.max(5, hit.height) : 14;
+      marker.hidden = false;
+      marker.className = `sales-chart-marker ${hit.kind}${locked ? " locked" : ""}`;
+      marker.style.left = `${rect.left + hit.x - (hit.kind === "point" ? 7 : 0)}px`;
+      marker.style.top = `${rect.top + hit.y - (hit.kind === "point" ? 7 : 0)}px`;
+      marker.style.width = `${markerWidth}px`;
+      marker.style.height = `${markerHeight}px`;
+      tooltip.innerHTML = `<strong>${escapeHtml(hit.label)}</strong><br><span style="display:inline-block;width:.58rem;height:.58rem;margin-right:.35rem;border-radius:50%;background:${hit.series.color};opacity:${hit.series.prior ? .5 : 1}"></span>${escapeHtml(hit.series.name)}${hit.series.prior ? " (prior year)" : ""}: <b>${formatter.format(hit.value)}</b>${locked ? `<br><em>Locked · click another bar to move</em>` : `<br><em>Click to lock this bar</em>`}`;
+      tooltip.hidden = false;
+      tooltip.classList.toggle("locked", locked);
+      tooltip.style.left = `${Math.min(rect.left + hit.x + markerWidth + 12, window.innerWidth - 300)}px`;
+      tooltip.style.top = `${Math.max(8, rect.top + hit.y - 78)}px`;
+    };
+    canvas.onmousemove = (event) => {
+      if (canvas._salesLockedHit) { showHit(canvas._salesLockedHit, true); return; }
+      cancelAnimationFrame(hoverFrame);
+      hoverFrame = requestAnimationFrame(() => {
+        const hit = hitAt(event);
+        if (hit) { canvas.style.cursor = "pointer"; showHit(hit, false); }
+        else { canvas.style.cursor = "default"; tooltip.hidden = true; marker.hidden = true; }
+      });
+    };
+    canvas.onclick = (event) => {
+      const hit = hitAt(event);
+      if (!hit) return;
+      const same = canvas._salesLockedHit?.key === hit.key;
+      canvas._salesLockedHit = same ? null : hit;
+      if (same) { tooltip.hidden = true; marker.hidden = true; }
+      else showHit(hit, true);
+    };
+    canvas.onmouseleave = () => {
+      cancelAnimationFrame(hoverFrame);
+      if (canvas._salesLockedHit) showHit(canvas._salesLockedHit, true);
+      else { tooltip.hidden = true; marker.hidden = true; }
+    };
   }
 
   function salesDrawMultiSeriesChart(canvas, labels, series, options = {}) {
@@ -1030,18 +1072,20 @@
     const slot = (right - left) / Math.max(count, 1);
     const xPositions = labels.map((_, index) => left + slot * index + slot / 2);
     const yFor = (value) => bottom - ((bottom - top) * Number(value || 0)) / max;
+    const hitAreas = [];
     if (options.type === "bar") {
       const bar = Math.max(2, Math.min(16, slot * .78 / Math.max(series.length, 1)));
       series.forEach((item, seriesIndex) => item.values.forEach((value, index) => {
         const x = xPositions[index] - (bar * series.length) / 2 + seriesIndex * bar;
         const y = yFor(value);
         ctx.globalAlpha = item.prior ? .35 : .92; ctx.fillStyle = item.color; ctx.fillRect(x, y, Math.max(1, bar - 1), bottom - y);
+        if (Number(value || 0) !== 0) hitAreas.push({ kind: "bar", x, y, width: Math.max(1, bar - 1), height: bottom - y, label: labels[index], value: Number(value || 0), series: item, key: `${index}|${seriesIndex}` });
       }));
       ctx.globalAlpha = 1;
     } else {
-      series.forEach((item) => {
+      series.forEach((item, seriesIndex) => {
         ctx.strokeStyle = item.color; ctx.globalAlpha = item.prior ? .38 : 1; ctx.lineWidth = item.prior ? 1.6 : 2.5; ctx.setLineDash(item.prior ? [6, 5] : []);
-        ctx.beginPath(); item.values.forEach((value, index) => { const x = xPositions[index], y = yFor(value); if (!index) ctx.moveTo(x, y); else ctx.lineTo(x, y); }); ctx.stroke();
+        ctx.beginPath(); item.values.forEach((value, index) => { const x = xPositions[index], y = yFor(value); if (!index) ctx.moveTo(x, y); else ctx.lineTo(x, y); if (Number(value || 0) !== 0) hitAreas.push({ kind: "point", x, y, label: labels[index], value: Number(value || 0), series: item, key: `${index}|${seriesIndex}` }); }); ctx.stroke();
       });
       ctx.globalAlpha = 1; ctx.setLineDash([]);
     }
@@ -1049,7 +1093,8 @@
     const step = Math.max(1, Math.ceil(labels.length / 12));
     labels.forEach((label, index) => { if (index % step === 0 || index === labels.length - 1) ctx.fillText(label, xPositions[index], height - 12); });
     ctx.textAlign = "left";
-    bindSalesMultiChartHover(canvas, labels, series, xPositions, options);
+    if (canvas._salesLockedHit && !hitAreas.some((hit) => hit.key === canvas._salesLockedHit.key)) canvas._salesLockedHit = null;
+    bindSalesMultiChartHover(canvas, labels, series, xPositions, options, hitAreas);
   }
 
   function compactCurrency(value) {
@@ -1144,11 +1189,12 @@
     const total = groups.reduce((sum, row) => sum + Number(row.sales || 0), 0);
     const max = Math.max(...groups.map((row) => Number(row.sales || 0)), 1);
     let running = 0;
-    const stops = groups.slice(0, 12).map((row, index) => {
-      const start = running;
-      running += total ? (Number(row.sales || 0) / total) * 100 : 0;
-      return `${SALES_TREND_COLORS[index % SALES_TREND_COLORS.length]} ${start.toFixed(2)}% ${running.toFixed(2)}%`;
-    });
+    const donutSegments = groups.slice(0, 12).map((row, index) => {
+      const share = total ? (Number(row.sales || 0) / total) * 100 : 0;
+      const offset = -running;
+      running += share;
+      return `<circle class="sales-donut-segment" cx="21" cy="21" r="15.9155" pathLength="100" fill="none" stroke="${SALES_TREND_COLORS[index % SALES_TREND_COLORS.length]}" stroke-dasharray="${share.toFixed(3)} ${(100 - share).toFixed(3)}" stroke-dashoffset="${offset.toFixed(3)}" data-open-department="${escapeHtml(row.name)}" data-donut-name="${escapeHtml(row.name)}" data-donut-sales="${Number(row.sales || 0)}" data-donut-units="${Number(row.units || 0)}" data-donut-share="${share.toFixed(1)}"><title>${escapeHtml(row.name)} · ${currency.format(row.sales)} · ${number.format(row.units)} units</title></circle>`;
+    }).join("");
     const actionAttribute = level === "department" ? "data-open-department" : level === "category" ? "data-open-category" : "data-open-item";
     const list = groups.map((row, index) => {
       const share = total ? (Number(row.sales || 0) / total) * 100 : 0;
@@ -1159,9 +1205,26 @@
       </button>`;
     }).join("");
     target.innerHTML = `<div class="sales-mix-browser ${level === "department" ? "has-donut" : "ranked-only"}">
-      ${level === "department" ? `<div class="sales-donut-wrap"><div class="sales-donut" style="background:conic-gradient(${stops.join(",")})"><span><b>${currency.format(total)}</b><small>Total sales</small></span></div><p>Click a department to open its categories.</p></div>` : ""}
+      ${level === "department" ? `<div class="sales-donut-wrap"><div class="sales-donut"><svg viewBox="0 0 42 42" role="img" aria-label="Department sales mix">${donutSegments}</svg><span><b>${currency.format(total)}</b><small>Total sales</small></span></div><p>Hover for totals · click a slice to open categories.</p></div>` : ""}
       <div class="sales-mix-list">${list}</div>
     </div>`;
+    target.querySelectorAll(".sales-donut-segment").forEach((segment) => {
+      segment.addEventListener("pointerenter", (event) => {
+        let tooltip = document.querySelector("#salesChartTooltip");
+        if (!tooltip) { tooltip = document.createElement("div"); tooltip.id = "salesChartTooltip"; tooltip.className = "sales-chart-tooltip"; document.body.append(tooltip); }
+        tooltip.innerHTML = `<strong>${escapeHtml(segment.dataset.donutName)}</strong><br><b>${currency.format(Number(segment.dataset.donutSales || 0))}</b> · ${number.format(Number(segment.dataset.donutUnits || 0))} units<br><em>${segment.dataset.donutShare}% of department sales · click to open</em>`;
+        tooltip.hidden = false;
+        tooltip.style.left = `${Math.min(event.clientX + 14, window.innerWidth - 300)}px`;
+        tooltip.style.top = `${Math.max(8, event.clientY - 72)}px`;
+      });
+      segment.addEventListener("pointermove", (event) => {
+        const tooltip = document.querySelector("#salesChartTooltip");
+        if (!tooltip) return;
+        tooltip.style.left = `${Math.min(event.clientX + 14, window.innerWidth - 300)}px`;
+        tooltip.style.top = `${Math.max(8, event.clientY - 72)}px`;
+      });
+      segment.addEventListener("pointerleave", () => { const tooltip = document.querySelector("#salesChartTooltip"); if (tooltip && !tooltip.classList.contains("locked")) tooltip.hidden = true; });
+    });
   }
 
   async function renderSalesOverview() {
@@ -1449,6 +1512,34 @@
     return rawRows.map(hydrateSalesFromSupabase).map(salesHierarchyRow).filter((row) => salesRowsMatchFilters(row, filters));
   }
 
+  async function salesFetchPeriodItemRows(start, end, filters) {
+    const key = `${start}|${end}|${filters.department}|${filters.category}|${(filters.vendors || []).join(",")}`;
+    const cached = salesUi.itemDetails.get(key);
+    if (cached && Date.now() - cached.at < 300000) return cached.promise;
+    const promise = (async () => {
+      const query = {
+        select: "sales_date,code,product,vendor,category,department,qty,sales,cost_sold,profit",
+        and: `(sales_date.gte.${start},sales_date.lte.${end})`,
+        code: "not.like.__ROLLUP__*",
+        order: "sales_date.asc",
+      };
+      if (filters.department) query.department = `eq.${filters.department}`;
+      if (filters.category) query.category = `eq.${filters.category}`;
+      if ((filters.vendors || []).length === 1) query.vendor = `eq.${filters.vendors[0]}`;
+      const fetchQuery = (requestQuery) => directSelectRows("daily_sales", requestQuery).catch(() => []);
+      const rawRows = (filters.vendors || []).length > 1
+        ? (await Promise.all(filters.vendors.map((vendor) => fetchQuery({ ...query, vendor: `eq.${vendor}` })))).flat()
+        : await fetchQuery(query);
+      return rawRows.map(hydrateSalesFromSupabase).map(salesHierarchyRow).filter((row) => salesRowsMatchFilters(row, filters));
+    })().catch((error) => {
+      salesUi.itemDetails.delete(key);
+      console.warn("Period item details failed", error);
+      return [];
+    });
+    salesUi.itemDetails.set(key, { at: Date.now(), promise });
+    return promise;
+  }
+
   function salesTrendOptions(group) {
     if (!group) return [];
     const field = group === "item" ? "product" : group;
@@ -1659,12 +1750,13 @@
     const detailRows = filters.item ? currentRows : await salesFetchDetailRows(dates.start, dates.end, filters);
     if (request !== salesUi.trendRequest) return;
     renderSalesDepartmentTree(detailRows.length ? detailRows : currentRows);
-    await renderSalesItems(dates, filters, detailRows);
+    void renderSalesItems(dates, filters, detailRows);
   }
 
   async function renderSalesItems(selectedDates = null, selectedFilters = null, sourceRows = null) {
     const body = document.querySelector("#salesItemRows");
     if (!body) return;
+    const request = ++salesUi.itemRequest;
     const latest = state._remoteSalesAvailableEnd || state.dates.at(-1) || "";
     const anchor = document.querySelector("#salesTrendDate")?.value || latest;
     const calendarMode = salesUi.mode === "day";
@@ -1690,14 +1782,18 @@
     const sortSelect = document.querySelector("#salesItemSort");
     const sort = exactHistory ? (salesUi.itemSort === "product" ? "date" : salesUi.itemSort) : (salesUi.itemSort || sortSelect?.value || "sales");
     if (sortSelect && sortSelect.value !== sort && [...sortSelect.options].some((option) => option.value === sort)) sortSelect.value = sort;
-    const matchedSource = (sourceRows || salesRangeRows(start, end).filter((row) => salesRowsMatchFilters(row, filters)))
-      .filter((row) => !searchQuery || `${cleanCell(row.product)} ${cleanCell(row.code)}`.toLowerCase().includes(searchQuery));
-    if (!calendarMode && Array.isArray(sourceRows) && !sourceRows.length && !filters.category && !filters.vendors.length && !filters.item) {
+    const localCoverageComplete = state._remoteSalesLoadedStart && state._remoteSalesLoadedEnd && start >= state._remoteSalesLoadedStart && end <= state._remoteSalesLoadedEnd;
+    let baseSource = Array.isArray(sourceRows) && sourceRows.length
+      ? sourceRows
+      : (localCoverageComplete ? salesRangeRows(start, end).filter((row) => salesRowsMatchFilters(row, filters)) : []);
+    if (!baseSource.length && start && end) {
       const totalTarget = document.querySelector("#salesItemsTotals");
-      if (totalTarget) totalTarget.innerHTML = `<span><small>Item details</small><b>Select a category</b><em>Use the department/category panel to load products without slowing the dashboard.</em></span>`;
-      body.innerHTML = `<tr><td colspan="10" class="sales-empty">Choose a category on the right to load its itemized sales.</td></tr>`;
-      return;
+      if (totalTarget) totalTarget.innerHTML = `<span><small>Products</small><b>Loading…</b><em>Building the sold-item list for this period.</em></span>`;
+      body.innerHTML = `<tr><td colspan="10" class="sales-empty">Loading products sold from ${salesDisplayDate(start)} through ${salesDisplayDate(end)}…</td></tr>`;
+      baseSource = await salesFetchPeriodItemRows(start, end, filters);
+      if (request !== salesUi.itemRequest) return;
     }
+    const matchedSource = baseSource.filter((row) => !searchQuery || `${cleanCell(row.product)} ${cleanCell(row.code)}`.toLowerCase().includes(searchQuery));
     const map = new Map();
     matchedSource.forEach((row) => {
       const timestamp = cleanCell(row.timestamp || row.saleTime || row.time);
@@ -1737,6 +1833,7 @@
 
   function setSalesMode(mode) {
     if (mode === "items") mode = "overview";
+    const changed = salesUi.mode !== mode;
     salesUi.mode = mode;
     document.body.classList.toggle("sales-day-open", mode === "day");
     const dayNav = document.querySelector("#salesDayNav");
@@ -1749,10 +1846,10 @@
     const items = document.querySelector(".sales-items-inline");
     const destination = mode === "day" ? document.querySelector("#salesDayPage") : document.querySelector('[data-sales-mode-view="overview"]');
     if (items && destination) destination.append(items);
-    if (mode === "overview") void renderSalesOverview();
-    if (mode === "calendar") void renderSalesCalendar();
-    if (mode === "day") void renderSalesDayPage();
-    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+    if (changed && mode === "overview") void renderSalesOverview();
+    if (changed && mode === "calendar") void renderSalesCalendar();
+    if (changed && mode === "day") void renderSalesDayPage();
+    if (changed) window.scrollTo({ top: 0, left: 0, behavior: "auto" });
   }
 
   function renderSalesWorkspace() {
@@ -1890,7 +1987,11 @@
     if (button) button.textContent = card?.classList.contains("expanded") ? "Close" : "Expand";
     void renderSalesTrend();
   });
-  document.querySelector("#salesItemSearch")?.addEventListener("input", renderSalesItems);
+  let salesItemSearchTimer = 0;
+  document.querySelector("#salesItemSearch")?.addEventListener("input", () => {
+    window.clearTimeout(salesItemSearchTimer);
+    salesItemSearchTimer = window.setTimeout(() => { void renderSalesItems(); }, 180);
+  });
   document.querySelector("#salesItemSearch")?.addEventListener("change", (event) => {
     if (salesUi.mode !== "overview") return;
     const value = cleanCell(event.target.value);
@@ -1952,7 +2053,7 @@
   document.querySelector("#salesWorkspace")?.addEventListener("click", (event) => {
     const trend = event.target.closest("[data-open-trend], [data-open-category]");
     if (trend) {
-      setSalesMode("overview");
+      if (salesUi.mode !== "overview") setSalesMode("overview");
       const categoryName = trend.dataset.openTrend || trend.dataset.openCategory;
       const mapped = GKPOS_CATEGORY_DEPARTMENTS.get(cleanCell(categoryName).toUpperCase());
       salesUi.drill.department = mapped || salesUi.drill.department;
@@ -1962,13 +2063,13 @@
     }
     const department = event.target.closest("[data-open-department]");
     if (department) {
-      setSalesMode("overview");
+      if (salesUi.mode !== "overview") setSalesMode("overview");
       salesUi.drill = { department: department.dataset.openDepartment, category: "", item: "" };
       updateSalesMasterOptions(); void renderSalesTrend();
     }
     const item = event.target.closest("[data-open-item]");
     if (item) {
-      setSalesMode("overview");
+      if (salesUi.mode !== "overview") setSalesMode("overview");
       const catalogItem = salesMasterCatalog().find((row) => row.product === item.dataset.openItem);
       if (catalogItem) salesUi.drill = { department: catalogItem.department, category: catalogItem.category, item: catalogItem.product };
       else salesUi.drill.item = item.dataset.openItem;
