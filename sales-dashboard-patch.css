@@ -1334,3 +1334,66 @@ body:has(.tab-view[data-tab-view="dashboard"].active) .sales-master-controls {
   .sales-day-summary-grid .sales-calendar-mix { grid-template-columns: 1fr; }
 }
 
+/* v31: one-bubble KPI ledger and presentation-style content separation */
+.sales-summary-panel {
+  display: grid;
+  grid-template-columns: minmax(34rem,1.55fr) minmax(22rem,.85fr);
+  overflow: hidden;
+  border: 1px solid #d8e4df;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 5px 15px rgba(25,55,44,.04);
+}
+.sales-summary-panel .sales-compare-card {
+  display: grid;
+  grid-template-columns: 1fr;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+.sales-summary-panel .sales-compare-row {
+  display: grid;
+  grid-template-columns: minmax(7rem,1fr) minmax(6rem,.8fr) minmax(6rem,.8fr) minmax(4rem,.5fr);
+  align-items: center;
+  gap: .4rem;
+  min-height: 2.25rem;
+  padding: .3rem .6rem;
+  border: 0;
+  border-top: 1px solid #edf2ef;
+  border-radius: 0 !important;
+}
+.sales-summary-panel .sales-compare-row:first-of-type { border-top: 0; }
+.sales-summary-panel .sales-compare-row > b,
+.sales-summary-panel .sales-compare-row > em { grid-column: auto; }
+.sales-summary-panel .sales-compare-row > span { padding: .18rem .3rem; }
+.sales-summary-panel .sales-current-facts {
+  grid-template-columns: 1fr 1fr;
+  border: 0;
+  border-left: 1px solid #d8e4df;
+  border-radius: 0;
+  box-shadow: none;
+}
+.sales-summary-panel .sales-current-facts article { min-height: 0; padding: .45rem .65rem; }
+.sales-period-kpis.sales-global-kpis { margin: .05rem 0 .55rem !important; }
+
+.sales-day-summary-grid .sales-summary-panel {
+  grid-template-columns: 1fr;
+  border: 0;
+  box-shadow: none;
+}
+.sales-day-summary-grid .sales-summary-panel .sales-current-facts {
+  border: 1px solid #d8e4df;
+  border-radius: 10px;
+}
+
+@media (max-width: 1100px) {
+  .sales-summary-panel { grid-template-columns: 1fr; }
+  .sales-summary-panel .sales-current-facts { border-left: 0; border-top: 1px solid #d8e4df; }
+}
+@media (max-width: 720px) {
+  .sales-summary-panel .sales-compare-row { grid-template-columns: 1fr 1fr; }
+  .sales-summary-panel .sales-compare-row > b,
+  .sales-summary-panel .sales-compare-row > em { grid-column: 1 / -1; }
+}
+
