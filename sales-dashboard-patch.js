@@ -1,5 +1,5 @@
 (function () {
-  const VERSION = "20261024-sales-studio-v29";
+  const VERSION = "20261024-sales-studio-v30";
   const DAY_MS = 86400000;
   const GKPOS_DEPARTMENT_ORDER = ["GENERAL", "HAIR", "BEAUTY PRODUCTS", "COSMETIC", "ELECTRIC", "JEWELRY", "GROCERY"];
   const GKPOS_CATEGORY_DEPARTMENTS = new Map(Object.entries({
@@ -956,6 +956,15 @@
 
   const SALES_TREND_COLORS = ["#16835b", "#4f6f91", "#8b5fb5", "#d16b43", "#c39a24", "#168b91", "#b54f73", "#637a36", "#805e49", "#667085"];
 
+  function salesLightenHex(hex, amount = .68) {
+    const value = String(hex || "#16835b").replace("#", "");
+    const normalized = value.length === 3 ? value.split("").map((part) => `${part}${part}`).join("") : value;
+    const numberValue = Number.parseInt(normalized, 16);
+    if (!Number.isFinite(numberValue)) return "#b7d8ca";
+    const channel = (shift) => Math.round(((numberValue >> shift) & 255) + (255 - ((numberValue >> shift) & 255)) * amount);
+    return `rgb(${channel(16)}, ${channel(8)}, ${channel(0)})`;
+  }
+
   function salesTrendBucketKey(iso, bucket) {
     if (bucket === "day") return iso.slice(0, 10);
     if (bucket === "month") return iso.slice(0, 7);
@@ -1061,7 +1070,12 @@
       marker.style.top = `${rect.top + hit.y - (hit.kind === "point" ? 7 : 0)}px`;
       marker.style.width = `${markerWidth}px`;
       marker.style.height = `${markerHeight}px`;
-      tooltip.innerHTML = `<strong>${escapeHtml(hit.label)}</strong><br><span style="display:inline-block;width:.58rem;height:.58rem;margin-right:.35rem;border-radius:50%;background:${hit.series.color};opacity:${hit.series.prior ? .5 : 1}"></span>${escapeHtml(hit.series.name)}${hit.series.prior ? " (prior year)" : ""}: <b>${formatter.format(hit.value)}</b>${locked ? `<br><em>Locked · click another bar to move</em>` : `<br><em>Click to lock this bar</em>`}`;
+      if (hit.comparison) {
+        const delta = Number(hit.priorValue) ? salesDelta(Number(hit.currentValue), Number(hit.priorValue)) : null;
+        tooltip.innerHTML = `<strong>${escapeHtml(hit.series.name)} · ${escapeHtml(hit.label)}</strong><br><span style="display:inline-block;width:.58rem;height:.58rem;margin-right:.35rem;border-radius:2px;background:${salesLightenHex(hit.series.color)}"></span>${escapeHtml(options.priorLabel || "Prior")}: <b>${formatter.format(hit.priorValue)}</b><br><span style="display:inline-block;width:.58rem;height:.58rem;margin-right:.35rem;border-radius:2px;background:${hit.series.color}"></span>${escapeHtml(options.currentLabel || "Current")}: <b>${formatter.format(hit.currentValue)}</b>${delta == null ? "" : `<br><em class="${delta < 0 ? "down" : "up"}">${salesDeltaText(delta)} · ${formatter.format(Number(hit.currentValue) - Number(hit.priorValue))}</em>`}${locked ? `<br><em>Locked · click another bar to move</em>` : `<br><em>Click to lock this comparison</em>`}`;
+      } else {
+        tooltip.innerHTML = `<strong>${escapeHtml(hit.label)}</strong><br><span style="display:inline-block;width:.58rem;height:.58rem;margin-right:.35rem;border-radius:50%;background:${hit.series.color};opacity:${hit.series.prior ? .5 : 1}"></span>${escapeHtml(hit.series.name)}${hit.series.prior ? " (prior year)" : ""}: <b>${formatter.format(hit.value)}</b>${locked ? `<br><em>Locked · click another bar to move</em>` : `<br><em>Click to lock this bar</em>`}`;
+      }
       tooltip.hidden = false;
       tooltip.classList.toggle("locked", locked);
       tooltip.style.left = `${Math.min(rect.left + hit.x + markerWidth + 12, window.innerWidth - 300)}px`;
@@ -1114,17 +1128,32 @@
     if (options.type === "bar") {
       const logicalNames = [...new Set(series.map((item) => item.name))];
       const bar = Math.max(3, Math.min(24, slot * .82 / Math.max(logicalNames.length, 1)));
-      const ordered = [...series].sort((a, b) => Number(b.prior) - Number(a.prior));
-      ordered.forEach((item) => {
-        const logicalIndex = logicalNames.indexOf(item.name);
-        const drawWidth = item.prior ? Math.max(2, bar - 1) : Math.max(2, bar * .58);
-        item.values.forEach((value, index) => {
-          const x = xPositions[index] - (bar * logicalNames.length) / 2 + logicalIndex * bar + (bar - drawWidth) / 2;
-          const y = yFor(value);
-          ctx.globalAlpha = item.prior ? .38 : .95;
-          ctx.fillStyle = item.prior ? "#a9cfbf" : item.color;
-          ctx.fillRect(x, y, drawWidth, bottom - y);
-          if (Number(value || 0) !== 0) hitAreas.push({ kind: "bar", x, y, width: drawWidth, height: bottom - y, label: labels[index], value: Number(value || 0), series: item, key: `${index}|${item.name}|${item.prior ? "prior" : "current"}` });
+      logicalNames.forEach((name, logicalIndex) => {
+        const currentSeries = series.find((item) => item.name === name && !item.prior);
+        const priorSeries = series.find((item) => item.name === name && item.prior);
+        const color = currentSeries?.color || priorSeries?.color || SALES_TREND_COLORS[logicalIndex % SALES_TREND_COLORS.length];
+        labels.forEach((label, index) => {
+          const currentValue = Number(currentSeries?.values[index] || 0);
+          const priorValue = Number(priorSeries?.values[index] || 0);
+          const baseX = xPositions[index] - (bar * logicalNames.length) / 2 + logicalIndex * bar;
+          const fullWidth = Math.max(2, bar - 1);
+          const overlayWidth = Math.max(2, fullWidth * .58);
+          const currentY = yFor(currentValue);
+          const priorY = yFor(priorValue);
+          if (currentValue) {
+            ctx.globalAlpha = .95;
+            ctx.fillStyle = color;
+            ctx.fillRect(baseX, currentY, fullWidth, bottom - currentY);
+          }
+          if (priorValue) {
+            ctx.globalAlpha = .96;
+            ctx.fillStyle = salesLightenHex(color);
+            ctx.fillRect(baseX + (fullWidth - overlayWidth) / 2, priorY, overlayWidth, bottom - priorY);
+          }
+          if (currentValue || priorValue) {
+            const topY = Math.min(currentValue ? currentY : bottom, priorValue ? priorY : bottom);
+            hitAreas.push({ kind: "bar", comparison: true, x: baseX, y: topY, width: fullWidth, height: bottom - topY, label, value: currentValue, currentValue, priorValue, series: currentSeries || priorSeries || { name, color }, key: `${index}|${name}` });
+          }
         });
       });
       ctx.globalAlpha = 1;
@@ -1798,8 +1827,8 @@
     const fallbackName = filters.category || filters.department || salesFilterTitle(filters);
     const trend = salesTrendSeries(currentRows, priorRows, metric, bucket, dimension, fallbackName, dates, compare);
     const legend = document.querySelector("#salesTrendLegend");
-    if (legend) legend.innerHTML = filters.item ? "" : `${trend.series.filter((item) => !item.prior).map((item) => `<span><i style="background:${item.color}"></i>${escapeHtml(item.name)}</span>`).join("")}${compare ? `<span class="sales-prior-key">Faded = ${priorYear}</span>` : ""}`;
-    if (!filters.item) salesDrawMultiSeriesChart(document.querySelector("#salesTrendExplorerChart"), trend.labels, trend.series, { type: salesUi.chartType, height: 350, currency: metric !== "units" && metric !== "margin", percent: metric === "margin" });
+    if (legend) legend.innerHTML = filters.item ? "" : `${trend.series.filter((item) => !item.prior).map((item) => `<span><i style="background:${item.color}"></i>${escapeHtml(item.name)}</span>`).join("")}${compare ? `<span class="sales-prior-key">Light overlay ${priorYear} · dark base ${currentYear}</span>` : ""}`;
+    if (!filters.item) salesDrawMultiSeriesChart(document.querySelector("#salesTrendExplorerChart"), trend.labels, trend.series, { type: salesUi.chartType, height: 350, currency: metric !== "units" && metric !== "margin", percent: metric === "margin", priorLabel: priorYear, currentLabel: currentYear });
     const currentTotals = salesTotals(currentRows);
     const priorTotals = salesTotals(priorRows);
     const currentTotal = metric === "margin" ? (currentTotals.sales ? (currentTotals.profit / currentTotals.sales) * 100 : 0) : salesMetricValue(currentTotals, metric);
