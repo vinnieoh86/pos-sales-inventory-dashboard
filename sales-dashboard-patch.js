@@ -1,5 +1,5 @@
 (function () {
-  const VERSION = "20261024-sales-studio-v28";
+  const VERSION = "20261024-sales-studio-v29";
   const DAY_MS = 86400000;
   const GKPOS_DEPARTMENT_ORDER = ["GENERAL", "HAIR", "BEAUTY PRODUCTS", "COSMETIC", "ELECTRIC", "JEWELRY", "GROCERY"];
   const GKPOS_CATEGORY_DEPARTMENTS = new Map(Object.entries({
@@ -237,6 +237,44 @@
   }
 
   upgradeSalesStudioLayout();
+
+  function syncSalesStickyOffsets() {
+    const command = document.querySelector(".command-bar");
+    const dock = document.querySelector("#salesTopDock");
+    document.documentElement.style.setProperty("--sales-command-height", `${Math.ceil(command?.getBoundingClientRect().height || 0)}px`);
+    document.documentElement.style.setProperty("--sales-dock-height", `${Math.ceil(dock?.getBoundingClientRect().height || 0)}px`);
+  }
+
+  function syncSalesModeLayout(mode) {
+    const dock = document.querySelector("#salesTopDock");
+    const kpis = document.querySelector("#salesYoyCards");
+    const dayPage = document.querySelector("#salesDayPage");
+    const daySelection = document.querySelector("#salesCalendarSelection");
+    const items = document.querySelector(".sales-items-inline");
+    const overview = document.querySelector('[data-sales-mode-view="overview"]');
+    if (!dock || !kpis || !dayPage || !daySelection || !items || !overview) return;
+    if (mode === "day") {
+      let summary = dayPage.querySelector(".sales-day-summary-grid");
+      if (!summary) {
+        summary = document.createElement("section");
+        summary.className = "sales-day-summary-grid";
+        dayPage.prepend(summary);
+      }
+      summary.append(kpis, daySelection);
+      dayPage.append(items);
+    } else {
+      dock.insertAdjacentElement("afterend", kpis);
+      dayPage.prepend(daySelection);
+      overview.append(items);
+    }
+    requestAnimationFrame(syncSalesStickyOffsets);
+  }
+
+  const salesStickyObserver = typeof ResizeObserver === "function" ? new ResizeObserver(syncSalesStickyOffsets) : null;
+  salesStickyObserver?.observe(document.querySelector(".command-bar"));
+  salesStickyObserver?.observe(document.querySelector("#salesTopDock"));
+  window.addEventListener("load", syncSalesStickyOffsets, { once: true });
+  requestAnimationFrame(syncSalesStickyOffsets);
 
   function shiftIsoDate(iso, days) {
     const date = new Date(`${iso}T12:00:00Z`);
@@ -1005,7 +1043,7 @@
       const rect = canvas.getBoundingClientRect();
       const x = event.clientX - rect.left;
       const y = event.clientY - rect.top;
-      return hitAreas.find((hit) => hit.kind === "bar" && x >= hit.x - 3 && x <= hit.x + hit.width + 3 && y >= hit.y - 3 && y <= hit.y + hit.height + 3)
+      return [...hitAreas].reverse().find((hit) => hit.kind === "bar" && x >= hit.x - 3 && x <= hit.x + hit.width + 3 && y >= hit.y - 3 && y <= hit.y + hit.height + 3)
         || hitAreas.reduce((best, hit) => {
           if (hit.kind !== "point") return best;
           const distance = Math.hypot(x - hit.x, y - hit.y);
@@ -1074,13 +1112,21 @@
     const yFor = (value) => bottom - ((bottom - top) * Number(value || 0)) / max;
     const hitAreas = [];
     if (options.type === "bar") {
-      const bar = Math.max(2, Math.min(16, slot * .78 / Math.max(series.length, 1)));
-      series.forEach((item, seriesIndex) => item.values.forEach((value, index) => {
-        const x = xPositions[index] - (bar * series.length) / 2 + seriesIndex * bar;
-        const y = yFor(value);
-        ctx.globalAlpha = item.prior ? .35 : .92; ctx.fillStyle = item.color; ctx.fillRect(x, y, Math.max(1, bar - 1), bottom - y);
-        if (Number(value || 0) !== 0) hitAreas.push({ kind: "bar", x, y, width: Math.max(1, bar - 1), height: bottom - y, label: labels[index], value: Number(value || 0), series: item, key: `${index}|${seriesIndex}` });
-      }));
+      const logicalNames = [...new Set(series.map((item) => item.name))];
+      const bar = Math.max(3, Math.min(24, slot * .82 / Math.max(logicalNames.length, 1)));
+      const ordered = [...series].sort((a, b) => Number(b.prior) - Number(a.prior));
+      ordered.forEach((item) => {
+        const logicalIndex = logicalNames.indexOf(item.name);
+        const drawWidth = item.prior ? Math.max(2, bar - 1) : Math.max(2, bar * .58);
+        item.values.forEach((value, index) => {
+          const x = xPositions[index] - (bar * logicalNames.length) / 2 + logicalIndex * bar + (bar - drawWidth) / 2;
+          const y = yFor(value);
+          ctx.globalAlpha = item.prior ? .38 : .95;
+          ctx.fillStyle = item.prior ? "#a9cfbf" : item.color;
+          ctx.fillRect(x, y, drawWidth, bottom - y);
+          if (Number(value || 0) !== 0) hitAreas.push({ kind: "bar", x, y, width: drawWidth, height: bottom - y, label: labels[index], value: Number(value || 0), series: item, key: `${index}|${item.name}|${item.prior ? "prior" : "current"}` });
+        });
+      });
       ctx.globalAlpha = 1;
     } else {
       series.forEach((item, seriesIndex) => {
@@ -1330,6 +1376,14 @@
     await ensureRemoteSalesRange(selected, selected, { silent: true });
     const dayRows = salesRangeRows(selected, selected);
     renderSalesCalendarMix(dayRows);
+    const filters = {
+      department: salesUi.calendarDepartment,
+      category: salesUi.calendarCategory,
+      vendor: salesUi.vendors.size === 1 ? [...salesUi.vendors][0] : "",
+      vendors: [...salesUi.vendors],
+      item: "",
+    };
+    const isFiltered = Boolean(filters.department || filters.category || filters.vendors.length);
     const [dayRollup, priorDayRollup, ytdRollups, priorYtdRollups, adjustments] = await Promise.all([
       salesFetchRollups("DAY", selected, selected),
       salesFetchRollups("DAY", priorSelected, priorSelected),
@@ -1337,12 +1391,28 @@
       salesFetchRollups("DAY", priorYearStart, priorSelected),
       salesFetchAdjustments(selected, selected),
     ]);
-    const current = salesTotals(dayRollup);
-    const prior = salesTotals(priorDayRollup);
+    let currentRows = dayRollup;
+    let priorRows = priorDayRollup;
+    let currentYtdRows = ytdRollups;
+    let priorYtdRows = priorYtdRollups;
+    let scopedAdjustments = adjustments;
+    if (isFiltered) {
+      [currentRows, priorRows, currentYtdRows, priorYtdRows] = await Promise.all([
+        salesFetchFilteredRows(selected, selected, filters),
+        salesFetchFilteredRows(priorSelected, priorSelected, filters),
+        salesFetchFilteredRows(yearStart, selected, filters),
+        salesFetchFilteredRows(priorYearStart, priorSelected, filters),
+      ]);
+      const allStoreSales = salesTotals(dayRollup).sales;
+      const ratio = allStoreSales ? salesTotals(currentRows).sales / allStoreSales : 0;
+      scopedAdjustments = { ...adjustments, gross: adjustments.gross * ratio, discount: adjustments.discount * ratio, returns: adjustments.returns * ratio, allocated: true };
+    }
+    const current = salesTotals(currentRows);
+    const prior = salesTotals(priorRows);
     const delta = salesDelta(current.sales, prior.sales);
     const comparison = document.querySelector("#salesDayComparison");
     if (comparison) comparison.innerHTML = `<span>${salesDisplayDate(priorSelected)}: ${currency.format(prior.sales)}</span><b>${salesDisplayDate(selected)}: ${currency.format(current.sales)}</b>${delta == null ? "" : `<em class="${delta < 0 ? "down" : "up"}">${salesDeltaText(delta)} year over year</em>`}`;
-    renderSalesPeriodKpis(dayRollup, priorDayRollup, ytdRollups, priorYtdRollups, { start: selected, end: selected }, { start: priorSelected, end: priorSelected }, "day", adjustments);
+    renderSalesPeriodKpis(currentRows, priorRows, currentYtdRows, priorYtdRows, { start: selected, end: selected }, { start: priorSelected, end: priorSelected }, "day", scopedAdjustments);
     await renderSalesItems({ start: selected, end: selected }, null, dayRows);
   }
 
@@ -1784,7 +1854,7 @@
     if (sortSelect && sortSelect.value !== sort && [...sortSelect.options].some((option) => option.value === sort)) sortSelect.value = sort;
     const localCoverageComplete = state._remoteSalesLoadedStart && state._remoteSalesLoadedEnd && start >= state._remoteSalesLoadedStart && end <= state._remoteSalesLoadedEnd;
     let baseSource = Array.isArray(sourceRows) && sourceRows.length
-      ? sourceRows
+      ? sourceRows.filter((row) => salesRowsMatchFilters(row, filters))
       : (localCoverageComplete ? salesRangeRows(start, end).filter((row) => salesRowsMatchFilters(row, filters)) : []);
     if (!baseSource.length && start && end) {
       const totalTarget = document.querySelector("#salesItemsTotals");
@@ -1843,9 +1913,7 @@
       const active = view.dataset.salesModeView === mode;
       view.hidden = !active; view.classList.toggle("active", active);
     });
-    const items = document.querySelector(".sales-items-inline");
-    const destination = mode === "day" ? document.querySelector("#salesDayPage") : document.querySelector('[data-sales-mode-view="overview"]');
-    if (items && destination) destination.append(items);
+    syncSalesModeLayout(mode);
     if (changed && mode === "overview") void renderSalesOverview();
     if (changed && mode === "calendar") void renderSalesCalendar();
     if (changed && mode === "day") void renderSalesDayPage();
